@@ -699,7 +699,10 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         }
     }
 
-    auto hitPaneBounds = [&](const PaneViewModel& paneVm, const D2D1_RECT_F& paneRc, int paneIndex) -> HitTestResult {
+    auto hitPaneBounds = [&](const PaneViewModel& paneVm, const D2D1_RECT_F& paneRect, int paneIndex) -> HitTestResult {
+        // Header controls use the full pane; below the header the column
+        // view narrows the regular list to its body.
+        D2D1_RECT_F paneRc = paneRect;
         HitTestResult out;
         out.pane_index = paneIndex;
         if (x < paneRc.left || x >= paneRc.right || y < paneRc.top || y >= paneRc.bottom)
@@ -715,6 +718,11 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         const D2D1_RECT_F mediumRc = PaneMediumIconsRect(paneRc, paneVm.filter_expand);
         if (RectContains(mediumRc, x, y)) {
             out.region = HitTestResult::PaneMediumIcons;
+            out.index = paneIndex;
+            return out;
+        }
+        if (RectContains(PaneColumnLayoutRect(paneRc, paneVm.filter_expand), x, y)) {
+            out.region = HitTestResult::PaneColumnLayout;
             out.index = paneIndex;
             return out;
         }
@@ -744,6 +752,10 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             out.region = HitTestResult::NavUp;
             out.index = paneIndex;
             return out;
+        }
+        if (y >= paneRect.top + pane_header_height_ && paneVm.column_strip.Active()) {
+            if (HitTestColumnStrip(paneVm, paneRect, x, y, out)) return out;
+            paneRc = PaneBodyBounds(paneVm, paneRect);
         }
         const float banner = PaneBannerHeight(paneVm, paneRc.right - paneRc.left, scale_, compositor_);
         if (paneVm.is_content_search && banner > 0) {
@@ -856,7 +868,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             }
             if (paneVm.view_mode == ViewMode::List &&
                 y >= paneRc.bottom - 12.0f * scale_ &&
-                MaxScrollXForPane(paneVm, paneRc) > 0.0f) {
+                MaxScrollXForPane(paneVm, paneRect) > 0.0f) {
                 out.region = HitTestResult::Scrollbar;
                 out.sub_index = 1;
                 return out;
@@ -865,7 +877,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 out.region = HitTestResult::Scrollbar;
                 return out;
             }
-            int idx = ItemFromPointInPane(paneVm, paneRc, x, y);
+            int idx = ItemFromPointInPane(paneVm, paneRect, x, y);
             if(idx>=0 && paneVm.content_results && !paneVm.content_results->Ready(static_cast<size_t>(idx))) {
                 paneVm.content_results->Prefetch(static_cast<size_t>(idx));
                 out.region=HitTestResult::Pane; return out;

@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Self-contained releases, including bundled static dependencies.
+if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(NOT MSVC)
     message(FATAL_ERROR "Pulse requires MSVC (Windows SDK / D2D / NT API)")
 endif()
@@ -40,11 +45,11 @@ if(PULSE_WITH_LUMATEXT)
         set(LUMATEXT_BUILD_REFERENCE_TOOLS OFF)
         add_subdirectory("${LUMATEXT_SOURCE_DIR}"
             "${CMAKE_BINARY_DIR}/_deps/lumatext" EXCLUDE_FROM_ALL)
-        if(PULSE_WIN81_CANDIDATE)
+        if(MSVC)
             foreach(runtime_target lumatext_shared lumatext_harfbuzz freetype)
                 if(TARGET ${runtime_target})
                     set_property(TARGET ${runtime_target} PROPERTY MSVC_RUNTIME_LIBRARY
-                        "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+                        "${CMAKE_MSVC_RUNTIME_LIBRARY}")
                 endif()
             endforeach()
         endif()
@@ -357,6 +362,11 @@ pulse_add_version_resource(pulse_index "Pulse index host" "Pulse.Index" "Pulse.I
 add_dependencies(pulse_index_host_stress pulse_index)
 
 # ---- Stage 1B-1 ops self test (console; drives pulse_shell.exe over the pipe) ----
+add_executable(pulse_operation_presentation_test src/bench/operation_presentation_test.cpp)
+add_executable(pulse_column_strip_test src/bench/column_strip_test.cpp src/ui/column_strip_layout.cpp)
+add_executable(pulse_playback_controls_test src/bench/playback_controls_test.cpp src/ui/video_preview.cpp)
+target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mfuuid)
+
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp
     src/ops/ops_manager.cpp

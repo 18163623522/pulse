@@ -1,5 +1,6 @@
 // app_runtime.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "app_column_view.h"
 #include "update_status.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
@@ -12,6 +13,7 @@
 #include "../common/localization.h"
 #include "../common/text_format.h"
 #include "../common/path_utils.h"
+#include "../common/display_path.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
 #include "session.h"
@@ -305,6 +307,11 @@ D2D1_RECT_F ListRect(const AppState& s) {
     }
     if (virtual_kind == L"changes") extra += 36.0f * s.scale;
     const ui::ViewMode mode = tab ? tab->view_mode : ui::ViewMode::Details;
+    if (tab && tab->column_layout) {
+        ui::PaneViewModel strip;
+        app::FillColumnStripView(strip.column_strip, *tab);
+        pane = s.renderer.PaneBodyBounds(strip, pane);
+    }
     pane.top += s.renderer.PaneHeaderHeight() + extra +
                 (ui::ShowsColumnHeader(mode) ? s.renderer.ColumnHeaderHeight() : 0.0f);
     return pane;
@@ -687,6 +694,10 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 }
             }
             if (static_cast<int>(i) == s.hoverPaneIndex) slot.pane.hover_index = s.hoverRow;
+            if (s.stripResizing && static_cast<int>(i) == s.stripResizePane)
+                slot.pane.column_strip.resize_column = s.stripResizeColumn;
+            if (s.stripHScrolling && static_cast<int>(i) == s.stripResizePane)
+                slot.pane.column_strip.hscroll_pressed = true;
             if (static_cast<int>(i) == s.dropPaneIndex) {
                 slot.pane.drop_target_index = s.dropRow;
                 slot.pane.header_drop = s.dropHeader;
@@ -741,9 +752,7 @@ int TrayItemTotalCount(const app::StagingTray& tray) {
 
 // Extended-length prefixes leak into tooltips otherwise: \\?\C:\x -> C:\x.
 std::wstring TrayDisplayPath(const std::wstring& path) {
-    if (path.compare(0, 8, L"\\\\?\\UNC\\") == 0) return L"\\" + path.substr(7);
-    if (path.compare(0, 4, L"\\\\?\\") == 0) return path.substr(4);
-    return path;
+    return pulse::path::FriendlyPathText(path);
 }
 
 std::wstring TrayItemName(const std::wstring& path) {
@@ -1146,6 +1155,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             tab->SetShowProtectedOsFiles(s.appPrefs.show_protected_os_files);
         }
     });
+    SyncColumnStrips(s);
     ui::WindowViewModel vm = app::BuildWindowViewModel(*s.pane, s.sidebar,
         s.pane->focused, s.maximized, s.darkMode, &s.places, s.sidebarCollapsedMask,
         s.sidebarHiddenMask, s.starredExpanded, &s.sidebarOrder,
@@ -1665,6 +1675,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::SplitButton: return text(I::SplitLayout);
     case R::DetailsToggle: return text(s.showDetailsPanel ? I::CollapseDetails : I::ExpandDetails);
     case R::PaneMediumIcons: return text(I::MediumIcons);
+    case R::PaneColumnLayout: return text(I::ColumnLayout);
     case R::PaneViewButton: return text(I::View);
     case R::FilterBox: return text(I::FilterCurrent);
     case R::FilterClear: return text(I::Clear);

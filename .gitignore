@@ -81,3 +81,6 @@ CONERR$
 /.pnpm-store/
 /.summary.jsonl
 /.c2c.json
+
+# Local promotional video (not part of source releases).
+/docs/video/*.mp4

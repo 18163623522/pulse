@@ -1616,19 +1616,43 @@ void ApplyAccentFromPrefs(AppState& s, bool snap_picker) {
     if (s.operationWindow) s.operationWindow->SetTheme(s.darkMode, s.accentColor);
 }
 
-bool SelectedQuickPreviewItem(AppState& s, ui::QuickPreviewItem& item) {
-    app::Tab* tab = ActiveTab(s);
-    if (!tab || !tab->snapshot || tab->selected_index < 0 ||
-        tab->selected_index >= static_cast<int>(tab->EntryCount())) return false;
-    const fs::DirEntry& entry = tab->EntryAt(static_cast<size_t>(tab->selected_index));
+namespace {
+
+bool QuickPreviewItemAt(AppState& s, const app::Tab& tab, int index, ui::QuickPreviewItem& item) {
+    if (!tab.snapshot || index < 0 || index >= static_cast<int>(tab.EntryCount())) return false;
+    const fs::DirEntry& entry = tab.EntryAt(static_cast<size_t>(index));
     if (entry.is_dir) return false;
-    item.path = EntryFullPath(*tab, tab->selected_index);
+    item.path = EntryFullPath(tab, index);
     item.name = entry.name;
     item.attrs = entry.attrs;
     item.size = entry.size;
     item.modified = (static_cast<uint64_t>(entry.mtime.dwHighDateTime) << 32) |
                     entry.mtime.dwLowDateTime;
-    return !item.path.empty();
+    if (item.path.empty()) return false;
+    item.starred = s.places.IsStarred(item.path);
+    item.read_only = IsRecycleTab(&tab) || tab.net_readonly;
+    return true;
+}
+
+// Row of the previewed entry in the focused tab, or -1 once it is gone.
+// Names are compared first so the full-path build only runs on candidates.
+int QuickPreviewEntryIndex(const app::Tab& tab, const ui::QuickPreviewItem& item) {
+    if (!tab.snapshot || item.path.empty()) return -1;
+    if (tab.selected_index >= 0 && EntryFullPath(tab, tab.selected_index) == item.path)
+        return tab.selected_index;
+    const int count = static_cast<int>(tab.EntryCount());
+    for (int i = 0; i < count; ++i) {
+        if (tab.EntryAt(static_cast<size_t>(i)).name != item.name) continue;
+        if (EntryFullPath(tab, i) == item.path) return i;
+    }
+    return -1;
+}
+
+} // namespace
+
+bool SelectedQuickPreviewItem(AppState& s, ui::QuickPreviewItem& item) {
+    app::Tab* tab = ActiveTab(s);
+    return tab && QuickPreviewItemAt(s, *tab, tab->selected_index, item);
 }
 
 void ToggleQuickPreview(AppState& s) {
@@ -1663,6 +1687,98 @@ void NavigateQuickPreview(AppState& s, int direction) {
     };
     if(!DeferContentSelection(s,update,true)) update(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void HandleQuickPreviewCommand(AppState& s, ui::QuickPreviewAction action, bool shift) {
+    if (!s.quickPreview.visible()) return;
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || !tab->snapshot) return;
+    // Verbs act on the previewed entry only: re-focus it in case the list
+    // selection drifted while the preview window owned the keyboard.
+    const ui::QuickPreviewItem shown = s.quickPreview.item();
+    const int index = QuickPreviewEntryIndex(*tab, shown);
+    if (index < 0) return;
+    if (index != tab->selected_index || tab->SelectedCount() != 1) {
+        tab->SelectOnly(index);
+        EnsureRowVisible(s, *tab, index);
+    }
+    switch (action) {
+    case ui::QuickPreviewAction::Open: OpenSelected(s); break;
+    case ui::QuickPreviewAction::Cut: CollectToTray(s, true); break;
+    case ui::QuickPreviewAction::Copy: CollectToTray(s, false); break;
+    case ui::QuickPreviewAction::CopyPath: CopySelectedPath(s); break;
+    case ui::QuickPreviewAction::ToggleStar: {
+        const fs::DirEntry& entry = tab->EntryAt(static_cast<size_t>(index));
+        ToggleStarred(s, shown.path, entry.is_dir ? app::PlaceItemKind::Folder
+                                                  : app::PlaceItemKind::File);
+        s.quickPreview.SetStarred(s.places.IsStarred(shown.path));
+        break;
+    }
+    case ui::QuickPreviewAction::Rename:
+        // The rename editor is hosted by the main window; hand focus back first.
+        s.quickPreview.Close();
+        ShowRenameOverlay(s);
+        break;
+    case ui::QuickPreviewAction::Delete: {
+        const ui::WindowViewModel vm = BuildVm(s);
+        s.quickPreviewAnchorView = vm.pane.ViewIndex(index);
+        DeleteSelected(s, shift);
+        break;
+    }
+    case ui::QuickPreviewAction::Properties:
+        DispatchMenuCommand(s, app::CmdProperties);
+        break;
+    default:
+        break;
+    }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void SyncQuickPreview(AppState& s) {
+    if (!s.quickPreview.visible()) {
+        s.quickPreviewAnchorView = -1;
+        return;
+    }
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || !tab->snapshot || tab->loading) return;
+    const ui::QuickPreviewItem shown = s.quickPreview.item();
+    const int index = QuickPreviewEntryIndex(*tab, shown);
+    if (index >= 0) {
+        s.quickPreviewAnchorView = -1;
+        ui::QuickPreviewItem fresh;
+        if (!QuickPreviewItemAt(s, *tab, index, fresh)) return;
+        if (fresh.modified != shown.modified || fresh.size != shown.size ||
+            fresh.attrs != shown.attrs) {
+            s.quickPreview.Update(fresh);  // content changed on disk: reload
+        } else {
+            s.quickPreview.SetStarred(fresh.starred);
+        }
+        return;
+    }
+    // The previewed entry left the listing. After an in-preview delete step
+    // to the nearest remaining file at the same view row; otherwise close.
+    const int anchor = s.quickPreviewAnchorView;
+    s.quickPreviewAnchorView = -1;
+    if (anchor >= 0) {
+        const ui::WindowViewModel vm = BuildVm(s);
+        const int count = static_cast<int>(vm.pane.EntryCount());
+        if (count > 0) {
+            const int start = std::clamp(anchor, 0, count - 1);
+            const auto try_row = [&](int view) {
+                ui::QuickPreviewItem next;
+                const int source = vm.pane.SourceIndex(view);
+                if (!QuickPreviewItemAt(s, *tab, source, next)) return false;
+                tab->SelectOnly(source);
+                EnsureRowVisible(s, *tab, source);
+                s.quickPreview.Update(next);
+                InvalidateRect(s.hwnd, nullptr, FALSE);
+                return true;
+            };
+            for (int view = start; view < count; ++view) if (try_row(view)) return;
+            for (int view = start - 1; view >= 0; --view) if (try_row(view)) return;
+        }
+    }
+    s.quickPreview.Close();
 }
 
 void EnsureEditVisuals(AppState& s);

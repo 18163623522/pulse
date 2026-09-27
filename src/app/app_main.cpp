@@ -297,7 +297,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->renderer.SetScale(s->scale);
         s->renderer.SetIconNotifyWindow(hwnd);
         s->quickPreview.Initialize(hwnd, WM_QUICK_PREVIEW_NAVIGATE,
-                                   WM_QUICK_PREVIEW_OPEN);
+                                   WM_QUICK_PREVIEW_OPEN, WM_QUICK_PREVIEW_COMMAND);
 
         s->window_tabs.EnsureDefault();
         BindCurrentLayout(*s);
@@ -999,7 +999,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
             return TRUE;
         }
-        if (s->columnResizing || hit.region == ui::HitTestResult::ColumnDivider) {
+        if (s->columnResizing || hit.region == ui::HitTestResult::ColumnDivider ||
+            s->stripResizing || hit.region == ui::HitTestResult::ColumnStripDivider) {
             SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
             return TRUE;
         }
@@ -1464,6 +1465,11 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_QUICK_PREVIEW_OPEN:
         if (s) OpenSelected(*s);
+        return 0;
+
+    case WM_QUICK_PREVIEW_COMMAND:
+        if (s) HandleQuickPreviewCommand(*s, static_cast<ui::QuickPreviewAction>(wParam),
+                                         (lParam & 1) != 0);
         return 0;
 
     case WM_NET_PROBE: {

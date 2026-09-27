@@ -5,6 +5,7 @@
 #include "../fs/fs_snapshot.h"
 #include "../ui/ui_renderer.h"
 #include "places.h"
+#include "column_view_model.h"
 #include "../index/content_result_store.h"
 #include <map>
 #include <memory>
@@ -49,6 +50,10 @@ struct Tab {
     std::array<float, 4> search_column_dividers{};
     std::wstring filter_text;
     bool show_hidden_files = false;
+    // Column (Miller) view toggle and user-dragged widths in DIP
+    // (slot 0 = child column, slot k = k-th ancestor; see ColumnStripWidthDip).
+    bool column_layout = false;
+    std::vector<float> column_widths_dip;
     bool show_protected_os_files = false;
     std::wstring virtual_title; // tag/search views; empty for real folders
     std::wstring banner_title;
@@ -73,6 +78,7 @@ struct Tab {
     std::wstring pending_selected_name;
     std::vector<std::wstring> pending_selected_names;
     bool pending_ensure_selection_visible = false;
+    ColumnStripState column_strip; // listings shown beside the list in column view
     std::wstring git_root;
     std::shared_ptr<std::vector<fs::DirEntry>> search_entries;
     std::shared_ptr<index::ContentResultStore> content_results;

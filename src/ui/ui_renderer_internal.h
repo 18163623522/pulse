@@ -848,13 +848,13 @@ void ClearTextWidthCache() {
         pulse::l10n::StringId::CopyPath, pulse::l10n::StringId::More,
     };
 
-    // Details-view column widths (DIP). Type must fit "AutoCAD File" /
-    // "Text document" after 8dip insets and Luma ink overhang.
+    // Manual divider minimums and fallback widths (DIP). Automatic layouts
+    // measure the displayed metadata instead of reserving a fixed type width.
     constexpr float kDetailsMinNameDip = 80.0f;
     constexpr float kDetailsMinPathDip = 110.0f;
     constexpr float kDetailsMinDateDip = 92.0f;
-    constexpr float kDetailsMinTypeDip = 100.0f;
-    constexpr float kDetailsMinSizeDip = 72.0f;
+    constexpr float kDetailsMinTypeDip = 48.0f;
+    constexpr float kDetailsMinSizeDip = 48.0f;
     constexpr float kDetailsDateDip = 130.0f;
     constexpr float kDetailsTypeDip = 128.0f;
     constexpr float kDetailsSizeDip = 90.0f;

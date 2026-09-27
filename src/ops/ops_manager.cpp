@@ -1,5 +1,6 @@
 // ops_manager.cpp — See ops_manager.h for the contract.
 #include "ops_manager.h"
+#include "operation_presentation.h"
 #include "../ipc/shell_client.h"
 #include "../common/json_utils.h"
 #include "../common/path_utils.h"
@@ -1015,7 +1016,7 @@ void OpsManager::ResolveConflict(uint64_t token, ConflictChoice choice, bool app
 
 OpStatus OpsManager::Status() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return status_;
+    return PresentOperationStatus(status_);
 }
 
 void OpsManager::SetStatus(const std::function<void(OpStatus&)>& fn) {

@@ -4,6 +4,7 @@
 #include "../common/json_utils.h"
 #include "../common/localization.h"
 #include "../common/path_utils.h"
+#include "../common/display_path.h"
 #include "../common/text_format.h"
 #include <commctrl.h>
 #include <prsht.h>
@@ -479,10 +480,14 @@ void Pane::NewTab(const std::wstring& path) {
     const ui::ViewMode mode = view.view_mode;
     const auto columns = view.details_column_dividers;
     const auto search_columns = view.search_column_dividers;
+    const bool column_layout = view.column_layout;
+    auto column_widths = std::move(view.column_widths_dip);
     view = Tab{};
     view.view_mode = mode;
     view.details_column_dividers = columns;
     view.search_column_dividers = search_columns;
+    view.column_layout = column_layout;
+    view.column_widths_dip = std::move(column_widths);
     view.current_path = fs::NormalizePath(path);
     view.loading = true;
 }
@@ -519,6 +524,8 @@ std::unique_ptr<LayoutTab> MakeSingleLayoutTab(const std::wstring& path, const T
         pane->view.view_mode = source->view_mode;
         pane->view.details_column_dividers = source->details_column_dividers;
         pane->view.search_column_dividers = source->search_column_dividers;
+        pane->view.column_layout = source->column_layout;
+        pane->view.column_widths_dip = source->column_widths_dip;
     }
     pane->NewTab(path.empty() ? L"C:\\" : path);
     tab->panes.push_back(std::move(pane));
@@ -800,9 +807,7 @@ static std::wstring DisplayPath(const std::wstring& path) {
     if (path.empty()) return l10n::Get(l10n::StringId::ThisPc);
     // Keep the UNC prefix. Dropping it turns \\server\share into a relative
     // path; breadcrumb clicks then resolve against the process CWD.
-    if (path.starts_with(L"\\\\?\\UNC\\")) return L"\\\\" + path.substr(8);
-    if (path.starts_with(L"\\\\?\\")) return path.substr(4);
-    return path;
+    return pulse::path::FriendlyPathText(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,6 +1445,7 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
     out.sort_direction = tab->sort_direction;
     out.details_column_dividers = tab->details_column_dividers;
     out.search_column_dividers = tab->search_column_dividers;
+    FillColumnStripView(out.column_strip, *tab);
     out.focused = pane.focused;
     out.snapshot = tab->snapshot;
     out.tag_catalog = places;

@@ -5,6 +5,7 @@
 #include "tab_shape.h"
 #include "bloom_accent_picker.h"
 #include "typography.h"
+#include "details_column_widths.h"
 #include "../app/resource.h"
 #include "../app/places.h"
 #include "../app/search_query.h"
@@ -255,7 +256,8 @@ D2D1_RECT_F MainRenderer::PaneListRect(const D2D1_RECT_F& pane_bounds, float ext
     return list;
 }
 
-D2D1_RECT_F MainRenderer::PaneListRect(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds) const {
+D2D1_RECT_F MainRenderer::PaneListRect(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     return PaneListRect(pane_bounds,
         PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_), vm.view_mode);
 }
@@ -288,9 +290,14 @@ D2D1_RECT_F MainRenderer::PaneMediumIconsRect(const D2D1_RECT_F& pane_bounds,
                        view.left - (kCommandIconStepDip - kCommandIconButtonDip) * scale_,
                        view.bottom);
 }
+D2D1_RECT_F MainRenderer::PaneColumnLayoutRect(const D2D1_RECT_F& pane_bounds,
+                                                float filter_expand) const {
+    return StepLeftHeaderButton(PaneMediumIconsRect(pane_bounds, filter_expand), scale_);
+}
+
 D2D1_RECT_F MainRenderer::PaneNavUpRect(const D2D1_RECT_F& pane_bounds,
                                         float filter_expand) const {
-    return StepLeftHeaderButton(PaneMediumIconsRect(pane_bounds, filter_expand), scale_);
+    return StepLeftHeaderButton(PaneColumnLayoutRect(pane_bounds, filter_expand), scale_);
 }
 
 D2D1_RECT_F MainRenderer::PaneNavForwardRect(const D2D1_RECT_F& pane_bounds,
@@ -322,8 +329,50 @@ D2D1_RECT_F MainRenderer::FilterEditRect(const D2D1_RECT_F& pane_bounds, float e
 
 MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     const D2D1_RECT_F& pane_bounds, const PaneViewModel& vm) const {
-    return DetailsColumns(pane_bounds, vm.details_column_dividers, vm.is_search,
-                          vm.search_column_dividers);
+    auto columns = DetailsColumns(pane_bounds, vm.details_column_dividers, vm.is_search,
+                                  vm.search_column_dividers);
+    // Explicit divider positions remain a manual override. A drag starts by
+    // capturing this measured layout, so the first movement does not jump.
+    const bool manual = vm.is_search
+        ? std::any_of(vm.search_column_dividers.begin(), vm.search_column_dividers.end(), [](float v) { return v > 1.0f; })
+        : std::any_of(vm.details_column_dividers.begin(), vm.details_column_dividers.end(), [](float v) { return v > 1.0f; });
+    if (manual || !columns.Has(ColumnKind::Date) || !columns.Has(ColumnKind::Type) ||
+        !columns.Has(ColumnKind::Size) || vm.view_mode != ViewMode::Details ||
+        !compositor_ || !compositor_->TextFormat()) return columns;
+    const std::array<std::wstring, 3> labels{
+        vm.date_column_label.empty() ? l10n::Get(l10n::StringId::ColumnModified)
+                                     : vm.date_column_label,
+        l10n::Get(l10n::StringId::ColumnType), l10n::Get(l10n::StringId::ColumnSize)};
+    auto measure = [&](const std::wstring& text, IDWriteTextFormat* format) {
+        float luma = 0.0f;
+        compositor_->MeasureLumaText(text, format, luma);
+        return std::max(luma, MeasureTextWidth(compositor_->DwriteFactory(), format, text));
+    };
+    const auto automatic = AutoColumnWidths();
+    std::array<float, 3> measured{automatic.date * scale_, automatic.type * scale_, automatic.size * scale_};
+    for (size_t i = 0; i < measured.size(); ++i) {
+        // Include both cell insets, ink overhang and a sort indicator. Reserving
+        // the indicator for every header avoids widths jumping when sorting.
+        measured[i] = std::max(measured[i], measure(labels[i], compositor_->HeaderFormat()) + 35.0f * scale_);
+    }
+    // Bound work for very large directories and paged searches. Only resident
+    // rows near the viewport are inspected; sizing must never fetch disk data.
+    const size_t start = static_cast<size_t>(std::max(0.0f, vm.scroll_y) /
+        std::max(1.0f, ListRowHeightDip(vm) * scale_));
+    const size_t end = std::min(vm.EntryCount(), start + 128);
+    for (size_t row = start; row < end; ++row) {
+        const int source = vm.SourceIndex(static_cast<int>(row));
+        if (source < 0 || (vm.content_results && !vm.content_results->Ready(source))) continue;
+        const auto& entry = MakeVisibleEntry(vm, static_cast<size_t>(source));
+        const std::wstring* values[] = { &entry.date_text, &entry.type_text, &entry.size_text };
+        for (size_t i = 0; i < measured.size(); ++i)
+            measured[i] = std::max(measured[i],
+                measure(*values[i], compositor_->TextFormat()) + 20.0f * scale_);
+        measured[1] = std::max(measured[1], measure(entry.type_text, compositor_->TextFormat()) +
+            (20.0f + TypeChipWidthDip(TypeChipLabel(entry.name, entry.is_dir))) * scale_);
+    }
+    FitDetailsMetadata(columns.widths, columns.count, measured, scale_);
+    return columns;
 }
 
 MainRenderer::ColumnAutoWidths MainRenderer::AutoColumnWidths() const {
@@ -440,8 +489,11 @@ MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
             if (it->kind == kind) { meta.erase(it); return true; }
         return false;
     };
-    const float min_name = kDetailsFitNameDip * scale_;
-    const float min_path = kDetailsFitPathDip * scale_;
+    // Captured measured widths are explicit user sizing; use the hard floors
+    // so starting a drag cannot drop a column that was visible a moment ago.
+    const bool manual = manual_date > 0.0f || manual_type > 0.0f || manual_size > 0.0f;
+    const float min_name = (manual ? kDetailsMinNameDip : kDetailsFitNameDip) * scale_;
+    const float min_path = (manual ? kDetailsMinPathDip : kDetailsFitPathDip) * scale_;
     bool path_column = search_view;
     if (search_view && total - meta_sum() < min_name + min_path) {
         path_column = false;
@@ -589,8 +641,9 @@ D2D1_RECT_F MainRenderer::NameCellRect(const D2D1_RECT_F& pane_bounds, int view_
                        row_y + row_h - inset);
 }
 
-bool MainRenderer::PointInItemName(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
+bool MainRenderer::PointInItemName(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds,
                                    int source_index, float x, float y) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     if (!compositor_ || !compositor_->DwriteFactory() || source_index < 0) return false;
     const int view_index = vm.ViewIndex(source_index);
     if (view_index < 0) return false;
@@ -603,6 +656,12 @@ bool MainRenderer::PointInItemName(const PaneViewModel& vm, const D2D1_RECT_F& p
         vm.view_mode, vm.scroll_x, vm.EntryCount(), vm.details_column_dividers,
         vm.is_search, vm.search_column_dividers,
         ListRowHeightDip(vm, PaneListRect(pane_bounds, extra_top, vm.view_mode)) * scale_);
+    if (vm.view_mode == ViewMode::Details) {
+        const auto actual = DetailsColumns(pane_bounds, vm);
+        const auto defaults = DetailsColumns(pane_bounds, vm.details_column_dividers,
+                                            vm.is_search, vm.search_column_dividers);
+        name.right += actual.Width(ColumnKind::Name) - defaults.Width(ColumnKind::Name);
+    }
     const bool icon_grid = vm.view_mode == ViewMode::ExtraLargeIcons ||
                            vm.view_mode == ViewMode::LargeIcons ||
                            vm.view_mode == ViewMode::MediumIcons;
@@ -822,12 +881,15 @@ void MainRenderer::DrawPaneEmptyState(const WindowViewModel& vm, const PaneViewM
 }
 
 void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel& pane,
-                                  const D2D1_RECT_F& bounds, int pane_index, bool focused, bool target,
+                                  const D2D1_RECT_F& pane_rect, int pane_index, bool focused, bool target,
                                   const Theme& theme) {
     ID2D1DeviceContext* dc = compositor_->Dc();
-    const float x = bounds.left;
+    // The header spans the whole pane; in the column view everything below
+    // it uses the narrowed body (see PaneBodyBounds).
+    D2D1_RECT_F bounds = pane_rect;
+    float x = bounds.left;
     const float y0 = bounds.top;
-    const float w = bounds.right - bounds.left;
+    float w = bounds.right - bounds.left;
     const float bottom = bounds.bottom;
     if (w <= 1.0f || bottom - y0 <= 1.0f) return;
 
@@ -884,6 +946,22 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
     headerNavButton(navUpRc, HitTestResult::NavUp, kIconUp, L"^", pane.can_go_up);
     headerIconButton(mediumRc, HitTestResult::PaneMediumIcons,
                      L"\xE7F4", L"M", pane.view_mode == ViewMode::MediumIcons, 0.66f);
+    {
+        const D2D1_RECT_F columnsRc = PaneColumnLayoutRect(bounds, pane.filter_expand);
+        const bool active = pane.column_strip.enabled;
+        const bool hovered = vm.hover_region == static_cast<int>(HitTestResult::PaneColumnLayout) &&
+                             vm.hover_control_index == pane_index;
+        const D2D1_COLOR_F fill = active
+            ? WithAlpha(theme.accent, hovered ? 0.24f : 0.14f)
+            : (hovered ? theme.fill_hover : kTransparent);
+        if (fill.a > 0.0f) {
+            MakeBrush(dc, fill, brFillHover_);
+            FillRoundedRect(dc, brFillHover_.get(), columnsRc.left, columnsRc.top,
+                            columnsRc.right - columnsRc.left, columnsRc.bottom - columnsRc.top,
+                            theme.radius_control * scale_);
+        }
+        DrawColumnLayoutGlyph(columnsRc, active ? theme.accent : theme.text);
+    }
     headerIconButton(viewRc, HitTestResult::PaneViewButton,
                      kIconView, L"=", false, 0.76f);
 
@@ -919,6 +997,13 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
         }
     }
     y += pane_header_height_;
+
+    if (const ColumnStripLayout strip = ColumnStripGeometry(pane, pane_rect); strip.active) {
+        DrawColumnStrip(vm, pane, pane_rect, pane_index, theme);
+        bounds = strip.body;
+        x = bounds.left;
+        w = bounds.right - bounds.left;
+    }
 
     const float bannerH = PaneBannerHeight(pane, w, scale_, compositor_);
     if (bannerH > 0.0f) {
@@ -1135,8 +1220,8 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
     MakeBrush(dc, frameColor, brAccent_);
     const float strokeW = focused ? 1.5f * scale_ : 1.0f * scale_;
     D2D1_ROUNDED_RECT frame = D2D1::RoundedRect(
-        D2D1::RectF(bounds.left + 0.5f * scale_, bounds.top + 0.5f * scale_,
-                    bounds.right - 0.5f * scale_, bounds.bottom - 0.5f * scale_),
+        D2D1::RectF(pane_rect.left + 0.5f * scale_, pane_rect.top + 0.5f * scale_,
+                    pane_rect.right - 0.5f * scale_, pane_rect.bottom - 0.5f * scale_),
         radius, radius);
     if (target && !focused) {
         if (!dashStroke_.get() && dc) {
@@ -1536,7 +1621,9 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 // Every metadata column centers in the row, independently of
                 // the filename's optional two-line name/snippet layout.
                 const auto text_bounds = D2D1::RectF(left, cell.top + scale_, left + width, cell.bottom - scale_);
-                if (!IsHighContrast() && compositor_->DrawLumaText(
+                if (!IsHighContrast() &&
+                    typography::MeasureLine(compositor_, compositor_->TextFormat(), text) <= width &&
+                    compositor_->DrawLumaText(
                         text, compositor_->TextFormat(), text_bounds,
                         brTextSecondary_->GetColor(), theme.bg, alignment)) {
                     return;
@@ -1738,8 +1825,9 @@ void MainRenderer::DrawScrollbar(const PaneViewModel& vm, float x, float y, floa
     FillRoundedRect(dc, brScrollbar_.get(), x + w - 10.0f * scale_, y + sb.thumbY,
         thumbW, sb.thumbH, thumbW * 0.5f);
 }
-bool MainRenderer::PaneScrollbarGeometry(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
+bool MainRenderer::PaneScrollbarGeometry(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds,
                                           D2D1_RECT_F& track, D2D1_RECT_F& thumb, float& max_scroll) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     const auto list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
@@ -1753,7 +1841,8 @@ bool MainRenderer::PaneScrollbarGeometry(const PaneViewModel& vm, const D2D1_REC
     return true;
 }
 
-float MainRenderer::MaxScrollForPane(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds) const {
+float MainRenderer::MaxScrollForPane(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
@@ -1761,7 +1850,8 @@ float MainRenderer::MaxScrollForPane(const PaneViewModel& vm, const D2D1_RECT_F&
 }
 
 float MainRenderer::MaxScrollXForPane(const PaneViewModel& vm,
-                                      const D2D1_RECT_F& pane_bounds) const {
+                                      const D2D1_RECT_F& full_bounds) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
@@ -1769,23 +1859,26 @@ float MainRenderer::MaxScrollXForPane(const PaneViewModel& vm,
 }
 
 D2D1_RECT_F MainRenderer::ItemRectInPane(const PaneViewModel& vm,
-                                         const D2D1_RECT_F& pane_bounds,
+                                         const D2D1_RECT_F& full_bounds,
                                          int view_index) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
     return layout.ItemRect(view_index);
 }
 
-int MainRenderer::MoveViewIndex(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
+int MainRenderer::MoveViewIndex(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds,
                                 int current, int dx, int dy) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
     return layout.MoveIndex(current, dx, dy);
 }
 
-int MainRenderer::PageDelta(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds) const {
+int MainRenderer::PageDelta(const PaneViewModel& vm, const D2D1_RECT_F& full_bounds) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
@@ -1793,7 +1886,8 @@ int MainRenderer::PageDelta(const PaneViewModel& vm, const D2D1_RECT_F& pane_bou
 }
 
 std::pair<int, int> MainRenderer::VisibleRangeInPane(
-    const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds) const {
+    const PaneViewModel& vm, const D2D1_RECT_F& full_bounds) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));
@@ -1801,12 +1895,13 @@ std::pair<int, int> MainRenderer::VisibleRangeInPane(
 }
 
 int MainRenderer::RowFromYInPane(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds, float y) const {
-    return ItemFromPointInPane(vm, pane_bounds, pane_bounds.left + 1.0f, y);
+    return ItemFromPointInPane(vm, pane_bounds, PaneBodyBounds(vm, pane_bounds).left + 1.0f, y);
 }
 
 int MainRenderer::ItemFromPointInPane(const PaneViewModel& vm,
-                                      const D2D1_RECT_F& pane_bounds,
+                                      const D2D1_RECT_F& full_bounds,
                                       float x, float y) const {
+    const D2D1_RECT_F pane_bounds = PaneBodyBounds(vm, full_bounds);
     const float extra = PaneExtraTop(vm, scale_, pane_bounds.right - pane_bounds.left, compositor_);
     D2D1_RECT_F list = PaneListRect(pane_bounds, extra, vm.view_mode);
     ViewLayout layout(vm.view_mode, list, vm.EntryCount(), vm.scroll_x, vm.scroll_y, scale_, ListRowHeightDip(vm, list));

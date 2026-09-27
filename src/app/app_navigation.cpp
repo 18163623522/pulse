@@ -1,5 +1,6 @@
 // app_navigation.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "app_column_view.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
 #include "../ui/drag_drop.h"
@@ -896,6 +897,7 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
 
 void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
     if (Panes(s).empty()) return;
+    NoteColumnStripResult(s, res);
     if (res.error) {
         ForEachPane(s, [&](app::Pane& pane) {
             app::Tab* tab = pane.ActiveTab();
@@ -1012,6 +1014,7 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
     });
     if (again) RefreshPath(s, res.path);
     if (!any) return;
+    SyncQuickPreview(s);
 
     s.timing.enum_ms = res.enum_ms;
     s.timing.sort_ms = res.sort_ms;
@@ -1192,6 +1195,7 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
     });
     if (need_full) return false;
     if (store_snap) s.store.Put(path, store_snap);
+    if (any) SyncQuickPreview(s);
     return any;
 }
 

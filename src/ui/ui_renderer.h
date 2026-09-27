@@ -6,6 +6,7 @@
 #include "fluent_components.h"
 #include "shell_icons.h"
 #include "view_layout.h"
+#include "column_strip_layout.h"
 #include "panel_metrics.h"
 #include "thumbnail_cache.h"
 #include "name_highlight.h"
@@ -100,6 +101,38 @@ struct ChangePopover {
     int pane_index = -1, row_index = -1;
 };
 
+// One folder listing in the column view (an ancestor or the child column).
+struct ColumnStripColumnView {
+    std::wstring path;
+    std::wstring title;           // caption; empty = last path segment
+    fs::SnapshotPtr snapshot;
+    // Visible source indices into snapshot (hidden files already filtered).
+    std::shared_ptr<const std::vector<int>> rows;
+    int highlight_row = -1;       // row on the navigation path (index into rows)
+    float scroll_dip = 0.0f;      // used when auto_scroll is false
+    bool auto_scroll = true;      // keep highlight_row centered until the user scrolls
+    bool loading = false;
+    bool error = false;
+};
+
+// Column view of a folder pane: ancestors on the left, the regular list in
+// the middle, and the selected folder's contents on the right.
+struct ColumnStripView {
+    bool enabled = false;         // pane toggle state (header button)
+    bool eligible = false;        // real folder view that can show columns
+    std::vector<ColumnStripColumnView> ancestors; // root -> parent
+    // Contents of the single selected folder. Files, multi-selection and no
+    // selection show no extra column: the details panel covers those.
+    bool has_child = false;
+    ColumnStripColumnView child;
+    std::vector<float> widths_dip; // see ColumnStripWidthDip
+    float scroll_from_right_dip = 0.0f; // ancestor strip scroll (0 = parent visible)
+    int resize_column = -1;       // column id whose divider is being dragged
+    bool hscroll_pressed = false; // ancestor scrollbar thumb is being dragged
+
+    bool Active() const { return enabled && eligible; }
+};
+
 struct PaneViewModel {
     using FilterMap = std::vector<int>;
     using TagDots = std::unordered_map<int, std::vector<D2D1_COLOR_F>>;
@@ -170,6 +203,7 @@ struct PaneViewModel {
     bool focused = true;
     bool marquee_active = false;
     D2D1_RECT_F marquee_rect{};
+    ColumnStripView column_strip;
 
     bool IsRowSelected(int index) const {
         if (index < 0) return false;
@@ -679,7 +713,12 @@ struct HitTestResult {
         SettingsDupOpen,
         SettingsDupGroupDelete,
         SettingsDupDeleteAll,
-        SearchFilter
+        SearchFilter,
+        PaneColumnLayout,
+        ColumnStripRow,      // index = row, sub_index = column id
+        ColumnStripDivider,  // sub_index = column id
+        ColumnStripBlank,    // sub_index = column id
+        ColumnStripHScroll   // ancestor strip scrollbar
     } region = None;
     SidebarAddAction sidebar_action = SidebarAddAction::None;
     int index = -1;          // tab/row/sidebar item/tray batch/tray item.
@@ -764,6 +803,20 @@ public:
                                     float filter_expand = 1.0f) const;
     D2D1_RECT_F PaneViewButtonRect(const D2D1_RECT_F& pane_bounds,
                                    float filter_expand = 1.0f) const;
+    D2D1_RECT_F PaneColumnLayoutRect(const D2D1_RECT_F& pane_bounds,
+                                     float filter_expand = 1.0f) const;
+    // Column view geometry for a pane. When active, PaneBodyBounds replaces
+    // the pane bounds for the regular list (header stays full width).
+    ColumnStripLayout ColumnStripGeometry(const PaneViewModel& vm,
+                                          const D2D1_RECT_F& pane_bounds) const;
+    D2D1_RECT_F PaneBodyBounds(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds) const;
+    float ColumnStripScrollPx(const ColumnStripColumnView& column, float view_h) const;
+    float ColumnStripMaxScrollPx(const ColumnStripColumnView& column, float view_h) const;
+    // Height of the scrolling row area inside a column rect (below its caption).
+    float ColumnStripViewHeight(const D2D1_RECT_F& column_rect) const;
+    // Horizontal scrollbar of the ancestor strip; false when it does not overflow.
+    bool ColumnStripHScrollRects(const ColumnStripLayout& layout, D2D1_RECT_F& track,
+                                 D2D1_RECT_F& thumb) const;
     D2D1_RECT_F PaneNavUpRect(const D2D1_RECT_F& pane_bounds,
                               float filter_expand = 1.0f) const;
     D2D1_RECT_F PaneNavForwardRect(const D2D1_RECT_F& pane_bounds,
@@ -972,6 +1025,14 @@ private:
                         const Theme& theme);
     void DrawPaneEmptyState(const WindowViewModel& vm, const PaneViewModel& pane,
                             const D2D1_RECT_F& bounds, int pane_index, const Theme& theme);
+    void DrawColumnStrip(const WindowViewModel& vm, const PaneViewModel& pane,
+                         const D2D1_RECT_F& bounds, int pane_index, const Theme& theme);
+    void DrawColumnStripColumn(const WindowViewModel& vm, const PaneViewModel& pane,
+                               const ColumnStripColumnView& column, int column_id,
+                               const D2D1_RECT_F& rc, int pane_index, const Theme& theme);
+    void DrawColumnLayoutGlyph(const D2D1_RECT_F& rc, const D2D1_COLOR_F& color);
+    bool HitTestColumnStrip(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
+                            float x, float y, HitTestResult& out) const;
     void DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawSettingsContext(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);

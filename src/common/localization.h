@@ -826,6 +826,7 @@ enum class StringId : UINT {
     ContentMatchesFormat = IDS_CONTENT_MATCHES_FORMAT,
     ContentSortingFormat = IDS_CONTENT_SORTING_FORMAT,
     ContentFilesBusy = IDS_CONTENT_FILES_BUSY,
+    ColumnLayout = IDS_COLUMN_LAYOUT,
     SearchCount = IDS_AUDIT_SEARCHCOUNT,
 };
 

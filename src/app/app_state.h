@@ -76,6 +76,7 @@ constexpr UINT WM_CONTENT_SELECTION = WM_APP + 64;
 constexpr UINT WM_DUPLICATE_SCAN = WM_APP + 58;
 constexpr UINT WM_QUICK_PREVIEW_NAVIGATE = WM_APP + 54;
 constexpr UINT WM_QUICK_PREVIEW_OPEN = WM_APP + 55;
+constexpr UINT WM_QUICK_PREVIEW_COMMAND = WM_APP + 65;  // wParam ui::QuickPreviewAction, lParam bit0 = Shift
 constexpr UINT WM_UPDATE_RESULT = WM_APP + 56;
 constexpr UINT WM_RECYCLE_INFO = WM_APP + 57;
 constexpr UINT WM_DUP_VOLUMES = WM_APP + 59;
@@ -131,6 +132,10 @@ struct AppState {
     ui::NotificationToast notification_toast;
     ui::MainRenderer renderer;
     ui::QuickPreviewWindow quickPreview;
+    // View row the quick preview was anchored to when Delete ran from inside
+    // it; SyncQuickPreview re-anchors there once the listing drops the entry
+    // so the preview steps to the neighbouring file instead of closing.
+    int quickPreviewAnchorView = -1;
 
     app::WindowTabs window_tabs;
     app::Pane* pane = nullptr;          // focused leaf of the current layout tab
@@ -285,6 +290,18 @@ struct AppState {
     bool columnResizing = false;
     int columnResizeIndex = -1;
     int columnResizePane = -1;
+
+    // Column view divider drag and click bookkeeping (app_column_view.cpp).
+    bool stripResizing = false;
+    int stripResizePane = -1;
+    int stripResizeColumn = -1;
+    int stripResizeStartX = 0;
+    float stripResizeStartDip = 0.0f;
+    ULONGLONG stripClickTick = 0;
+    bool stripHScrolling = false;        // ancestor scrollbar thumb drag
+    float stripHScrollStartDip = 0.0f;   // scroll_from_right_dip at press
+    float stripHScrollRatio = 0.0f;      // strip px per thumb px
+    float stripHScrollMaxDip = 0.0f;
 
     bool tabDragPending = false;
     bool tabDragging = false;

@@ -1,5 +1,6 @@
 #include "../common/windows_compat.h"
 #include "file_operation_dialog.h"
+#include "../ops/operation_presentation.h"
 #include "../common/localization.h"
 #include "../common/text_format.h"
 #include "typography.h"
@@ -51,7 +52,7 @@ TransferLabels MakeTransferLabels(const ops::OpStatus& status, bool detailed) {
     labels.pause = status.phase == ops::OpPhase::Paused
         ? l10n::Get(l10n::StringId::OpResume) : l10n::Get(l10n::StringId::OpPause);
     const bool emptying = status.type == ops::OpType::EmptyRecycle;
-    labels.show_pause = !emptying;
+    labels.show_pause = !emptying && status.active;
     labels.cancel = status.active && !emptying
         ? l10n::Get(l10n::StringId::Cancel) : l10n::Get(l10n::StringId::Close);
     return labels;
@@ -232,6 +233,8 @@ public:
                               bool dark, D2D1_COLOR_F accent) {
         owner_ = owner;
         conflict_ = conflict;
+        conflict_.source = path::FriendlyPathText(conflict_.source);
+        conflict_.destination = path::FriendlyPathText(conflict_.destination);
         dark_ = dark;
         accent_ = accent;
         scale_ = static_cast<float>(pulse::compat::WindowDpi(owner)) / 96.0f;
@@ -566,6 +569,7 @@ public:
     bool Show(HWND owner, const ConfirmDialogSpec& spec, bool dark, D2D1_COLOR_F accent) {
         owner_ = owner;
         spec_ = spec;
+        spec_.message = path::FriendlyPathText(spec_.message);
         if (spec_.confirm_text.empty()) spec_.confirm_text = pulse::l10n::Get(pulse::l10n::StringId::ConfirmDefault);
         if (spec_.cancel_text.empty()) spec_.cancel_text = pulse::l10n::Get(pulse::l10n::StringId::Cancel);
         dark_ = dark;
@@ -909,7 +913,7 @@ void FileOperationWindow::SetTheme(bool dark, D2D1_COLOR_F accent) {
 
 void FileOperationWindow::Update(const ops::OpStatus& status) {
     const bool new_task = status.task_id != status_.task_id;
-    status_ = status;
+    status_ = ops::PresentOperationStatus(status);
     if (new_task) {
         speed_history_.clear();
         speed_sample_tick_ = 0;
@@ -1052,7 +1056,11 @@ void FileOperationWindow::Render() {
     const std::wstring src = status_.source_label.empty() ? l10n::Get(l10n::StringId::OpSourceShort).c_str() : status_.source_label;
     const std::wstring dst = status_.destination_label.empty() ? l10n::Get(l10n::StringId::OpDestination).c_str() : status_.destination_label;
     std::wstring subtitle;
-    if (emptying) subtitle = l10n::Get(l10n::StringId::OpEmptyingSub);
+    if (completed || failed) {
+        subtitle = emptying ? title : src;
+        if (!emptying && !status_.destination_label.empty()) subtitle += L" → " + dst;
+    }
+    else if (emptying) subtitle = l10n::Get(l10n::StringId::OpEmptyingSub);
     else if (deleting) subtitle = l10n::Get(l10n::StringId::OpDeletingPrefix).c_str() + src;
     else if (restoring) subtitle = l10n::Get(l10n::StringId::OpRestoringPrefix).c_str() + src;
     else if (moving) subtitle = l10n::Get(l10n::StringId::OpFromPrefix).c_str() + src + l10n::Get(l10n::StringId::OpMoveTo).c_str() + dst;
@@ -1151,14 +1159,14 @@ void FileOperationWindow::Render() {
     const uint64_t remain_bytes = status_.total_bytes > status_.transferred_bytes
         ? status_.total_bytes - status_.transferred_bytes : 0;
     std::wstring items_text;
-    if (failed) items_text = l10n::Get(l10n::StringId::OpZeroItems).c_str();
-    else if (completed) items_text = l10n::Get(l10n::StringId::OpZeroItems).c_str();
+    if (completed) items_text = l10n::Get(l10n::StringId::OpZeroItems).c_str();
+    else if (failed && status_.total_items == 0) items_text = L"—";
     else if (status_.total_items == 0) items_text = l10n::Get(l10n::StringId::OpCalculating).c_str();
     else if (byte_transfer && status_.total_bytes > 0)
         items_text = std::to_wstring(remain_items) + l10n::Get(l10n::StringId::OpCountBytes).c_str()
             + pulse::format::ByteSize(remain_bytes) + L")";
     else items_text = std::to_wstring(remain_items) + l10n::Get(l10n::StringId::OpCountSuffix).c_str();
-    const std::wstring speed_text = emptying || !byte_transfer ? l10n::Get(l10n::StringId::OpNoEstimate).c_str()
+    const std::wstring speed_text = emptying || !byte_transfer ? L"—"
         : completed || failed || paused || waiting ? L"0 B/s"
         : status_.bytes_per_second <= 0.0 ? l10n::Get(l10n::StringId::OpEstimating).c_str()
         : pulse::format::ByteSize(static_cast<uint64_t>(status_.bytes_per_second)) + L"/s";
