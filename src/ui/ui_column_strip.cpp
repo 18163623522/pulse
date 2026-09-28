@@ -93,25 +93,6 @@ float MainRenderer::ColumnStripScrollPx(const ColumnStripColumnView& column, flo
     return std::clamp(scroll, 0.0f, max_scroll);
 }
 
-void MainRenderer::DrawColumnLayoutGlyph(const D2D1_RECT_F& rc, const D2D1_COLOR_F& color) {
-    ID2D1DeviceContext* dc = compositor_ ? compositor_->Dc() : nullptr;
-    if (!dc) return;
-    MakeBrush(dc, color, brAccent_);
-    const float size = 14.0f * scale_;
-    const float cx = std::round((rc.left + rc.right) * 0.5f);
-    const float cy = std::round((rc.top + rc.bottom) * 0.5f);
-    const float stroke = std::max(1.0f, 1.2f * scale_);
-    const D2D1_RECT_F box = D2D1::RectF(cx - size * 0.5f, cy - size * 0.42f,
-                                        cx + size * 0.5f, cy + size * 0.42f);
-    dc->DrawRoundedRectangle(D2D1::RoundedRect(box, 2.0f * scale_, 2.0f * scale_),
-                             brAccent_.get(), stroke);
-    for (const float t : {1.0f / 3.0f, 2.0f / 3.0f}) {
-        const float lx = std::round(box.left + (box.right - box.left) * t) + 0.5f;
-        dc->DrawLine(D2D1::Point2F(lx, box.top), D2D1::Point2F(lx, box.bottom),
-                     brAccent_.get(), stroke);
-    }
-}
-
 void MainRenderer::DrawColumnStrip(const WindowViewModel& vm, const PaneViewModel& pane,
                                    const D2D1_RECT_F& bounds, int pane_index, const Theme& theme) {
     ID2D1DeviceContext* dc = compositor_ ? compositor_->Dc() : nullptr;
@@ -249,7 +230,7 @@ void MainRenderer::DrawColumnStripColumn(const WindowViewModel& vm, const PaneVi
         MakeBrush(dc, dim ? WithAlpha(theme.text, 0.55f) : theme.text, brText_);
         const float tx = ix + icon + 8.0f * scale_;
         const float chevron_w = entry.is_dir ? 18.0f * scale_ : 0.0f;
-        DrawTextEndEllipsis(dc, factory, compositor_->TextFormat(), brText_.get(), entry.name,
+        DrawTextEndEllipsis(dc, factory, compositor_->FileNameFormat(), brText_.get(), entry.name,
                             tx, top, std::max(0.0f, cell.right - tx - chevron_w - 4.0f * scale_),
                             row_height_);
         if (entry.is_dir) {

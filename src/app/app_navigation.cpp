@@ -163,7 +163,7 @@ void OpenWorkspace(AppState& s, int index) {
                 t = Panes(s)[i]->ActiveTab();
             }
             if (t && i < w.pane_views.size()) t->view_mode = w.pane_views[i];
-            if (t) StartLoadingPath(s, *t, pth);
+            if (t) StartLoadingPath(s, *t, pth, PathLoadReason::RestoreSession);
         }
         RememberPath(s, w.root);
     }
@@ -833,6 +833,19 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     tab.virtual_title.clear();
     tab.banner_title.clear();
     tab.banner_message.clear();
+    if (!s.shot.active) {
+        const auto saved = s.appPrefs.folder_views.Find(normalized);
+        const auto mode = saved.value_or(reason == PathLoadReason::RestoreSession
+            ? tab.view_mode : ui::ViewMode::Details);
+        // Migrate older sessions/workspaces so returning later keeps their mode.
+        if (!saved && reason == PathLoadReason::RestoreSession)
+            s.appPrefs.folder_views.Set(normalized, mode);
+        if (tab.view_mode != mode) {
+            tab.view_mode = mode;
+            ++tab.view_generation;
+        }
+        tab.scroll_x = 0.0f;
+    }
     tab.net_readonly = false;
     tab.cache_unix = 0;
     if (tab.snapshot_path != normalized) {

@@ -784,7 +784,7 @@ std::wstring FindGitRoot(const std::wstring& path) {
     return FindGitRootImpl(path);
 }
 
-static std::wstring TabTitle(const std::wstring& path) {
+std::wstring TabTitle(const std::wstring& path) {
     if (path.empty()) return l10n::Get(l10n::StringId::ThisPc);
     std::wstring kind, rest;
     if (ParsePulsePath(path, &kind, &rest)) {
@@ -1391,6 +1391,7 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
     out.header_text = PaneHeaderText(*tab);
     out.filter_text = tab->filter_text;
     out.filter_expand = pane.filter_expand;
+    out.header_controls_opacity = pane.header_animation.opacity;
     out.banner_title = tab->banner_title;
     out.banner_message = tab->banner_message;
     out.banner_kind = tab->net_readonly ? 2 : 0;

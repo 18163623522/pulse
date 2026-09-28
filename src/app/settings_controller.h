@@ -29,6 +29,7 @@ enum class SettingsEffect : uint32_t {
     ChangeTracking = 1u << 8,
     GlobalSearch = 1u << 9,
     ListStyle = 1u << 10,
+    FolderSort = 1u << 11,
 };
 
 constexpr SettingsEffect operator|(SettingsEffect left, SettingsEffect right) noexcept {
@@ -132,7 +133,10 @@ public:
     void WindowEffect(std::wstring_view effect_id);
     void AccentChoice(bool system_choice, uint32_t rgb);
     void RowHeight(int index);
+    void FolderSort(int index);
     void TrayIconSize(int index);
+    void WallpaperLook(int index);
+    void WallpaperBlur(int index);
     void Language(std::wstring_view language_id);
     void Wallpaper(int action);
     void ToggleUi(int index);

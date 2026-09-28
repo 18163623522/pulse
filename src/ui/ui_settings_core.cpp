@@ -15,7 +15,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
     };
     auto draw_card=[&](D2D1_RECT_F r) {
         if(r.bottom<=r.top) return;
-        MakeBrush(dc,theme.fill_input,brFillInput_); MakeBrush(dc,theme.stroke_card,brStrokeCard_);
+        MakeBrush(dc,WithAlpha(theme.surface_card,card_alpha_),brFillInput_); MakeBrush(dc,theme.stroke_card,brStrokeCard_);
         dc->FillRoundedRectangle(D2D1::RoundedRect(r,8*scale_,8*scale_),brFillInput_.get());
         dc->DrawRoundedRectangle(D2D1::RoundedRect(r,8*scale_,8*scale_),brStrokeCard_.get(),1);
     };
@@ -88,12 +88,12 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         for(int i=0;i<3;++i) {
             const auto r=lay.theme_tile[i];auto preview=r;preview.bottom-=22*scale_;
             const bool selected=vm.settings_theme==theme_values[i];
-            MakeBrush(dc,i==0 ? D2D1::ColorF(0xe7ecf2) : D2D1::ColorF(0x20262e),brFillHover_);
+            MakeBrush(dc,i==0 ? HexColor(0xF1F3EE) : HexColor(0x1A1A1A),brFillHover_);
             dc->FillRoundedRectangle(D2D1::RoundedRect(preview,5*scale_,5*scale_),brFillHover_.get());
-            MakeBrush(dc,i==0 ? D2D1::ColorF(0xffffff) : D2D1::ColorF(0x39424d),brFillHover_);
+            MakeBrush(dc,i==0 ? HexColor(0xFFFFFF) : HexColor(0x333333),brFillHover_);
             FillRoundedRect(dc,brFillHover_.get(),preview.left+7*scale_,preview.top+8*scale_,preview.right-preview.left-14*scale_,8*scale_,2*scale_);
             FillRoundedRect(dc,brFillHover_.get(),preview.left+7*scale_,preview.top+21*scale_,14*scale_,preview.bottom-preview.top-28*scale_,2*scale_);
-            if(i==2) {MakeBrush(dc,D2D1::ColorF(0xe7ecf2),brFillHover_); FillRect(dc,brFillHover_.get(),preview.left+7*scale_,preview.top+8*scale_,(preview.right-preview.left)/2-7*scale_,preview.bottom-preview.top-15*scale_);}
+            if(i==2) {MakeBrush(dc,HexColor(0xF1F3EE),brFillHover_); FillRect(dc,brFillHover_.get(),preview.left+7*scale_,preview.top+8*scale_,(preview.right-preview.left)/2-7*scale_,preview.bottom-preview.top-15*scale_);}
             MakeBrush(dc,selected ? theme.accent : IsHovered(vm,H::SettingsTheme,theme_values[i]) ? theme.text_secondary : theme.stroke_card,brStrokeCard_);
             dc->DrawRoundedRectangle(D2D1::RoundedRect(preview,5*scale_,5*scale_),brStrokeCard_.get(),selected ? 2*scale_ : 1);
             if(selected) DrawIconText(preview.right-23*scale_,preview.top+3*scale_,20*scale_,20*scale_,L"\xE73E",L"",theme.accent,0.7f);
@@ -112,7 +112,51 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             control.state.hovered=IsHovered(vm,H::SettingsDropdown,id);
             painter_.DrawButton(control);
         };
-        dropdown(lay.effect_card,lay.effect_choice,I::SettingsWindowEffect,compat::ModernWindows() ? I::SettingsWindowEffectDesc : I::EffectUnavailable,l10n::Get(effects[static_cast<int>(compat::ModernWindows() ? vm.window_effect : WindowEffect::None)]),0);
+        label(lay.effect_card,l10n::Get(I::SettingsWindowEffect),l10n::Get(compat::ModernWindows() ? I::SettingsWindowEffectDesc : I::EffectUnavailable),L"\xE790",lay.effect_card.right-16*scale_);
+        for(int i=0;i<kWindowEffectCount;++i) {
+            const auto r=lay.effect_row[i];
+            auto preview=r;preview.bottom-=22*scale_;
+            const bool enabled=i==0 || compat::ModernWindows();
+            const bool selected=i==static_cast<int>(compat::ModernWindows() ? vm.window_effect : WindowEffect::None);
+            const bool hovered=enabled && IsHovered(vm,H::SettingsEffect,i);
+            const float tint[]={0.0f,0.22f,0.065f,0.16f};
+            auto background=BlendOver(WithAlpha(theme.accent,tint[i]),theme.surface_title);
+            if(!enabled) background=BlendOver(WithAlpha(theme.surface_sheet,0.6f),background);
+            MakeBrush(dc,background,brFillHover_);
+            dc->FillRoundedRectangle(D2D1::RoundedRect(preview,6*scale_,6*scale_),brFillHover_.get());
+            // A small window silhouette explains the material, not a fake DWM surface.
+            dc->PushAxisAlignedClip(preview,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            if(i==1 || i==3) {
+                MakeBrush(dc,WithAlpha(theme.accent,vm.dark ? 0.18f : 0.13f),brFillHover_);
+                dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(preview.right-18*scale_,preview.top+11*scale_),
+                    36*scale_,26*scale_),brFillHover_.get());
+            }
+            const float inset=10*scale_;
+            auto window=D2D1::RectF(preview.left+inset,preview.top+9*scale_,preview.right-inset,preview.bottom-9*scale_);
+            const float plate_alpha=i==1 ? 0.48f : i==3 ? 0.72f : 0.96f;
+            MakeBrush(dc,WithAlpha(theme.surface_card,plate_alpha),brFillInput_);
+            dc->FillRoundedRectangle(D2D1::RoundedRect(window,3*scale_,3*scale_),brFillInput_.get());
+            MakeBrush(dc,WithAlpha(theme.text_secondary,0.30f),brTextSecondary_);
+            FillRoundedRect(dc,brTextSecondary_.get(),window.left+6*scale_,window.top+6*scale_,
+                (std::min)(18*scale_,(window.right-window.left)*0.18f),2*scale_,scale_);
+            MakeBrush(dc,WithAlpha(theme.accent,0.10f),brFillHover_);
+            FillRoundedRect(dc,brFillHover_.get(),window.right-22*scale_,window.top+5*scale_,
+                16*scale_,window.bottom-window.top-10*scale_,2*scale_);
+            dc->PopAxisAlignedClip();
+            MakeBrush(dc,selected ? theme.accent : hovered ? theme.text_secondary : theme.stroke_card,brStrokeCard_);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(preview,6*scale_,6*scale_),brStrokeCard_.get(),
+                selected ? 1.5f*scale_ : scale_);
+            if(selected) {
+                const auto center=D2D1::Point2F(preview.right-9*scale_,preview.bottom-9*scale_);
+                MakeBrush(dc,theme.accent,brAccent_);
+                dc->FillEllipse(D2D1::Ellipse(center,7*scale_,7*scale_),brAccent_.get());
+                DrawIconText(center.x-6*scale_,center.y-6*scale_,12*scale_,12*scale_,
+                    L"\xE73E",L"",theme.accent_text,0.6f);
+            }
+            painter_.DrawText(l10n::Get(effects[i]),D2D1::RectF(r.left,preview.bottom+3*scale_,r.right,r.bottom),
+                compositor_->SmallFormat(),!enabled ? theme.text_disabled : selected ? theme.accent : theme.text_secondary,
+                fluent::HorizontalAlignment::Center);
+        }
         divider(lay.effect_card);
         dropdown(lay.language_card,lay.language_choice,I::SettingsLanguage,I::SettingsLanguageDesc,l10n::Get(languages[vm.settings_language]),1);
         toggle(lay.startup_row[0],I::SettingsLaunch,I::SettingsLaunchDesc,L"\xE7E8",vm.settings_launch_on_startup,1);divider(lay.startup_row[0]);
@@ -122,7 +166,9 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         toggle(lay.performance_row,I::SettingsShowPerformance,I::SettingsShowPerformanceDesc,L"\xE946",vm.settings_show_performance,4);divider(lay.performance_row);
         toggle(lay.list_style_row[0],I::ListSmartDate,I::ListSmartDateDesc,L"\xE787",vm.settings_list_smart_date,17);divider(lay.list_style_row[0]);
         toggle(lay.list_style_row[1],I::ListZebraRows,I::ListZebraRowsDesc,L"\xE8FD",vm.settings_list_zebra_rows,18);divider(lay.list_style_row[1]);
-        toggle(lay.list_style_row[2],I::ListSizeBar,I::ListSizeBarDesc,L"\xE9D2",vm.settings_list_size_bar,19);
+        toggle(lay.list_style_row[2],I::ListSizeBar,I::ListSizeBarDesc,L"\xE9D2",vm.settings_list_size_bar,19);divider(lay.list_style_row[2]);
+        const I folder_sort[]={I::FolderSortTop,I::FolderSortFollow,I::FolderSortMixed};const int folder_sort_values[]={0,1,2};
+        segmented(lay.folder_sort_card,lay.folder_sort_row,folder_sort,folder_sort_values,vm.settings_folder_sort,H::SettingsFolderSort,I::SettingsFolderSort,I::SettingsFolderSortDesc);
         disclosure(lay.disclosure[0],I::SettingsAdvanced,I::SettingsAdvancedDesc,L"\xE713",0,true);
         if(vm.settings_expanded & 1u) {
         draw_card(lay.wallpaper_card);
@@ -166,6 +212,10 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
                               fluent::ButtonKind::Standard, clear });
 
 
+            const I looks[]={I::WallpaperLookSubtle,I::WallpaperLookBalanced,I::WallpaperLookVivid};const int levels[]={0,1,2};
+            draw_card(lay.wallpaper_look_card);segmented(lay.wallpaper_look_card,lay.wallpaper_look_row,looks,levels,vm.wallpaper_look,H::SettingsWallpaperLook,I::SettingsWallpaperLook,I::SettingsWallpaperLookDesc);
+            const I blurs[]={I::WallpaperBlurOff,I::WallpaperBlurLight,I::WallpaperBlurStrong};
+            draw_card(lay.wallpaper_blur_card);segmented(lay.wallpaper_blur_card,lay.wallpaper_blur_row,blurs,levels,vm.wallpaper_blur,H::SettingsWallpaperBlur,I::SettingsWallpaperBlur,I::SettingsWallpaperBlurDesc);
             const I sizes[]={I::SettingsTraySmall,I::SettingsTrayStandard,I::SettingsTrayLarge};const int icons[]={40,48,56};
             draw_card(lay.tray_icon_card);segmented(lay.tray_icon_card,lay.tray_icon_row,sizes,icons,vm.settings_tray_icon,H::SettingsTrayIcon,I::SettingsTrayIcon,I::SettingsTrayIconDesc);
             draw_card(lay.startup_row[2]);toggle(lay.startup_row[2],I::SettingsOpenFolders,I::SettingsOpenFoldersDesc,L"\xE8B7",vm.settings_open_folders,3);

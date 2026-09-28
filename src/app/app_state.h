@@ -19,6 +19,7 @@
 #include "app_worker.h"
 #include "places.h"
 #include "details_meta.h"
+#include "folder_sizes.h"
 #include "context_menu_prefs.h"
 #include "context_menu_controller.h"
 #include "shell_verbs.h"
@@ -77,6 +78,7 @@ constexpr UINT WM_DUPLICATE_SCAN = WM_APP + 58;
 constexpr UINT WM_QUICK_PREVIEW_NAVIGATE = WM_APP + 54;
 constexpr UINT WM_QUICK_PREVIEW_OPEN = WM_APP + 55;
 constexpr UINT WM_QUICK_PREVIEW_COMMAND = WM_APP + 65;  // wParam ui::QuickPreviewAction, lParam bit0 = Shift
+constexpr UINT WM_SHOW_RELEASE_NOTES = WM_APP + 66;  // "updated" toast clicked
 constexpr UINT WM_UPDATE_RESULT = WM_APP + 56;
 constexpr UINT WM_RECYCLE_INFO = WM_APP + 57;
 constexpr UINT WM_DUP_VOLUMES = WM_APP + 59;
@@ -194,6 +196,9 @@ struct AppState {
     ULONGLONG next_update_progress_paint = 0;
     ULONGLONG next_update_check = GetTickCount64() + 15000;
     std::wstring notified_update_version;
+    int settingsReleaseExpanded = 0;   // Settings > About release-note row that is open, -1 none
+    std::wstring whatsNewVersion;      // set once after an upgrade; toast shown at whatsNewAt
+    ULONGLONG whatsNewAt = 0;
     app::TabController tabs;
     app::TrayController tray_controller;
     GlobalSearchHotkey globalSearchHotkey;
@@ -209,6 +214,7 @@ struct AppState {
     int tagAdsLastFirstRow = -1;
     int tagAdsLastLastRow = -1;
     index::IndexClient index;
+    app::FolderSizes folderSizes;
     ChangeTrackingUi changes;
     index::NetworkAgentClient networkIndex;
     index::ContentSearchClient contentSearch;
@@ -531,30 +537,72 @@ struct AppState {
     float pinGapLineY = 0.0f;
     bool pinGapVisible = false;
 
-    // Staging tray card deck: eased per-card poses keyed by item path. The
-    // tick below smooths them toward layout targets; the renderer receives
-    // the current values through WindowViewModel::tray_deck and adds the
-    // deterministic per-card scatter jitter.
+    // Staging tray card stack: per-card animation state keyed by item path.
+    // TickTrayDeck advances it on the 16 ms UI timer; the renderer receives
+    // the current pose through WindowViewModel::tray_deck (TrayStackGeometry
+    // maps it to pixels for both drawing and hit testing).
+    enum class TrayMotion : uint8_t { None, ThrowOut, ThrowBack, Spring };
+    enum class TrayExit : uint8_t { Fade, Tumble, Return };
     struct TrayCardAnim {
         std::wstring name;      // cached so exiting ghosts can still draw
+        std::wstring folder;
         DWORD attrs = 0;
         bool is_dir = false;
         bool missing = false;
-        bool ghost = false;     // removed from the tray, fading out
+        bool cut = false;
+        uint64_t size = 0;
+        bool ghost = false;     // left the stack window, playing its exit
+        TrayExit exit = TrayExit::Fade;
         ULONGLONG exit_started = 0;
+        ULONGLONG exit_delay = 0;   // ms, staggered clear
         float exit_opacity = 1.0f;
-        int layout_count = 1;
-        float slot = 0.0f;      // deck slot (0 = center); eases toward layout
-        float hover = 0.0f;     // 0..1 raise + straighten
-        float appear = 0.0f;    // 0 = just collected, eases to 1
+        float depth = 0.0f;     // eases toward the window index (0 = top)
+        float hover = 0.0f;     // 0..1 top-card lift + close badge
+        float appear = 1.0f;    // 0 = dropping in, eases to 1
         float opacity = 1.0f;
+        float fly = 0.0f;       // card widths
+        float dx = 0.0f;        // DIPs
+        float dy = 0.0f;
+        float angle = 0.0f;     // degrees
+        float shrink = 1.0f;
+        TrayMotion motion = TrayMotion::None;
+        ULONGLONG motion_started = 0;
+        float from_fly = 0.0f, from_dx = 0.0f, from_dy = 0.0f, from_angle = 0.0f;
+        float to_fly = 0.0f, to_dy = 0.0f, to_angle = 0.0f;
+    };
+    struct TrayPuff {
+        ULONGLONG start = 0;
+        float angle = 0.0f;
+        float dist = 0.0f;
+        float size = 1.0f;
+    };
+    struct TrayExitHint {
+        TrayExit exit = TrayExit::Tumble;
+        ULONGLONG delay = 0;
+    };
+    // Press-and-hold on the top card: follow the pointer, fling to the back.
+    struct TrayDrag {
+        bool pending = false;   // button down on the top card, not moved yet
+        bool active = false;    // moved past the slop: card follows the pointer
+        std::wstring path;
+        int x0 = 0, y0 = 0;
+        int last_x = 0;
+        ULONGLONG last_t = 0;
+        float vx = 0.0f;        // DIP/ms, smoothed
+        float dx = 0.0f;        // DIPs
+        float dy = 0.0f;
     };
     std::unordered_map<std::wstring, TrayCardAnim> trayCards;
-    float trayOpen = 0.0f;      // eased drag-over scatter boost
+    std::vector<TrayPuff> trayPuffs;
+    std::unordered_map<std::wstring, TrayExitHint> trayExitHints; // consumed by the next tick
+    TrayDrag trayDrag;
+    std::wstring trayRaisePath; // stepping back: this card drops in on top
+    float trayOpen = 0.0f;      // eased drag-over highlight
+    float traySpread = 0.0f;    // eased stack fan-out while hovered
     ULONGLONG trayLastTick = 0;
-    int trayDeckOffset = 0;     // window start into the newest-first item list
+    int trayDeckOffset = 0;     // cyclic index of the top card (newest-first order)
     int trayWheelAccum = 0;     // sub-notch wheel delta accumulator
-    size_t trayDeckLastTotal = 0; // collect detection (window resets to newest)
+    size_t trayDeckLastTotal = 0; // collect detection (stack resets to newest)
 
     // Right details panel (view-menu toggle, session-persisted).
     bool showDetailsPanel = false;

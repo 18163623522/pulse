@@ -6,6 +6,7 @@
 #include "../ui/ui_renderer.h"
 #include "places.h"
 #include "column_view_model.h"
+#include "pane_header_animation.h"
 #include "../index/content_result_store.h"
 #include <map>
 #include <memory>
@@ -240,6 +241,7 @@ struct Pane {
     bool focused = false;
     bool target = false;
     float filter_expand = 0.0f;
+    PaneHeaderAnimation header_animation;
     float filter_animation_from = 0.0f;
     float filter_animation_target = 0.0f;
     uint64_t filter_animation_start = 0;
@@ -338,6 +340,7 @@ std::unique_ptr<LayoutTab> MakeSingleLayoutTab(const std::wstring& path,
                                                const Tab* source = nullptr);
 void RebuildLayoutRoot(LayoutTab& tab);
 std::wstring LayoutTabTitle(const LayoutTab& tab);
+std::wstring TabTitle(const std::wstring& path);
 void FillWindowTabStrip(ui::WindowViewModel& vm, const WindowTabs& tabs);
 
 // Pull every group's members into one contiguous run (group order by first

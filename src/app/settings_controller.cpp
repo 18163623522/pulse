@@ -263,17 +263,15 @@ void SettingsController::WindowEffect(std::wstring_view effect_id) {
 
 void SettingsController::AccentChoice(bool system_choice, uint32_t rgb) {
     if (!prefs_) return;
-    uint32_t current = 0;
-    const bool following = !ParseAccentRgb(prefs_->accent_rgb, current);
-    if (system_choice && following) return;
     std::wstring next;
-    if (!system_choice && (following || current != rgb)) {
+    if (!system_choice) {
         wchar_t hex[8]{};
         swprintf_s(hex, L"%06X", rgb & 0xFFFFFFu);
         next = hex;
     }
-    if (prefs_->accent_rgb == next) return;
+    if (prefs_->accent_rgb == next && prefs_->accent_follow_system == system_choice) return;
     prefs_->accent_rgb = std::move(next);
+    prefs_->accent_follow_system = system_choice;
     SaveAndApply(SettingsEffect::Accent);
 }
 
@@ -283,10 +281,29 @@ void SettingsController::RowHeight(int index) {
         SaveAndApply(SettingsEffect::RowHeight);
 }
 
+void SettingsController::FolderSort(int index) {
+    static constexpr int values[] = {0, 1, 2};
+    if (prefs_ && SelectValue(index, values, prefs_->folder_sort_mode))
+        SaveAndApply(SettingsEffect::FolderSort);
+}
+
 void SettingsController::TrayIconSize(int index) {
     static constexpr int values[] = {40, 48, 56};
     if (prefs_ && SelectValue(index, values, prefs_->tray_icon_size))
         SaveAndApply(SettingsEffect::TrayDeckIcon);
+}
+
+// Both only change how the next frame is painted; the caller invalidates.
+void SettingsController::WallpaperLook(int index) {
+    static constexpr int values[] = {0, 1, 2};
+    if (prefs_ && SelectValue(index, values, prefs_->wallpaper_look))
+        SaveAndApply(SettingsEffect::None);
+}
+
+void SettingsController::WallpaperBlur(int index) {
+    static constexpr int values[] = {0, 1, 2};
+    if (prefs_ && SelectValue(index, values, prefs_->wallpaper_blur))
+        SaveAndApply(SettingsEffect::None);
 }
 
 void SettingsController::Language(std::wstring_view language_id) {

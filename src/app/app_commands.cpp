@@ -1,5 +1,8 @@
+#include "../ui/shortcut_help.h"
 // app_commands.cpp — extracted from app_main.cpp.
 #include "quick_access.h"
+#include "app_column_view.h"
+#include "../ui/toolbar_layout.h"
 #include "app_internal.h"
 #include "global_search_controller.h"
 #include "../ui/lumatext_renderer.h"
@@ -16,6 +19,7 @@
 #include "../common/path_utils.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
+#include "entry_sort.h"
 #include "session.h"
 #include "context_menu.h"
 #include "app_change_tracking.h"
@@ -466,6 +470,11 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             SetSort(s, tab->sort_column, cmd == app::CmdSortAscending
                 ? ui::SortDirection::Asc : ui::SortDirection::Desc);
         break;
+    case app::CmdFolderSortTop:
+    case app::CmdFolderSortFollow:
+    case app::CmdFolderSortMixed:
+        s.settings.FolderSort(cmd - app::CmdFolderSortTop);
+        break;
     case app::CmdOpen: OpenSelected(s); break;
     case app::CmdViewRecentChanges:
         if (const auto* tab = ActiveTab(s)) {
@@ -583,6 +592,12 @@ void DispatchMenuCommand(AppState& s, int cmd) {
         ShowTagPicker(s, point);
         break;
     }
+    case app::CmdShortcutHelp:
+        ui::ShowShortcutHelp(s.hwnd, s.darkMode, s.accentColor);
+        break;
+    case app::CmdColumnLayout:
+        ToggleColumnLayout(s,-1);
+        break;
     case app::CmdDetailsPanel:
         s.showDetailsPanel = !s.showDetailsPanel;
         s.renderer.SetDetailsPanelVisible(s.showDetailsPanel);
@@ -998,6 +1013,7 @@ void ShowBackgroundContextMenu(AppState& s, POINT screen_pt) {
     view_options.view_mode = tab->view_mode;
     view_options.sort_column = tab->sort_column;
     view_options.sort_direction = tab->sort_direction;
+    view_options.folder_sort = s.appPrefs.folder_sort_mode;
     view_options.details_panel = s.showDetailsPanel;
     view_options.can_sort = kind != L"starred" && kind != L"recent";
     view_options.indexed_search = (kind == L"search" || kind == L"saved-search") && !tab->content_results;
@@ -1040,9 +1056,7 @@ void ShowBackgroundContextMenu(AppState& s, POINT screen_pt) {
 
 void ShowNewDropdown(AppState& s) {
     if (!EnsureMenu(s)) return;
-    D2D1_RECT_F addr = s.renderer.AddressBarRect((float)s.compositor.Width());
-    POINT pt{ (LONG)(addr.right + s.renderer.Margin()),
-              (LONG)(s.renderer.TitleBarHeight() + s.renderer.ToolbarHeight()) };
+    const auto anchor = s.renderer.NewCommandRect((float)s.compositor.Width()); POINT pt{(LONG)anchor.left, (LONG)anchor.bottom};
     ClientToScreen(s.hwnd, &pt);
     int cmd = s.menu->TrackPopup(pt, app::BuildNewMenu());
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
@@ -1052,9 +1066,7 @@ void ShowNewDropdown(AppState& s) {
 // Stage 1B-2: OLE drag & drop wiring.
 void ShowSplitDropdown(AppState& s) {
     if (!EnsureMenu(s)) return;
-    D2D1_RECT_F addr = s.renderer.AddressBarRect((float)s.compositor.Width());
-    POINT pt{ (LONG)(addr.right + 220.0f * s.scale),
-              (LONG)(s.renderer.TitleBarHeight() + s.renderer.ToolbarHeight()) };
+    const auto anchor = s.renderer.SplitCommandRect((float)s.compositor.Width()); POINT pt{(LONG)anchor.left, (LONG)anchor.bottom};
     ClientToScreen(s.hwnd, &pt);
     int cmd = s.menu->TrackPopup(pt, app::BuildSplitMenu(static_cast<int>(LayoutOf(s))));
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
@@ -1264,7 +1276,9 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
 // Drop groups with no remaining members (after mass closes / leave operations).
 void SetViewMode(AppState& s, ui::ViewMode mode) {
     app::Tab* tab = ActiveTab(s);
-    if (!tab || tab->view_mode == mode) return;
+    if (!tab) return;
+    if (s.appPrefs.folder_views.Set(tab->current_path, mode)) s.appPrefs.Save();
+    if (tab->view_mode == mode) return;
     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
     tab->view_mode = mode;
     ++tab->view_generation;
@@ -1292,8 +1306,78 @@ void ShowViewDropdown(AppState& s, int pane_index) {
     const D2D1_RECT_F button = s.renderer.PaneViewButtonRect(paneRect, filterExpand);
     POINT anchor{ static_cast<LONG>(button.left), static_cast<LONG>(button.bottom) };
     ClientToScreen(s.hwnd, &anchor);
-    const int cmd = s.menu->TrackPopup(anchor, app::BuildViewMenu(tab->view_mode, s.showDetailsPanel));
+    auto items = app::BuildViewMenu(tab->view_mode, s.showDetailsPanel);
+    items.back().separator_after=true;
+    items.push_back(app::BuildShortcutHints());
+    const int cmd = s.menu->TrackPopup(anchor, items);
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
+}
+
+void ShowSortDropdown(AppState& s) {
+    if (!EnsureMenu(s)) return;
+    auto* tab = ActiveTab(s);
+    if (!tab) return;
+    std::wstring kind;
+    app::ParsePulsePath(tab->current_path, &kind, nullptr);
+    app::BackgroundViewOptions options;
+    options.sort_column = tab->sort_column;
+    options.sort_direction = tab->sort_direction;
+    options.folder_sort = s.appPrefs.folder_sort_mode;
+    options.can_sort = kind != L"starred" && kind != L"recent";
+    options.indexed_search = (kind == L"search" || kind == L"saved-search") && !tab->content_results;
+    options.show_path = kind == L"search" || kind == L"saved-search" || kind == L"recycle";
+    const float width = static_cast<float>(s.compositor.Width());
+    const float left = s.renderer.EffectiveSidebarWidth(width);
+    const auto layout = ui::MakeToolbarLayout(width,s.scale,s.renderer.TitleBarHeight(),s.renderer.Margin(),
+        s.renderer.NewButtonWidthPx(width-left < 600*s.scale),left);
+    POINT anchor{static_cast<LONG>(layout.sort.left),static_cast<LONG>(layout.sort.bottom)};
+    ClientToScreen(s.hwnd,&anchor);
+    const int cmd = s.menu->TrackPopup(anchor,app::BuildSortMenu(options));
+    if (cmd != app::CmdNone) DispatchMenuCommand(s,cmd);
+}
+
+void ShowToolbarMore(AppState& s) {
+    if (!EnsureMenu(s)) return;
+    auto* tab=ActiveTab(s);
+    if (!tab) return;
+    std::vector<ui::FluentMenuItem> items;
+    const int commands[]={app::CmdCut,app::CmdCopy,app::CmdPaste,app::CmdRename,app::CmdDelete};
+    const l10n::StringId labels[]={l10n::StringId::Cut,l10n::StringId::Copy,l10n::StringId::Paste,
+        l10n::StringId::Rename,l10n::StringId::Delete};
+    const wchar_t* glyphs[]={L"\xE8C6",L"\xE8C8",L"\xE77F",L"\xE8AC",L"\xE74D"};
+    const wchar_t* shortcuts[]={L"Ctrl+X",L"Ctrl+C",L"Ctrl+V",L"F2",L"Delete"};
+    for (int i=0;i<5;++i) {
+        ui::FluentMenuItem item;
+        item.command=commands[i]; item.text=l10n::Get(labels[i]); item.glyph=glyphs[i];
+        item.shortcut=shortcuts[i];
+        item.enabled=i==2 || tab->SelectedCount()>0;
+        items.push_back(std::move(item));
+    }
+    items.back().separator_after=true;
+    ui::FluentMenuItem split;
+    split.text=l10n::Get(l10n::StringId::SplitLayout);
+    split.children=app::BuildSplitMenu(-1);
+    items.push_back(std::move(split));
+    ui::FluentMenuItem preview;
+    preview.command=app::CmdDetailsPanel;
+    preview.text=l10n::Get(l10n::StringId::DetailsPane);
+    preview.checked=s.showDetailsPanel;
+    items.push_back(std::move(preview));
+    ui::FluentMenuItem column;
+    column.command=app::CmdColumnLayout;
+    column.text=l10n::Get(l10n::StringId::ColumnLayout);
+    column.checked=tab->column_layout;
+    column.separator_after=true;
+    items.push_back(std::move(column));
+    items.push_back(app::BuildShortcutHints());
+    const float width=static_cast<float>(s.compositor.Width());
+    const float left=s.renderer.EffectiveSidebarWidth(width);
+    const auto layout=ui::MakeToolbarLayout(width,s.scale,s.renderer.TitleBarHeight(),s.renderer.Margin(),
+        s.renderer.NewButtonWidthPx(true),left);
+    POINT anchor{static_cast<LONG>(layout.overflow.left),static_cast<LONG>(layout.overflow.bottom)};
+    ClientToScreen(s.hwnd,&anchor);
+    const int cmd=s.menu->TrackPopup(anchor,items);
+    if (cmd!=app::CmdNone) DispatchMenuCommand(s,cmd);
 }
 
 void ShowAdvancedSearch(AppState& s, bool require_scope) {
@@ -1395,28 +1479,23 @@ void ShowSearchFilterMenu(AppState& s, int chip, RECT control_rect) {
 }
 
 void ShowOmnibar(AppState& s, OmnibarMode mode) {
-    if (!EnsureMenu(s)) {
-        if (mode == OmnibarMode::Path) ShowAddressEditor(s);
+    // Editing a path is navigation, not a palette search with an empty-result row.
+    if (mode == OmnibarMode::Path) {
+        ShowAddressEditor(s);
         return;
     }
+    if (!EnsureMenu(s)) return;
     if (s.addressEditing) HideAddressEditor(s, false);
     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
     if (!s.tagRenameId.empty()) HideTagRenameOverlay(s, true);
     if (s.filterEditing) HideFilterEditor(s, true);
 
-    app::Tab* tab = ActiveTab(s);
     std::wstring prefill;
     bool select_all = true;
     bool hover_first = true;
     if (mode == OmnibarMode::Command) {
         prefill = L">";
         select_all = false;
-    } else if (mode == OmnibarMode::Path) {
-        hover_first = false;
-        if (tab) {
-            prefill = ClipboardPath(tab->current_path);
-            if (prefill.empty()) prefill = l10n::Get(l10n::StringId::ThisPc);
-        }
     }
 
     s.addressEditing = true;
@@ -1598,17 +1677,19 @@ bool PickFolder(HWND owner, std::wstring& path, const wchar_t* title) {
     return !path.empty();
 }
 
-D2D1_COLOR_F ResolveAccentColor(const app::AppPrefs& prefs) {
+D2D1_COLOR_F ResolveAccentColor(const app::AppPrefs& prefs, bool dark) {
     uint32_t rgb = 0;
     if (app::ParseAccentRgb(prefs.accent_rgb, rgb))
         return ui::HexColor(rgb);
-    return ui::GetAccentColor();
+    return dark || prefs.accent_follow_system ? ui::GetAccentColor() : ui::HexColor(0x527D70);
 }
 
 void ApplyAccentFromPrefs(AppState& s, bool snap_picker) {
     uint32_t rgb = 0;
-    const bool follow = !app::ParseAccentRgb(s.appPrefs.accent_rgb, rgb);
-    s.accentColor = ResolveAccentColor(s.appPrefs);
+    const bool custom = app::ParseAccentRgb(s.appPrefs.accent_rgb, rgb);
+    const bool follow = !custom && (s.darkMode || s.appPrefs.accent_follow_system);
+    if (!custom && !follow) rgb = 0x527D70;
+    s.accentColor = ResolveAccentColor(s.appPrefs, s.darkMode);
     s.globalSearchWindow.SetAppearance(s.darkMode, ui::WindowEffectFromId(s.appPrefs.window_effect),
         s.appPrefs.background_image, s.accentColor);
     s.bloom_accent.SetSelection(follow, rgb, snap_picker);
@@ -1805,6 +1886,15 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
     if (app::HasEffect(effects, app::SettingsEffect::ListStyle))
         s.renderer.SetListStyle(s.appPrefs.list_smart_date, s.appPrefs.list_zebra_rows,
                                 s.appPrefs.list_size_bar);
+    if (app::HasEffect(effects, app::SettingsEffect::FolderSort)) {
+        app::SetFolderSortMode(app::FolderSortModeFromInt(s.appPrefs.folder_sort_mode));
+        // Cached snapshots hold the previous order; drop and re-sort what is visible.
+        for (const auto& path : VisibleFolderPaths(s)) {
+            s.store.MarkDirty(path);
+            RefreshPath(s, path, RefreshReason::Explicit);
+        }
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+    }
     if (app::HasEffect(effects, app::SettingsEffect::TrayDeckIcon))
         s.renderer.SetTrayIconDip(static_cast<float>(s.appPrefs.tray_icon_size));
     if (app::HasEffect(effects, app::SettingsEffect::TrayVisibility))
@@ -1855,6 +1945,7 @@ void SetThemeMode(AppState& s, int mode) {
     s.appPrefs.Save();
     s.themeOverride = mode == 1 ? ui::ThemeMode::Light : mode == 2 ? ui::ThemeMode::Dark : ui::ThemeMode::Auto;
     s.darkMode = ui::ShouldUseDarkMode(s.themeOverride);
+    ApplyAccentFromPrefs(s, true);
     ApplyAppWindowChrome(s);
     if (s.editBrush) {
         DeleteObject(s.editBrush);

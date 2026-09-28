@@ -57,9 +57,15 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
         details_viewport_ = {};
         details_preview_ready_ = false;
     }
-    // Same surface as the list; a left rule separates the column.
+    // The inspector stays an independent right-hand card, with its own scroll
+    // and splitter. File-pane opacity must not fade these controls.
+    const float cardRadius = theme.radius_control * s;
+    // Share the sidebar sheet so both sides retain the same transparency.
     MakeBrush(dc, theme.stroke_card, brStrokeCard_);
-    FillRect(dc, brStrokeCard_.get(), panel.left, panel.top, 1.0f, panel.bottom - panel.top);
+    dc->DrawRoundedRectangle(D2D1::RoundedRect(
+        D2D1::RectF(panel.left + 0.5f * s, panel.top + 0.5f * s,
+                    panel.right - 0.5f * s, panel.bottom - 0.5f * s),
+        cardRadius, cardRadius), brStrokeCard_.get(), 1.0f * s);
 
     fluent::SplitterSpec resizeSplitter;
     resizeSplitter.bounds = D2D1::RectF(panel.left - 4.0f * s, panel.top,

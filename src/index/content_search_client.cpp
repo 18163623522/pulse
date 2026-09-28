@@ -258,7 +258,7 @@ bool ContentSearchClient::EnsurePersistent() {
     persistent_token_ = NewToken();
     const auto exe = ExePath();
     std::wstring command = L"\"" + exe + (mode_ == ContentAgentMode::Instant ? L"\" --content-instant-agent " : read_only_ ? L"\" --content-index-observer " : L"\" --content-index-agent ") + persistent_token_ + L" " + std::to_wstring(GetCurrentProcessId());
-    STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION created{};
+    STARTUPINFOW startup{sizeof(startup)}; startup.dwFlags = STARTF_FORCEOFFFEEDBACK; PROCESS_INFORMATION created{};
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startup, &created)) {
         std::lock_guard lock(state_mu_); status_.error = GetLastError(); return false;
     }
@@ -422,7 +422,7 @@ void ContentSearchClient::Run(ContentSearchRequest request, const std::shared_pt
     } else {
         const auto exe = ExePath(); token = NewToken();
         std::wstring command = L"\"" + exe + L"\" --content-agent " + token;
-        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION created{};
+        STARTUPINFOW startup{sizeof(startup)}; startup.dwFlags = STARTF_FORCEOFFFEEDBACK; PROCESS_INFORMATION created{};
         if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, nullptr, &startup, &created)) {
             fail(GetLastError()); return;
         }

@@ -53,6 +53,8 @@ void AppPrefs::ResetToDefaults() {
     list_smart_date = true;
     list_zebra_rows = true;
     list_size_bar = false;
+    folder_sort_mode = 0;
+    folder_views.Clear();
     search_pinyin = true;
     global_search_enabled = false;
     global_search_modifiers = 1;
@@ -66,12 +68,15 @@ void AppPrefs::ResetToDefaults() {
     language = L"system";
     window_effect = L"mica-alt";
     background_image.clear();
+    wallpaper_look = 1;
+    wallpaper_blur = 1;
     row_height = 34;
     sidebar_width = 224;
     address_search_current = false;
     address_search_content = false;
     tray_icon_size = 48;
     accent_rgb.clear();
+    accent_follow_system = false;
     custom_tag_colors.clear();
     duplicate_scan_scope = 0;
     duplicate_scan_folder.clear();
@@ -103,6 +108,8 @@ std::wstring AppPrefs::ToJson() const {
     out += list_zebra_rows ? L"true" : L"false";
     out += L",\n  \"list_size_bar\":";
     out += list_size_bar ? L"true" : L"false";
+    out += L",\n  \"folder_sort_mode\":";
+    out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
     out += L",\n  \"show_hidden_files\":";
     out += show_hidden_files ? L"true" : L"false";
     out += L",\n  \"show_protected_os_files\":";
@@ -135,13 +142,18 @@ std::wstring AppPrefs::ToJson() const {
     out += L",\n  \"address_search_content\":" + std::to_wstring(address_search_content);
     out += L",\n  \"tray_icon_size\":";
     out += std::to_wstring(tray_icon_size);
+    out += L",\n  \"wallpaper_look\":";
+    out += std::to_wstring(wallpaper_look);
+    out += L",\n  \"wallpaper_blur\":";
+    out += std::to_wstring(wallpaper_blur);
     out += L",\n  \"accent_rgb\":\"";
     {
         std::wstring escaped_accent;
         pulse::json::Escape(accent_rgb, escaped_accent);
         out += escaped_accent;
     }
-    out += L"\",\n  \"custom_tag_colors\":[";
+    out += L"\",\n  \"accent_follow_system\":" + std::to_wstring(accent_follow_system);
+    out += L",\n  \"custom_tag_colors\":[";
     for (size_t i = 0; i < custom_tag_colors.size(); ++i) {
         wchar_t hex[8]{};
         swprintf_s(hex, L"%06X", custom_tag_colors[i] & 0x00FFFFFFu);
@@ -164,12 +176,21 @@ std::wstring AppPrefs::ToJson() const {
         pulse::json::Escape(duplicate_scan_drive, escaped);
         out += escaped;
     }
-    out += L"\"\n}\n";
+    out += L"\",\n  \"last_seen_version\":\"";
+    {
+        std::wstring escaped;
+        pulse::json::Escape(last_seen_version, escaped);
+        out += escaped;
+    }
+    out += L"\"";
+    folder_views.AppendJson(out);
+    out += L"\n}\n";
     return out;
 }
 
 bool AppPrefs::FromJson(const std::wstring& json) {
     if (json.empty()) return false;
+    folder_views.ReadJson(json);
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
@@ -179,6 +200,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     list_smart_date = pulse::json::ExtractBool(json, L"list_smart_date", true);
     list_zebra_rows = pulse::json::ExtractBool(json, L"list_zebra_rows", true);
     list_size_bar = pulse::json::ExtractBool(json, L"list_size_bar", false);
+    folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
+    if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
     search_pinyin = pulse::json::ExtractBool(json, L"search_pinyin", true);
     global_search_enabled = pulse::json::ExtractBool(json, L"global_search_enabled", false);
     const int modifiers = pulse::json::ExtractInt(json, L"global_search_modifiers", 1);
@@ -211,7 +234,12 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     if (row_height < 24 || row_height > 48) row_height = 34;
     tray_icon_size = pulse::json::ExtractInt(json, L"tray_icon_size", 48);
     if (tray_icon_size < 32 || tray_icon_size > 64) tray_icon_size = 48;
+    wallpaper_look = pulse::json::ExtractInt(json, L"wallpaper_look", 1);
+    if (wallpaper_look < 0 || wallpaper_look > 2) wallpaper_look = 1;
+    wallpaper_blur = pulse::json::ExtractInt(json, L"wallpaper_blur", 1);
+    if (wallpaper_blur < 0 || wallpaper_blur > 2) wallpaper_blur = 1;
     accent_rgb = pulse::json::ExtractString(json, L"accent_rgb");
+    accent_follow_system = pulse::json::ExtractInt(json, L"accent_follow_system", 0) != 0;
     uint32_t accent_parsed = 0;
     if (!accent_rgb.empty() && ParseAccentRgb(accent_rgb, accent_parsed)) {
         wchar_t hex[8]{};
@@ -234,6 +262,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     if (duplicate_scan_scope < 0 || duplicate_scan_scope > 2) duplicate_scan_scope = 0;
     duplicate_scan_folder = pulse::json::ExtractString(json, L"duplicate_scan_folder");
     duplicate_scan_drive = pulse::json::ExtractString(json, L"duplicate_scan_drive");
+    last_seen_version = pulse::json::ExtractString(json, L"last_seen_version");
     return true;
 }
 
@@ -489,8 +518,10 @@ bool AppPrefs::Load() {
         return false;
     }
     std::wstring json;
-    if (ReadUtf8File(dir + L"\\app.json", json) && !json.empty())
+    if (ReadUtf8File(dir + L"\\app.json", json) && !json.empty()) {
+        had_file = true;
         FromJson(json);
+    }
     launch_on_startup = ReadLaunchOnStartup();
     open_folders_in_pulse = ReadFolderOpen();
     // Repair older installs that wrote open\command but left shell default as none.

@@ -34,6 +34,7 @@
 #include "details_meta.h"
 #include "context_menu_prefs.h"
 #include "app_prefs.h"
+#include "entry_sort.h"
 #include "saved_search.h"
 #include "search_query.h"
 #include "settings_controller.h"
@@ -317,6 +318,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         ProbePinnedNetworks(*s);
         s->ctxMenuPrefs.Load();
         s->appPrefs.Load();
+        NoteRunningVersion(*s);
         if (!s->shot.active && s->appPrefs.theme_mode >= 0) {
             s->themeOverride = s->appPrefs.theme_mode == 1 ? ui::ThemeMode::Light :
                 s->appPrefs.theme_mode == 2 ? ui::ThemeMode::Dark : ui::ThemeMode::Auto;
@@ -357,6 +359,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->renderer.SetRowHeightDip(static_cast<float>(s->appPrefs.row_height));
         s->renderer.SetListStyle(s->appPrefs.list_smart_date, s->appPrefs.list_zebra_rows,
                                  s->appPrefs.list_size_bar);
+        app::SetFolderSortMode(app::FolderSortModeFromInt(s->appPrefs.folder_sort_mode));
         s->renderer.SetSidebarWidthDip(static_cast<float>(s->appPrefs.sidebar_width));
         s->renderer.SetTrayIconDip(static_cast<float>(s->appPrefs.tray_icon_size));
         ApplyAccentFromPrefs(*s, true);
@@ -860,6 +863,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             SyncUiTimerRate(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
             bool dirty = false;
             if (TickChangeTracking(*s)) dirty = true;
+            if (s->folderSizes.TakeChanged()) dirty = true;
             DrainDirNotifies(*s);
             const ULONGLONG now = GetTickCount64();
             TickUpdates(*s, now);
@@ -903,6 +907,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             // Search affordance: expand only the focused pane, then reveal
             // the hosted edit once it has enough room for stable text layout.
             for (auto& pane : Panes(*s)) {
+                if (pane->header_animation.Tick(pane.get() == s->pane, now))
+                    dirty = true;
                 if (app::TickFilterAnimation(*pane, s->filterEditing && pane.get() == s->pane, now))
                     dirty = true;
             }
@@ -1013,7 +1019,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             SetCursor(LoadCursorW(nullptr, vertical ? IDC_SIZEWE : IDC_SIZENS));
             return TRUE;
         }
-        if (hit.region == ui::HitTestResult::FilterClear ||
+        if (hit.region == ui::HitTestResult::RowFolderSize ||
+            hit.region == ui::HitTestResult::FilterClear ||
             hit.region == ui::HitTestResult::AddressSearch ||
             hit.region == ui::HitTestResult::AddressSearchScope ||
             hit.region == ui::HitTestResult::AddressSearchClear ||
@@ -1430,6 +1437,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_UPDATE_INSTALL:
         if (s) InstallUpdate(*s);
         return 0;
+    case WM_SHOW_RELEASE_NOTES:
+        if (s) ShowReleaseNotes(*s);
+        return 0;
 
     case WM_CONTENT_SELECTION:
         if(s) CompleteContentSelection(*s);
@@ -1549,6 +1559,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             ShutdownGlobalSearch(*s);
             StopShellRegistryWatch();
             s->watches.Stop();
+            s->folderSizes.Stop();
             s->settings.ResetUi();
             s->settings.Stop();
             s->update_checker.Stop();
@@ -1724,6 +1735,49 @@ void StageTagShotStates(AppState& state) {
 }
 
 // No C++ objects with destructors here: SEH (__try/__except) forbids unwinding.
+// Verification hook for --shot-tray: PULSE_SHOT_TRAY_ACTION=<action>:<ms>.
+static void ApplyShotTrayAction(AppState& state) {
+    wchar_t tray_action[64]{};
+    if (state.shot_tray &&
+        GetEnvironmentVariableW(L"PULSE_SHOT_TRAY_ACTION", tray_action, ARRAYSIZE(tray_action))) {
+        // Verification hook: <action>:<ms> captures the card stack in the
+        // middle of an animation (throw, back, drag:<dx>, dismiss, clear, hover).
+        int ms = 0;
+        if (wchar_t* colon = wcschr(tray_action, L':')) { ms = _wtoi(colon + 1); *colon = L'\0'; }
+        for (int k = 0; k < 60; ++k) { TickTrayDeck(state); Sleep(16); }
+        const auto top = TrayDeckEntries(state.tray, static_cast<size_t>(TrayStackTop(state)), 1);
+        if (wcscmp(tray_action, L"throw") == 0) {
+            ThrowTrayTop(state, 1.0f, 0.0f, 0.0f);
+        } else if (wcscmp(tray_action, L"back") == 0) {
+            TrayStepBack(state);
+        } else if (wcscmp(tray_action, L"drag") == 0 && !top.empty()) {
+            state.trayDrag.active = true;
+            state.trayDrag.path = top.front().item->path;
+            state.trayDrag.dx = static_cast<float>(ms);
+            state.trayDrag.dy = 10.0f;
+            ms = 400; // let the card settle into the held pose
+        } else if (wcscmp(tray_action, L"dismiss") == 0 && !top.empty()) {
+            MarkTrayExit(state, { top.front().item->path }, false);
+            SpawnTrayPuffs(state);
+            state.tray.RemoveItem(static_cast<size_t>(top.front().batch),
+                                  static_cast<size_t>(top.front().sub));
+        } else if (wcscmp(tray_action, L"clear") == 0) {
+            std::vector<std::wstring> all;
+            for (const auto& b : state.tray.batches())
+                for (const auto& item : b.items) all.push_back(item.path);
+            MarkTrayExit(state, all, true);
+            SpawnTrayPuffs(state);
+            state.tray.Clear();
+        } else if (wcscmp(tray_action, L"hover") == 0) {
+            state.hoverRegion = static_cast<int>(ui::HitTestResult::TrayCard);
+            ms = std::max(ms, 400);
+        }
+        const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(std::max(0, ms));
+        while (GetTickCount64() < until) { TickTrayDeck(state); Sleep(4); }
+        TickTrayDeck(state);
+    }
+}
+
 int ShotModeMain(AppState& state, HWND hwnd) {
     bool ok = false;
     __try {
@@ -1748,6 +1802,7 @@ int ShotModeMain(AppState& state, HWND hwnd) {
             }
             Sleep(40);
         }
+        ApplyShotTrayAction(state); // separate frame: __try forbids unwinding objects
         if (state.shot_tooltip) {
             // After the pump: a mouse move during startup would clear this.
             state.hoverRegion = static_cast<int>(ui::HitTestResult::SidebarItem);

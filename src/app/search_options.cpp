@@ -155,7 +155,7 @@ void ShowSearchOptions(AppState& s, bool management) {
             manage.glyph = L"\xE713";
             items.resize(tab ? 2 : 1);
             items.push_back(std::move(manage));
-            const auto layout = ui::LayoutAddressSearch(s.renderer.AddressBarRect(static_cast<float>(s.compositor.Width())), s.scale);
+            const auto layout = ui::LayoutAddressSearch(s.renderer.SearchBarRect(static_cast<float>(s.compositor.Width())), s.scale);
             if (layout.scope.left == layout.scope.right) {
                 ui::FluentMenuItem scope;
                 scope.text = l10n::Get(s.addressSearchCurrent ? I::LocationCurrent : I::LocationIndexed);
@@ -168,7 +168,7 @@ void ShowSearchOptions(AppState& s, bool management) {
         }
         POINT anchor{};
         if (s.addressSearching) {
-            const auto layout = ui::LayoutAddressSearch(s.renderer.AddressBarRect(static_cast<float>(s.compositor.Width())), s.scale);
+            const auto layout = ui::LayoutAddressSearch(s.renderer.SearchBarRect(static_cast<float>(s.compositor.Width())), s.scale);
             ui::FluentMenuModel popup_layout;
             popup_layout.SetItems(items);
             popup_layout.Layout(s.compositor.DwriteFactory(), s.scale);

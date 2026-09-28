@@ -4,6 +4,7 @@
 #include "ui_compositor.h"
 #include "window_material.h"
 #include "fluent_components.h"
+#include "release_note_view.h"
 #include "shell_icons.h"
 #include "view_layout.h"
 #include "column_strip_layout.h"
@@ -26,6 +27,7 @@
 namespace pulse::app { class PlacesCatalog; }
 
 namespace pulse::ui {
+enum class PaneHeaderIcon;
 
 inline constexpr unsigned kSettingsContextExpandedMask = 0x1f00u;
 inline constexpr unsigned kSettingsDefaultExpandedMask = kSettingsContextExpandedMask | 0x3u;
@@ -140,6 +142,8 @@ struct PaneViewModel {
     std::wstring path;
     std::wstring header_text;
     std::unordered_map<int, ChangeBadge> change_badges;
+    std::unordered_map<int, std::wstring> folder_size_labels;
+    std::unordered_set<int> folder_size_actions;
     ChangeBadge title_change_badge;
     bool is_changes = false;
     std::wstring change_empty_text, change_status_text;
@@ -147,6 +151,7 @@ struct PaneViewModel {
     bool change_has_more = false;
     std::wstring filter_text;
     float filter_expand = 0.0f;
+    float header_controls_opacity = 1.0f;
     std::wstring banner_title;
     std::wstring banner_message;
     int banner_kind = 0; // 0 info, 1 success, 2 warning, 3 error
@@ -299,36 +304,53 @@ struct SidebarGroupBand {
     float bottom = 0.0f; // end of the section's gap (px)
 };
 
-// Scatter deck inside the staging tray panel. Poses arrive pre-smoothed from
-// the app-side animation state; the renderer maps slots to geometry and adds
-// a deterministic per-card jitter (path-keyed), so draw and hit-test can
-// never disagree. Neighboring cards overlap by at most 50%.
+// Card stack inside the staging tray panel. Poses arrive pre-animated from
+// the app-side state (TickTrayDeck); the renderer maps depth/offsets to one
+// shared geometry (TrayStackGeometry), so draw and hit-test never disagree.
 struct TrayCardView {
-    int exit_layout_count = 1;
     std::wstring path;
     std::wstring name;
+    std::wstring folder;       // parent folder for the third line (display form)
     DWORD attrs = 0;
     bool is_dir = false;
     bool missing = false;
+    bool cut = false;          // staged with Ctrl+X (move intent)
     int batch = -1;            // staging-tray batch index (live cards only)
     int sub = -1;              // item index inside the batch (live cards only)
-    uint64_t batch_total_size = 0;
-    float slot = 0.0f;         // deck slot: 0 = center, ±k = k positions out
-    float hover = 0.0f;        // 0..1 raise + straighten
-    float appear = 0.0f;       // 0 = just collected, 1 = settled in the deck
-    float opacity = 1.0f;      // ghosts (exiting cards) fade toward 0
+    uint64_t size = 0;         // item size in bytes (files)
+    float depth = 0.0f;        // 0 = top card, 1/2 = peeking layers, 3 = hidden behind
+    float hover = 0.0f;        // 0..1 top-card lift + close badge
+    float appear = 1.0f;       // 0 = dropping in from above, 1 = settled
+    float fly = 0.0f;          // horizontal offset in card widths (throw / tumble)
+    float dx = 0.0f;           // gesture offset, DIPs
+    float dy = 0.0f;
+    float angle = 0.0f;        // rotation, degrees
+    float shrink = 1.0f;       // extra scale (tumble)
+    float opacity = 1.0f;
     bool ghost = false;        // exiting: drawn, never hit-tested
+    bool on_top = false;       // painted above the stack (dragged / flying out)
+};
+
+// One smoke puff of the dismiss effect, anchored at the top card's × badge.
+struct TrayPuffView {
+    float t = 0.0f;            // 0..1 lifetime progress
+    float angle = 0.0f;        // radians
+    float dist = 0.0f;         // travel, DIPs
+    float size = 1.0f;         // final scale
 };
 
 struct TrayDeckView {
-    std::vector<TrayCardView> cards; // live cards (newest batch first) + ghosts
+    std::vector<TrayCardView> cards; // live window (top first) + ghosts
+    std::vector<TrayPuffView> puffs;
     int live_count = 0;              // leading non-ghost entries in cards
-    int total_count = 0;             // all staged items (for the +N badge)
-    int offset = 0;                  // window start into the newest-first list
+    int total_count = 0;             // all staged items
+    int offset = 0;                  // cyclic index of the top card (newest-first order)
     uint64_t total_size = 0;         // sum over all batches (footer text)
     int batch_count = 0;
-    float open = 0.0f;               // 0..1 drag-over scatter boost
-    int hovered = -1;                // live display index under the cursor
+    float open = 0.0f;               // 0..1 drag-over highlight
+    float spread = 0.0f;             // 0..1 peeking layers fan out (stack hovered)
+    float thumb_dip = 48.0f;         // thumbnail edge (settings: staging tray icon size)
+    int hovered = -1;                // live display index under the cursor (0 = top)
 };
 
 // Right-side details panel for the current selection (ui.md §7.2 视图簇).
@@ -509,6 +531,8 @@ struct WindowViewModel {
     bool backdrop_enabled = false;
     WindowEffect window_effect = WindowEffect::MicaAlt;
     std::wstring background_image;
+    int wallpaper_look = 1;  // image mode: 0 subtle, 1 balanced, 2 vivid
+    int wallpaper_blur = 1;  // image mode: 0 off, 1 light, 2 strong
     bool safe_mode = false;
     bool address_editing = false;
     bool address_searching = false;
@@ -522,6 +546,7 @@ struct WindowViewModel {
     std::wstring settings_content_status, settings_content_summary;
     bool address_search_has_text = false;
     std::wstring address_search_text;
+    std::wstring address_search_placeholder;
     float address_search_animation = 0.0f;
     float address_scope_animation = 0.0f;
     bool filter_editing = false;
@@ -547,6 +572,7 @@ struct WindowViewModel {
     bool settings_list_smart_date = true;
     bool settings_list_zebra_rows = true;
     bool settings_list_size_bar = false;
+    int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
     bool settings_open_folders = false;
     bool settings_blank_click_go_back = false;
     bool settings_change_tracking = false;
@@ -568,6 +594,9 @@ struct WindowViewModel {
     std::vector<NetworkRootRowView> settings_network_roots;
     std::wstring settings_version;
     std::wstring settings_build_id;
+    std::vector<std::pair<std::wstring, std::wstring>> settings_about_rows; // label, value
+    const std::vector<ReleaseNoteView>* settings_release_notes = nullptr;   // newest first
+    int settings_release_expanded = 0;                                       // -1 = none
     std::wstring settings_update_status;
     std::wstring settings_update_version;
     bool settings_update_enabled = false;
@@ -622,8 +651,12 @@ struct HitTestResult {
         DetailsToggle,
         PaneMediumIcons,
         PaneViewButton,
+        PaneDetails,
+        ToolbarSort,
+        ToolbarMore,
         AddressBar,
         AddressSearch,
+        AddressSearchInput,
         AddressSearchScope,
         AddressSearchMode,
         AddressSearchContent,
@@ -661,6 +694,7 @@ struct HitTestResult {
         TrayCard,
         TrayClear,
         RowStar,
+        RowFolderSize,
         RowNewTab,
         RowMore,
         RecentFilter,
@@ -693,6 +727,7 @@ struct HitTestResult {
         SettingsEffect,
         SettingsWallpaper,
         SettingsDensity,
+        SettingsFolderSort,
         SettingsTrayIcon,
         SettingsLanguage,
         SettingsIndexVolume,
@@ -703,6 +738,8 @@ struct HitTestResult {
         SettingsNetworkRemove,
         SettingsDiagnosticsAction,
         SettingsUpdateAction,
+        SettingsAboutAction,   // 0 copy info, 1 project page, 2 all releases
+        SettingsReleaseNote,
         SettingsDupScope,
         SettingsDupDrive,
         SettingsDupBrowse,
@@ -714,11 +751,15 @@ struct HitTestResult {
         SettingsDupGroupDelete,
         SettingsDupDeleteAll,
         SearchFilter,
+        TrayPrev,                 // staging tray footer: previous card
+        TrayNext,                  // staging tray footer: next card (top card to the back)
         PaneColumnLayout,
         ColumnStripRow,      // index = row, sub_index = column id
         ColumnStripDivider,  // sub_index = column id
         ColumnStripBlank,    // sub_index = column id
-        ColumnStripHScroll   // ancestor strip scrollbar
+        ColumnStripHScroll,  // ancestor strip scrollbar
+        SettingsWallpaperLook,
+        SettingsWallpaperBlur,
     } region = None;
     SidebarAddAction sidebar_action = SidebarAddAction::None;
     int index = -1;          // tab/row/sidebar item/tray batch/tray item.
@@ -737,6 +778,10 @@ struct HitTestResult {
 };
 
 class MainRenderer {
+    friend struct FilenameRenderTest;
+    friend struct PaneHeaderIconTest;
+    friend struct FolderSizesUiTest;
+    friend struct ColumnResizeUiTest;
 public:
     MainRenderer();
 
@@ -803,7 +848,7 @@ public:
                                     float filter_expand = 1.0f) const;
     D2D1_RECT_F PaneViewButtonRect(const D2D1_RECT_F& pane_bounds,
                                    float filter_expand = 1.0f) const;
-    D2D1_RECT_F PaneColumnLayoutRect(const D2D1_RECT_F& pane_bounds,
+    D2D1_RECT_F PaneDetailsRect(const D2D1_RECT_F& pane_bounds,
                                      float filter_expand = 1.0f) const;
     // Column view geometry for a pane. When active, PaneBodyBounds replaces
     // the pane bounds for the regular list (header stays full width).
@@ -817,12 +862,6 @@ public:
     // Horizontal scrollbar of the ancestor strip; false when it does not overflow.
     bool ColumnStripHScrollRects(const ColumnStripLayout& layout, D2D1_RECT_F& track,
                                  D2D1_RECT_F& thumb) const;
-    D2D1_RECT_F PaneNavUpRect(const D2D1_RECT_F& pane_bounds,
-                              float filter_expand = 1.0f) const;
-    D2D1_RECT_F PaneNavForwardRect(const D2D1_RECT_F& pane_bounds,
-                                   float filter_expand = 1.0f) const;
-    D2D1_RECT_F PaneNavBackRect(const D2D1_RECT_F& pane_bounds,
-                                float filter_expand = 1.0f) const;
     D2D1_RECT_F FilterEditRect(const D2D1_RECT_F& pane_bounds,
                                float expand = 1.0f, bool has_text = false) const;
     D2D1_RECT_F FilterClearRect(const D2D1_RECT_F& pane_bounds, float expand) const;
@@ -935,6 +974,9 @@ public:
     D2D1_RECT_F TitleBarRect(float w) const;
     D2D1_RECT_F ToolbarRect(float w) const;
     D2D1_RECT_F AddressBarRect(float w) const;
+    D2D1_RECT_F SearchBarRect(float w) const;
+    D2D1_RECT_F NewCommandRect(float w) const;
+    D2D1_RECT_F SplitCommandRect(float w) const;
     D2D1_RECT_F AddressSearchButtonRect(float w) const;
     void DrawAddressSearchChrome(const WindowViewModel& vm, float w, const Theme& theme);
     float NewButtonWidthPx(bool compact) const;
@@ -1030,7 +1072,7 @@ private:
     void DrawColumnStripColumn(const WindowViewModel& vm, const PaneViewModel& pane,
                                const ColumnStripColumnView& column, int column_id,
                                const D2D1_RECT_F& rc, int pane_index, const Theme& theme);
-    void DrawColumnLayoutGlyph(const D2D1_RECT_F& rc, const D2D1_COLOR_F& color);
+    void DrawPaneHeaderIcon(const D2D1_RECT_F& rc, PaneHeaderIcon icon, const D2D1_COLOR_F& color);
     bool HitTestColumnStrip(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
                             float x, float y, HitTestResult& out) const;
     void DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
@@ -1039,7 +1081,7 @@ private:
     void DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
 
     void DrawList(const PaneViewModel& vm, float x, float y, float w, float h, const Theme& theme,
-                  int hover_region = 0, int hover_control_index = -1);
+                  int hover_region = 0, int hover_control_index = -1, bool pane_focused = true);
     void DrawScrollbar(const PaneViewModel& vm, float x, float y, float w, float h, const Theme& theme);
     // Scatter deck of staged files inside the tray panel (draw + hit-test
     // share the geometry helpers in ui_renderer.cpp).
@@ -1069,8 +1111,9 @@ private:
     bool EnsureCuratedEmptyStateSvg(bool starred);
     bool DrawExcludeEmptySvg(const D2D1_RECT_F& bounds, float opacity = 1.0f);
     bool EnsureExcludeEmptySvg();
-    bool EnsureFluentSvg(int resource_id);
-    bool DrawFluentSvg(int resource_id, const D2D1_RECT_F& bounds, float opacity = 1.0f);
+    bool EnsureFluentSvg(int resource_id, bool colorful = false);
+    bool DrawFluentSvg(int resource_id, const D2D1_RECT_F& bounds, float opacity = 1.0f,
+                       const D2D1_COLOR_F* foreground = nullptr, bool colorful = false);
     void DrawTruncatedName(const std::wstring& name, float x, float y, float w, float h,
                            const Theme& theme, bool selected, const std::vector<NameMatchRange>& matches, bool dim_extension = false);
     void DrawCenteredIconName(const std::wstring& name, const D2D1_RECT_F& bounds,
@@ -1089,7 +1132,7 @@ private:
     HWND notify_hwnd_ = nullptr;
     float scale_ = 1.0f;
     float title_bar_height_ = kTitleBarHeight;
-    float toolbar_height_ = 44.0f;
+    float toolbar_height_ = 88.0f;
     float status_height_ = 28.0f;
     float sidebar_width_ = 224.0f;
     float sidebar_width_dip_ = 224.0f;
@@ -1105,9 +1148,16 @@ private:
     mutable float cell_text_widths_scale_ = 0.0f;
     std::array<uint32_t, 8> painted_columns_{};
     float tray_icon_dip_ = 48.0f;
+    // Staging tray card text: 13 px semibold name, 11 px folder line.
+    mutable ComPtr<IDWriteTextFormat> tray_name_format_;
+    mutable ComPtr<IDWriteTextFormat> tray_folder_format_;
+    mutable float tray_formats_scale_ = 0.0f;
     float margin_ = 4.0f;
     float control_gap_ = 4.0f;
     D2D1_COLOR_F text_background_{};
+    // Per-frame layer opacity (see ComputeLayerAlphas); 1 when opaque.
+    float sheet_alpha_ = 1.0f;
+    float card_alpha_ = 1.0f;
     bool details_visible_ = false;
     float details_width_ = 340.0f;
     PreviewViewport details_viewport_;
@@ -1138,6 +1188,7 @@ private:
     mutable ComPtr<ID2D1SolidColorBrush> brIconFolder_;
     mutable ComPtr<ID2D1SolidColorBrush> brIconFile_;
     mutable ComPtr<ID2D1StrokeStyle> dashStroke_;
+    ComPtr<ID2D1StrokeStyle> paneHeaderStroke_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsBg_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsText_;
 

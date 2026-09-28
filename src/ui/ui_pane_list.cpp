@@ -6,6 +6,8 @@
 #include "bloom_accent_picker.h"
 #include "typography.h"
 #include "details_column_widths.h"
+#include "pane_header_icons.h"
+#include "toolbar_layout.h"
 #include "../app/resource.h"
 #include "../app/places.h"
 #include "../app/search_query.h"
@@ -263,24 +265,18 @@ D2D1_RECT_F MainRenderer::PaneListRect(const PaneViewModel& vm, const D2D1_RECT_
 }
 
 D2D1_RECT_F MainRenderer::FilterBoxRect(const D2D1_RECT_F& pane_bounds, float expand) const {
-    const float w = pane_bounds.right - pane_bounds.left;
-    const float expandedW = std::max(32.0f * scale_, std::min(w - 16.0f * scale_,
-        std::clamp(w * 0.34f, 112.0f * scale_, 220.0f * scale_)));
-    const float t = std::clamp(expand, 0.0f, 1.0f);
-    const float filterW = 32.0f * scale_ +
-        (expandedW - 32.0f * scale_) * t;
-    const float right = pane_bounds.right - 8.0f * scale_;
-    return D2D1::RectF(right - filterW,
-                       pane_bounds.top + 4 * scale_,
-                       right,
-                       pane_bounds.top + pane_header_height_ - 4 * scale_);
+    const float width = pane_bounds.right;
+    const float left = EffectiveSidebarWidth(width);
+    return MakeToolbarLayout(width, scale_, title_bar_height_, margin_,
+        NewButtonWidthPx(width-left < 600*scale_), left, expand).filter;
 }
 
 D2D1_RECT_F MainRenderer::PaneViewButtonRect(const D2D1_RECT_F& pane_bounds,
                                               float filter_expand) const {
-    const D2D1_RECT_F filter = FilterBoxRect(pane_bounds, filter_expand);
-    const float right = filter.left - (kCommandIconStepDip - kCommandIconButtonDip) * scale_;
-    return D2D1::RectF(right - kCommandIconButtonDip * scale_, filter.top, right, filter.bottom);
+    (void)filter_expand;
+    const float right = pane_bounds.right - 8*scale_;
+    return D2D1::RectF(right-kCommandIconButtonDip*scale_,pane_bounds.top+4*scale_,
+        right,pane_bounds.top+pane_header_height_-4*scale_);
 }
 
 D2D1_RECT_F MainRenderer::PaneMediumIconsRect(const D2D1_RECT_F& pane_bounds,
@@ -290,24 +286,9 @@ D2D1_RECT_F MainRenderer::PaneMediumIconsRect(const D2D1_RECT_F& pane_bounds,
                        view.left - (kCommandIconStepDip - kCommandIconButtonDip) * scale_,
                        view.bottom);
 }
-D2D1_RECT_F MainRenderer::PaneColumnLayoutRect(const D2D1_RECT_F& pane_bounds,
+D2D1_RECT_F MainRenderer::PaneDetailsRect(const D2D1_RECT_F& pane_bounds,
                                                 float filter_expand) const {
     return StepLeftHeaderButton(PaneMediumIconsRect(pane_bounds, filter_expand), scale_);
-}
-
-D2D1_RECT_F MainRenderer::PaneNavUpRect(const D2D1_RECT_F& pane_bounds,
-                                        float filter_expand) const {
-    return StepLeftHeaderButton(PaneColumnLayoutRect(pane_bounds, filter_expand), scale_);
-}
-
-D2D1_RECT_F MainRenderer::PaneNavForwardRect(const D2D1_RECT_F& pane_bounds,
-                                             float filter_expand) const {
-    return StepLeftHeaderButton(PaneNavUpRect(pane_bounds, filter_expand), scale_);
-}
-
-D2D1_RECT_F MainRenderer::PaneNavBackRect(const D2D1_RECT_F& pane_bounds,
-                                          float filter_expand) const {
-    return StepLeftHeaderButton(PaneNavForwardRect(pane_bounds, filter_expand), scale_);
 }
 
 D2D1_RECT_F MainRenderer::FilterClearRect(const D2D1_RECT_F& pane_bounds, float expand) const {
@@ -425,11 +406,12 @@ float MainRenderer::TypeChipWidthDip(const std::wstring& chip) const {
     if (chip.empty()) return 0.0f;
     float w = 0.0f;
     if (compositor_ && compositor_->SmallFormat()) {
-        compositor_->MeasureLumaText(chip, compositor_->SmallFormat(), w);
-        w = std::max(w, MeasureTextWidth(compositor_->DwriteFactory(), compositor_->SmallFormat(), chip));
+        // Uniform minimum (the width of "XLSX") so the type text after the chip
+        // lines up across DWG / BAK / PDF / DWL2 rows; longer extensions still grow.
+        w = std::max(CellTextWidth(chip, true), CellTextWidth(L"XLSX", true));
         w /= std::max(0.01f, scale_);
     } else {
-        w = 8.0f * static_cast<float>(chip.size());
+        w = 8.0f * static_cast<float>(std::max<size_t>(chip.size(), 4));
     }
     return w + 2.0f * kTypeChipPadDip + kTypeChipGapDip;
 }
@@ -478,35 +460,43 @@ MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     const float manual_date = ManualWidthDip(search_view ? search_dividers[1] : dividers[0]);
     const float manual_type = ManualWidthDip(search_view ? search_dividers[2] : dividers[1]);
     const float manual_size = ManualWidthDip(search_view ? search_dividers[3] : dividers[2]);
-    struct Meta { ColumnKind kind; float width; };
+    struct Meta { ColumnKind kind; float width; float automatic; };
     std::vector<Meta> meta{
-        {ColumnKind::Date, (manual_date > 0.0f ? manual_date : fitted.date) * scale_},
-        {ColumnKind::Type, (manual_type > 0.0f ? manual_type : fitted.type) * scale_},
-        {ColumnKind::Size, (manual_size > 0.0f ? manual_size : fitted.size) * scale_}};
+        {ColumnKind::Date, (manual_date > 0.0f ? manual_date : fitted.date) * scale_, fitted.date * scale_},
+        {ColumnKind::Type, (manual_type > 0.0f ? manual_type : fitted.type) * scale_, fitted.type * scale_},
+        {ColumnKind::Size, (manual_size > 0.0f ? manual_size : fitted.size) * scale_, fitted.size * scale_}};
     auto meta_sum = [&] { float sum = 0.0f; for (const auto& m : meta) sum += m.width; return sum; };
+    auto automatic_sum = [&] { float sum = 0.0f; for (const auto& m : meta) sum += m.automatic; return sum; };
     auto drop = [&](ColumnKind kind) {
         for (auto it = meta.begin(); it != meta.end(); ++it)
             if (it->kind == kind) { meta.erase(it); return true; }
         return false;
     };
-    // Captured measured widths are explicit user sizing; use the hard floors
-    // so starting a drag cannot drop a column that was visible a moment ago.
-    const bool manual = manual_date > 0.0f || manual_type > 0.0f || manual_size > 0.0f;
-    const float min_name = (manual ? kDetailsMinNameDip : kDetailsFitNameDip) * scale_;
-    const float min_path = (manual ? kDetailsMinPathDip : kDetailsFitPathDip) * scale_;
+    // Column visibility depends on the viewport, never on a divider drag.
+    // Otherwise captured widths can reveal a hidden column on mouse-down,
+    // or a growing column can remove the divider currently being dragged.
+    const float min_name = kDetailsFitNameDip * scale_;
+    const float min_path = kDetailsFitPathDip * scale_;
     bool path_column = search_view;
-    if (search_view && total - meta_sum() < min_name + min_path) {
+    if (search_view && total - automatic_sum() < min_name + min_path) {
         path_column = false;
         out.two_line = true;
     }
     // Low-value columns go first when the name would get too narrow.
-    while (total - meta_sum() < min_name + (path_column ? min_path : 0.0f) && meta.size() > 1) {
+    while (total - automatic_sum() < min_name + (path_column ? min_path : 0.0f) && meta.size() > 1) {
         if (!drop(ColumnKind::Type)) drop(ColumnKind::Date);
     }
-    const float floor_name = kDetailsMinNameDip * scale_;
-    if (total - meta_sum() < floor_name) {
-        const float scale_down = std::max(0.0f, total - floor_name) / std::max(1.0f, meta_sum());
-        for (auto& m : meta) m.width *= scale_down;
+    const float floor_flex = (kDetailsMinNameDip + (path_column ? kDetailsMinPathDip : 0.0f)) * scale_;
+    const float available = std::max(0.0f, total - floor_flex);
+    if (meta_sum() > available) {
+        // A narrower window may no longer fit saved widths. Keep visible
+        // metadata readable and compress only its surplus above the floor.
+        const float floor_meta = std::min(48.0f * scale_, available / static_cast<float>(meta.size()));
+        float surplus = 0.0f;
+        for (const auto& m : meta) surplus += std::max(0.0f, m.width - floor_meta);
+        const float factor = surplus > 0.0f
+            ? (available - floor_meta * static_cast<float>(meta.size())) / surplus : 0.0f;
+        for (auto& m : meta) m.width = floor_meta + std::max(0.0f, m.width - floor_meta) * factor;
     }
     const float flex = std::max(0.0f, total - meta_sum());
     int n = 0;
@@ -564,9 +554,8 @@ void MainRenderer::AutoFitColumnDivider(const D2D1_RECT_F& pane_bounds,
 }
 
 namespace {
-// Divider drag: a metadata column keeps an absolute width. The divider left
-// of a metadata column resizes that column (its right edge stays put); the
-// search name|path divider sets the name width.
+// Move the shared edge while keeping the adjacent pair's outer edges fixed.
+// Flexible name/path widths are implicit; metadata widths are stored in DIP.
 template <size_t N>
 std::array<float, N> ResizeColumns(const MainRenderer::DetailsColumnLayout& layout,
                                    std::array<float, N> stored, bool search_view,
@@ -579,8 +568,9 @@ std::array<float, N> ResizeColumns(const MainRenderer::DetailsColumnLayout& layo
     const float x0 = divider_index == 0 ? layout.left : layout.DividerX(divider_index - 1);
     const float x1 = layout.DividerX(divider_index);
     const float x2 = x1 + layout.widths[static_cast<size_t>(divider_index + 1)];
-    const float min_meta = 48.0f * scale;
-    const float min_flex = kDetailsMinNameDip * scale;
+    const float min_meta = std::min(48.0f * scale, (x2 - x0) * 0.5f);
+    const float min_flex = std::min((left == K::Path ? kDetailsMinPathDip : kDetailsMinNameDip) * scale,
+                                   std::max(0.0f, x2 - x0 - min_meta));
     auto put = [&](K kind, float px) {
         const int slot = ManualSlot(kind, search_view);
         if (slot >= 0 && static_cast<size_t>(slot) < N) stored[static_cast<size_t>(slot)] = std::max(px / scale, 1.01f);
@@ -591,9 +581,9 @@ std::array<float, N> ResizeColumns(const MainRenderer::DetailsColumnLayout& layo
         // Grow/shrink the metadata column on the right; its right edge is fixed.
         put(right, x2 - std::clamp(cursor_x, x0 + min_flex, x2 - min_meta));
     } else {
-        // Between two metadata columns: resize the left one.
-        put(left, std::clamp(cursor_x, x0 + min_meta, x2 - min_meta) - x0);
-        put(right, layout.widths[static_cast<size_t>(divider_index + 1)]);
+        const float edge = std::clamp(cursor_x, x0 + min_meta, std::max(x0 + min_meta, x2 - min_meta));
+        put(left, edge - x0);
+        put(right, x2 - edge);
     }
     return stored;
 }
@@ -682,10 +672,10 @@ bool MainRenderer::PointInItemName(const PaneViewModel& vm, const D2D1_RECT_F& f
         available = std::max(24.0f * scale_, available - overlap_w - tag_gap);
 
     const std::wstring fitted = FitFileName(
-        compositor_, compositor_->DwriteFactory(), compositor_->TextFormat(),
+        compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(),
         entry.name, available);
     const float text_width = MeasureLayoutText(
-        compositor_, compositor_->DwriteFactory(), compositor_->TextFormat(), fitted);
+        compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), fitted);
     float text_left = name.left;
     if (icon_grid) {
         const float leftover = std::max(0.0f, (name.right - name.left) - text_width - tag_gap);
@@ -895,106 +885,63 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
 
     dc->PushAxisAlignedClip(bounds, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    // Each pane is a card on the shared sheet; the frame below outlines it.
+    MakeBrush(dc, WithAlpha(theme.surface_card, card_alpha_), brFillHover_);
+    FillRoundedRect(dc, brFillHover_.get(), pane_rect.left, pane_rect.top,
+                    pane_rect.right - pane_rect.left, pane_rect.bottom - pane_rect.top,
+                    theme.radius_control * scale_);
+
     float y = y0;
     const std::wstring& title = pane.header_text;
-    const D2D1_RECT_F filterRc = FilterBoxRect(bounds, pane.filter_expand);
     const D2D1_RECT_F mediumRc = PaneMediumIconsRect(bounds, pane.filter_expand);
     const D2D1_RECT_F viewRc = PaneViewButtonRect(bounds, pane.filter_expand);
-    const D2D1_RECT_F navBackRc = PaneNavBackRect(bounds, pane.filter_expand);
-    const D2D1_RECT_F navForwardRc = PaneNavForwardRect(bounds, pane.filter_expand);
-    const D2D1_RECT_F navUpRc = PaneNavUpRect(bounds, pane.filter_expand);
+    const D2D1_RECT_F detailsRc = PaneDetailsRect(bounds);
     if (pane.header_drop) {
         MakeBrush(dc, WithAlpha(theme.accent, 0.18f), brFillHover_);
         FillRoundedRect(dc, brFillHover_.get(), bounds.left + scale_, bounds.top + scale_,
             std::max(0.0f, w - 2.0f * scale_), pane_header_height_ - 2.0f * scale_,
             theme.radius_control * scale_);
     }
+    // Keep the title stationary while the focused pane's controls crossfade.
+    const bool split = vm.pane_slots.size() > 1;
     const float textLeft = x + 8.0f * scale_;
-    const float textRight = std::max(textLeft, navBackRc.left - 8.0f * scale_);
+    const float textRight = std::max(textLeft, detailsRc.left - 8.0f * scale_);
     const auto titleBadge = ChangeTitleRect(bounds, textRight, pane_header_height_, pane.title_change_badge, scale_, compositor_, pane.header_text);
     const float textWidth = (titleBadge.right > titleBadge.left ? titleBadge.left - 4 * scale_ : textRight) - textLeft;
-    MakeBrush(dc, theme.text, brText_);
+    MakeBrush(dc, split && !focused ? theme.text_secondary : theme.text, brText_);
     DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->HeaderFormat(), brText_.get(), title,
         textLeft, y, textWidth, pane_header_height_);
 
     DrawChangeBadge(compositor_, painter_, pane.title_change_badge, titleBadge, theme, scale_);
 
-    auto headerIconButton = [&](const D2D1_RECT_F& rc, HitTestResult::Region region,
-                                const wchar_t* glyph, const wchar_t* fallback,
-                                bool active, float glyphScale) {
-        const bool hovered = vm.hover_region == static_cast<int>(region) &&
-                             vm.hover_control_index == pane_index;
-        const D2D1_COLOR_F fill = active
-            ? WithAlpha(theme.accent, hovered ? 0.24f : 0.14f)
-            : (hovered ? theme.fill_hover : kTransparent);
-        DrawButton(rc, theme, fill, glyph, fallback,
-                   active ? theme.accent : theme.text,
-                   true, true, glyphScale);
-    };
-    auto headerNavButton = [&](const D2D1_RECT_F& rc, HitTestResult::Region region,
-                               const wchar_t* glyph, const wchar_t* fallback, bool enabled) {
-        const bool hovered = enabled &&
-                             vm.hover_region == static_cast<int>(region) &&
-                             vm.hover_control_index == pane_index;
-        DrawButton(rc, theme, hovered ? theme.fill_hover : kTransparent,
-                   glyph, fallback, enabled ? theme.text : theme.text_disabled,
-                   true, true, 0.76f);
-    };
-    headerNavButton(navBackRc, HitTestResult::NavBack, kIconBack, L"<", pane.can_go_back);
-    headerNavButton(navForwardRc, HitTestResult::NavForward, kIconForward, L">",
-                    pane.can_go_forward);
-    headerNavButton(navUpRc, HitTestResult::NavUp, kIconUp, L"^", pane.can_go_up);
-    headerIconButton(mediumRc, HitTestResult::PaneMediumIcons,
-                     L"\xE7F4", L"M", pane.view_mode == ViewMode::MediumIcons, 0.66f);
-    {
-        const D2D1_RECT_F columnsRc = PaneColumnLayoutRect(bounds, pane.filter_expand);
-        const bool active = pane.column_strip.enabled;
-        const bool hovered = vm.hover_region == static_cast<int>(HitTestResult::PaneColumnLayout) &&
-                             vm.hover_control_index == pane_index;
-        const D2D1_COLOR_F fill = active
-            ? WithAlpha(theme.accent, hovered ? 0.24f : 0.14f)
-            : (hovered ? theme.fill_hover : kTransparent);
-        if (fill.a > 0.0f) {
-            MakeBrush(dc, fill, brFillHover_);
-            FillRoundedRect(dc, brFillHover_.get(), columnsRc.left, columnsRc.top,
-                            columnsRc.right - columnsRc.left, columnsRc.bottom - columnsRc.top,
-                            theme.radius_control * scale_);
-        }
-        DrawColumnLayoutGlyph(columnsRc, active ? theme.accent : theme.text);
-    }
-    headerIconButton(viewRc, HitTestResult::PaneViewButton,
-                     kIconView, L"=", false, 0.76f);
-
-    if (pane.filter_expand <= 0.015f && !(focused && vm.filter_editing)) {
-        const bool activeFilter = !pane.filter_text.empty();
-        const bool hovered = vm.hover_region == static_cast<int>(HitTestResult::FilterBox) &&
-                             vm.hover_control_index == pane_index;
-        const D2D1_COLOR_F fill = activeFilter
-            ? WithAlpha(theme.accent, hovered ? 0.24f : 0.14f)
-            : (hovered ? theme.fill_hover : kTransparent);
-        DrawButton(filterRc, theme, fill, kIconFilter, L"F",
-                   activeFilter ? theme.accent : theme.text,
-                   true, true, 0.76f);
-    } else {
-        fluent::TextFieldSpec filter{};
-        filter.bounds = filterRc;
-        filter.placeholder = pulse::l10n::Get(pulse::l10n::StringId::FilterPlaceholder);
-        filter.text = pane.filter_text;
-        filter.leading_glyph = kIconFilter;
-        filter.compact_leading_glyph = true;
-        filter.suppress_text = focused && vm.filter_editing;
-        filter.state.focused = focused && vm.filter_editing;
-        filter.state.hovered = vm.hover_region == static_cast<int>(HitTestResult::FilterBox) &&
-                               vm.hover_control_index == pane_index;
-        if (!pane.filter_text.empty()) filter.trailing_width = 30.0f;
-        painter_.DrawTextField(filter);
-        if (!pane.filter_text.empty() && pane.filter_expand >= 0.985f) {
-            const bool hovered = vm.hover_region == static_cast<int>(HitTestResult::FilterClear) &&
+    const float controlsOpacity = std::clamp(pane.header_controls_opacity, 0.0f, 1.0f);
+    if (controlsOpacity > 0.0f) {
+        const bool fading = controlsOpacity < 1.0f;
+        if (fading) dc->PushLayer(D2D1::LayerParameters(D2D1::RectF(bounds.left, bounds.top,
+            bounds.right, bounds.top + pane_header_height_), nullptr,
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::Matrix3x2F::Identity(), controlsOpacity), nullptr);
+        auto headerButton = [&](const D2D1_RECT_F& rc, HitTestResult::Region region,
+                                PaneHeaderIcon icon, bool active, bool enabled = true) {
+            const bool hovered = focused && enabled && vm.hover_region == static_cast<int>(region) &&
                                  vm.hover_control_index == pane_index;
-            DrawButton(FilterClearRect(bounds, pane.filter_expand), theme,
-                       hovered ? theme.fill_hover : kTransparent, L"\xE711", L"×",
-                       theme.text_secondary, true, true, 0.65f);
-        }
+            const D2D1_COLOR_F fill = active
+                ? WithAlpha(theme.accent, hovered ? 0.24f : 0.14f)
+                : (hovered ? theme.fill_hover : kTransparent);
+            if (fill.a > 0.0f) {
+                MakeBrush(dc, fill, brFillHover_);
+                FillRoundedRect(dc, brFillHover_.get(), rc.left, rc.top,
+                                rc.right - rc.left, rc.bottom - rc.top,
+                                theme.radius_control * scale_);
+            }
+            DrawPaneHeaderIcon(rc, icon, !enabled ? theme.text_disabled
+                : (active ? theme.accent : theme.text));
+        };
+        headerButton(detailsRc, HitTestResult::PaneDetails, PaneHeaderIcon::View,
+                     pane.view_mode == ViewMode::Details);
+        headerButton(mediumRc, HitTestResult::PaneMediumIcons, PaneHeaderIcon::MediumIcons,
+                     pane.view_mode == ViewMode::MediumIcons);
+        headerButton(viewRc, HitTestResult::PaneViewButton, PaneHeaderIcon::More, false);
+        if (fading) dc->PopLayer();
     }
     y += pane_header_height_;
 
@@ -1147,8 +1094,13 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
             const float groupLeft = right
                 ? contentLeft + availableW - groupW : contentLeft;
             fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            DrawTextRect(dc, fmt, brText_.get(), label, groupLeft, y,
-                         labelW, column_header_height_);
+            if (measuredLabelW > labelAvailable) {
+                DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), fmt, brText_.get(), label,
+                    groupLeft, y, labelW, column_header_height_);
+            } else {
+                DrawTextRect(dc, fmt, brText_.get(), label, groupLeft, y,
+                             labelW, column_header_height_);
+            }
             if (active) {
                 DrawIconText(groupLeft + labelW + iconGap, y, iconW,
                              column_header_height_,
@@ -1210,19 +1162,26 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
     if ((!pane.loading || pane.is_changes) && pane.EntryCount() == 0)
         DrawPaneEmptyState(vm, pane, D2D1::RectF(x, y, x + w, bottom), pane_index, theme);
     else
-        DrawList(pane, x, y, w, listH, theme, vm.hover_region, vm.hover_control_index);
+        DrawList(pane, x, y, w, listH, theme, vm.hover_region, vm.hover_control_index, focused || !split);
     dc->PopAxisAlignedClip();
 
     const float radius = theme.radius_control * scale_;
     D2D1_COLOR_F frameColor = theme.stroke_card;
-    if (focused) frameColor = WithAlpha(theme.accent, 0.28f);
+    if (focused) frameColor = IsHighContrast() ? theme.accent : WithAlpha(theme.accent, 0.24f);
     else if (target) frameColor = WithAlpha(theme.accent, 0.22f);
-    MakeBrush(dc, frameColor, brAccent_);
-    const float strokeW = focused ? 1.5f * scale_ : 1.0f * scale_;
+    const float strokeW = focused && IsHighContrast() ? 1.5f * scale_ : 1.0f * scale_;
     D2D1_ROUNDED_RECT frame = D2D1::RoundedRect(
         D2D1::RectF(pane_rect.left + 0.5f * scale_, pane_rect.top + 0.5f * scale_,
                     pane_rect.right - 0.5f * scale_, pane_rect.bottom - 0.5f * scale_),
         radius, radius);
+    if (split && focused && !IsHighContrast()) {
+        const float marker_height = (std::min)(22.0f * scale_, pane_header_height_ - 8.0f * scale_);
+        MakeBrush(dc, theme.accent, brAccent_);
+        FillRoundedRect(dc, brAccent_.get(), pane_rect.left + 1.5f * scale_,
+            pane_rect.top + (pane_header_height_ - marker_height) * 0.5f,
+            2.5f * scale_, marker_height, 1.25f * scale_);
+    }
+    MakeBrush(dc, frameColor, brAccent_);
     if (target && !focused) {
         if (!dashStroke_.get() && dc) {
             ID2D1Factory* factory = nullptr;
@@ -1248,12 +1207,12 @@ void MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y,
                                      bool dim_extension) {
     (void)selected;
     if (!compositor_ || !compositor_->Dc() || !compositor_->DwriteFactory() ||
-        !compositor_->TextFormat() || name.empty() || w <= 1.0f) {
+        !compositor_->FileNameFormat() || name.empty() || w <= 1.0f) {
         return;
     }
     ID2D1DeviceContext* dc = compositor_->Dc();
     IDWriteFactory2* factory = compositor_->DwriteFactory();
-    IDWriteTextFormat* fmt = compositor_->TextFormat();
+    IDWriteTextFormat* fmt = compositor_->FileNameFormat();
     MakeBrush(dc, theme.text, brText_);
 
     const auto old_wrap = fmt->GetWordWrapping();
@@ -1273,8 +1232,12 @@ void MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y,
             ext_at = dot;
     }
     const D2D1_COLOR_F ext_color = WithAlpha(theme.text, (theme.bg.r < 0.5f) ? 0.58f : 0.62f);
+    // Shape colored filenames in one layout. Splitting at the extension gives
+    // each substring its own clipping/ellipsis and loses glyph positioning
+    // across the boundary (including the dot's ink and the stem's last glyph).
     ComPtr<IDWriteTextLayout> highlighted;
-    if (!visible_matches.empty() && SUCCEEDED(factory->CreateTextLayout(shown.c_str(),
+    if ((!visible_matches.empty() || ext_at != std::wstring::npos) &&
+        SUCCEEDED(factory->CreateTextLayout(shown.c_str(),
         static_cast<UINT32>(shown.size()), fmt, w, h, &highlighted))) {
         highlighted->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         highlighted->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -1285,17 +1248,6 @@ void MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y,
                                                             static_cast<UINT32>(shown.size() - ext_at)});
         DrawNameHighlightBackground(compositor_, highlighted.get(), {x, y}, rc, visible_matches, theme, scale_);
         dc->DrawTextLayout({x, y}, highlighted.get(), brText_.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    } else if (ext_at != std::wstring::npos && !IsHighContrast()) {
-        const std::wstring stem = shown.substr(0, ext_at);
-        const std::wstring ext = shown.substr(ext_at);
-        const float stem_w = std::min(w, CellTextWidth(stem));
-        if (!compositor_->DrawLumaText(stem, fmt, D2D1::RectF(x, y, x + stem_w + 2.0f * scale_, y + h),
-                                       brText_->GetColor(), theme.bg, DWRITE_TEXT_ALIGNMENT_LEADING) ||
-            !compositor_->DrawLumaText(ext, fmt, D2D1::RectF(x + stem_w, y, x + w, y + h),
-                                       ext_color, theme.bg, DWRITE_TEXT_ALIGNMENT_LEADING)) {
-            dc->DrawText(shown.c_str(), (UINT32)shown.size(), fmt, &rc, brText_.get(),
-                         D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
-        }
     } else if (IsHighContrast() || !compositor_->DrawLumaText(
             shown, fmt, rc, brText_->GetColor(), theme.bg,
             DWRITE_TEXT_ALIGNMENT_LEADING)) {
@@ -1314,7 +1266,7 @@ void MainRenderer::DrawCenteredIconName(const std::wstring& name, const D2D1_REC
     const float height = std::max(1.0f, bounds.bottom - bounds.top);
     ComPtr<IDWriteTextLayout> layout;
     if (FAILED(compositor_->DwriteFactory()->CreateTextLayout(
-            name.c_str(), static_cast<UINT32>(name.size()), compositor_->TextFormat(),
+            name.c_str(), static_cast<UINT32>(name.size()), compositor_->FileNameFormat(),
             width, height, &layout)) || !layout.get()) {
         return;
     }
@@ -1387,11 +1339,12 @@ D2D1_RECT_F MainRenderer::RenameFieldRect(const PaneViewModel& vm, const D2D1_RE
 }
 
 void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, float h,
-                            const Theme& theme, int hover_region, int hover_control_index) {
+                            const Theme& theme, int hover_region, int hover_control_index,
+                            bool pane_focused) {
     ID2D1DeviceContext* dc = compositor_->Dc();
     const auto highlight_terms = NameHighlightTerms(vm.filter_text, vm.is_search ? vm.search_query : L" ");
     MakeBrush(dc, theme.fill_hover, brFillHover_);
-    MakeBrush(dc, theme.fill_selected, brFillSelected_);
+    MakeBrush(dc, pane_focused ? theme.fill_selected : theme.fill_selected_inactive, brFillSelected_);
     MakeBrush(dc, theme.accent, brAccent_);
     if (vm.loading && !vm.search_retaining_results) {
         // Directory enumeration is asynchronous. Leave the list quiet for its
@@ -1424,7 +1377,6 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
         const ListEntryView& e = MakeVisibleEntry(vm, static_cast<size_t>(src));
 
         bool selected = vm.IsRowSelected(src);
-        bool focused = (src == vm.selected_index);
         bool hover = (src == vm.hover_index);
         bool cut = e.record_only || vm.cut_names.contains(e.name);
 
@@ -1449,9 +1401,11 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 std::max(0.0f, sel.right - sel.left),
                 std::max(0.0f, sel.bottom - sel.top),
                 theme.radius_control * scale_);
-            if (focused) {
-                FillRoundedAccent(dc, brAccent_.get(), sel,
-                    theme.radius_control * scale_, 3.0f * scale_, AccentEdge::Left);
+            if (pane_focused) {
+                MakeBrush(dc, theme.accent, brAccent_);
+                const float indicator_h = std::min(18*scale_, std::max(0.0f, sel.bottom-sel.top-8*scale_));
+                FillRoundedRect(dc, brAccent_.get(), sel.left + scale_,
+                    (sel.top+sel.bottom-indicator_h)*0.5f, 2*scale_, indicator_h, scale_);
             }
         }
         if (src == vm.drop_target_index) {
@@ -1531,7 +1485,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
         const auto name_matches = NameMatchRanges(e.name, highlight_terms);
         if (iconGrid && tagDotCount > 0) {
             const float fullNameW = MeasureLayoutText(
-                compositor_, compositor_->DwriteFactory(), compositor_->TextFormat(), e.name) +
+                compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), e.name) +
                 HighlightPaddingWidth(e.name, e.name, name_matches, scale_);
             const float nameGap = 4.0f * scale_;
             const float cellW = nameRc.right - nameRc.left;
@@ -1550,7 +1504,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
         const NameTrail trail = LayoutNameTrail(
             nameX, textY, textH, nameColRight, cell.top, cell.bottom, scale_,
             e.name, tagDotCount, badgeW, showStar, showNewTab, showMore,
-            compositor_, compositor_->DwriteFactory(), compositor_->TextFormat(), change != nullptr,
+            compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), change != nullptr,
             vm.view_mode == ViewMode::Details ? (e.is_dir ? 3 : 2) : 0, name_matches);
         if (src == vm.rename_index) {
             const D2D1_RECT_F fieldRc = RenameFieldRect(vm, viewport, src);
@@ -1682,14 +1636,37 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                         const float chipBoxW = chipW - kTypeChipGapDip * scale_;
                         const float chipH = 17.0f * scale_;
                         const float chipTop = std::round((cell.top + cell.bottom - chipH) * 0.5f);
-                        D2D1_COLOR_F hue = HexColor(TypeChipRgb(chip));
-                        D2D1_COLOR_F ink = hue;
-                        if (!(theme.bg.r < 0.5f)) { ink.r *= 0.62f; ink.g *= 0.62f; ink.b *= 0.62f; }
-                        MakeBrush(dc, WithAlpha(hue, (theme.bg.r < 0.5f) ? 0.18f : 0.14f), brFillInput_);
-                        FillRoundedRect(dc, brFillInput_.get(), left, chipTop, chipBoxW, chipH, 4.0f * scale_);
+                        // Tonal chip: theme-derived ink (hue mixed toward white on dark, toward
+                        // black on light) keeps contrast without neon red on dark or muddy
+                        // brown on light; a 1 px same-hue edge defines the shape.
+                        const bool darkTheme = theme.bg.r < 0.5f;
+                        const auto mixTo = [](D2D1_COLOR_F c, float target, float k) {
+                            c.r += (target - c.r) * k; c.g += (target - c.g) * k; c.b += (target - c.b) * k;
+                            return c;
+                        };
+                        D2D1_COLOR_F ink{}, fill{}, edge{};
+                        if (TypeChipIsAux(chip)) {
+                            const D2D1_COLOR_F base = darkTheme ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : D2D1::ColorF(0.0f, 0.0f, 0.0f);
+                            ink = secondary;
+                            fill = WithAlpha(base, darkTheme ? 0.05f : 0.04f);
+                            edge = WithAlpha(base, darkTheme ? 0.08f : 0.07f);
+                        } else {
+                            const D2D1_COLOR_F hue = HexColor(TypeChipRgb(chip));
+                            ink = darkTheme ? mixTo(hue, 1.0f, 0.38f) : mixTo(hue, 0.0f, 0.30f);
+                            fill = WithAlpha(hue, darkTheme ? 0.15f : 0.09f);
+                            edge = WithAlpha(hue, darkTheme ? 0.28f : 0.20f);
+                        }
+                        const float chipRadius = 4.0f * scale_;
+                        MakeBrush(dc, fill, brFillInput_);
+                        FillRoundedRect(dc, brFillInput_.get(), left, chipTop, chipBoxW, chipH, chipRadius);
+                        MakeBrush(dc, edge, brTagDot_);
+                        const D2D1_ROUNDED_RECT chipEdge = D2D1::RoundedRect(
+                            D2D1::RectF(left + 0.5f, chipTop + 0.5f, left + chipBoxW - 0.5f, chipTop + chipH - 0.5f),
+                            chipRadius - 0.5f, chipRadius - 0.5f);
+                        dc->DrawRoundedRectangle(chipEdge, brTagDot_.get(), 1.0f);
                         const auto chipRc = D2D1::RectF(left, chipTop, left + chipBoxW, chipTop + chipH);
                         if (!compositor_->DrawLumaText(chip, compositor_->SmallFormat(), chipRc,
-                                                       WithAlpha(ink, cut ? 0.55f : 1.0f), theme.bg,
+                                                       WithAlpha(ink, ink.a * (cut ? 0.55f : 1.0f)), theme.bg,
                                                        DWRITE_TEXT_ALIGNMENT_CENTER)) {
                             MakeBrush(dc, ink, brTagDot_);
                             DrawTextRect(dc, compositor_->SmallFormat(), brTagDot_.get(), chip,
@@ -1743,9 +1720,33 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 meta += (meta.empty() ? L"" : L" \u00B7 ") + e.size_text;
             if (e.snippet.empty() && vm.view_mode == ViewMode::Content && !e.date_text.empty())
                 meta += (meta.empty() ? L"" : L" \u00B7 ") + e.date_text;
-            DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(), meta,
+            if (e.is_dir) {
+                const auto size = vm.folder_size_labels.find(src);
+                if (size != vm.folder_size_labels.end()) meta = size->second;
+            }
+            const bool manual_size = e.is_dir &&
+                meta == pulse::l10n::Get(pulse::l10n::StringId::FolderSizeCalculate);
+            if (manual_size) MakeBrush(dc, theme.accent, brAccent_);
+            DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->SmallFormat(),
+                manual_size ? brAccent_.get() : brTextSecondary_.get(), meta,
                 nameRc.left, nameRc.top + 25.0f * scale_,
                 std::max(0.0f, nameRc.right - nameRc.left), 22.0f * scale_);
+        }
+
+        if (iconGrid && e.is_dir && src != vm.rename_index) {
+            const auto size = vm.folder_size_labels.find(src);
+            if (size != vm.folder_size_labels.end()) {
+                const auto bounds = layout.FolderSizeRect(i);
+                auto* format = compositor_->SmallFormat();
+                const auto alignment = format->GetTextAlignment();
+                format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                const bool manual = size->second == pulse::l10n::Get(pulse::l10n::StringId::FolderSizeCalculate);
+                if (manual) MakeBrush(dc, theme.accent, brAccent_);
+                DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), format,
+                    manual ? brAccent_.get() : brTextSecondary_.get(), size->second,
+                    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
+                format->SetTextAlignment(alignment);
+            }
         }
 
         if (trail.show_star || trail.show_new_tab || trail.show_more) {

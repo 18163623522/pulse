@@ -353,21 +353,51 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
         };
 
         draw_card(lay.about_card);
-        MakeBrush(dc, theme.text, brText_);
-        DrawTextRect(dc, compositor_->TextFormat(), brText_.get(),
-                     pulse::l10n::Get(pulse::l10n::StringId::AboutPulse),
-                     lay.about_card.left + 16.0f * scale_, lay.about_card.top + 12.0f * scale_,
-                     lay.about_card.right - lay.about_card.left - 32.0f * scale_,
-                     24.0f * scale_);
-        MakeBrush(dc, theme.text_secondary, brTextSecondary_);
-        DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(), vm.settings_version,
-                     lay.about_card.left + 16.0f * scale_, lay.about_card.top + 42.0f * scale_,
-                     lay.about_card.right - lay.about_card.left - 32.0f * scale_,
-                     20.0f * scale_);
-        DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(), vm.settings_build_id,
-                     lay.about_card.left + 16.0f * scale_, lay.about_card.top + 66.0f * scale_,
-                     lay.about_card.right - lay.about_card.left - 32.0f * scale_,
-                     20.0f * scale_);
+        {
+            const D2D1_RECT_F& card = lay.about_card;
+            const float x0 = card.left + 16.0f * scale_;
+            const float inner_w = card.right - card.left - 32.0f * scale_;
+            MakeBrush(dc, theme.text, brText_);
+            DrawTextRect(dc, compositor_->TextFormat(), brText_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::AboutPulse),
+                         x0, card.top + 12.0f * scale_, inner_w, 24.0f * scale_);
+            MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+            DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::AboutTagline),
+                         x0, card.top + 38.0f * scale_, inner_w, 20.0f * scale_);
+            const auto& rows = vm.settings_about_rows;
+            const bool two_columns = AboutTwoColumns(card.right - card.left, scale_);
+            const size_t lines = AboutRowLines(vm, card.right - card.left, scale_);
+            const float col_w = two_columns ? inner_w * 0.5f : inner_w;
+            const float label_w = (std::min)(96.0f * scale_, col_w * 0.4f);
+            const float value_w = (std::max)(0.0f, col_w - label_w - 12.0f * scale_);
+            IDWriteTextFormat* small_fmt = compositor_->SmallFormat();
+            const auto measure = [&](const std::wstring& t) {
+                return MeasureTextWidth(compositor_->DwriteFactory(), small_fmt, t);
+            };
+            MakeBrush(dc, theme.text, brText_);
+            for (size_t i = 0; lines > 0 && i < rows.size(); ++i) {
+                const float col = two_columns ? static_cast<float>(i / lines) : 0.0f;
+                const float row = static_cast<float>(two_columns ? i % lines : i);
+                const float rx = x0 + col * col_w;
+                const float ry = card.top + 66.0f * scale_ + row * kAboutRowDip * scale_;
+                DrawTextRect(dc, small_fmt, brTextSecondary_.get(), rows[i].first,
+                             rx, ry, label_w, 22.0f * scale_);
+                DrawTextRect(dc, small_fmt, brText_.get(), FitEndEllipsis(rows[i].second, value_w, measure),
+                             rx + label_w, ry, value_w, 22.0f * scale_);
+            }
+            static constexpr pulse::l10n::StringId kAboutActions[] = {
+                pulse::l10n::StringId::AboutCopyInfo,
+                pulse::l10n::StringId::AboutHomepage,
+            };
+            for (int i = 0; i < 2; ++i) {
+                fluent::ControlState state{};
+                state.enabled = true;
+                state.hovered = IsHovered(vm, HitTestResult::SettingsAboutAction, i);
+                painter_.DrawButton({lay.about_action[i], pulse::l10n::Get(kAboutActions[i]), {},
+                                     fluent::ButtonKind::Standard, state});
+            }
+        }
 
         draw_card(lay.diagnostics_card);
         MakeBrush(dc, theme.text, brText_);
@@ -468,6 +498,94 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
                          vm.settings_index_error,
                          lay.content.left + pad, lay.update_card.bottom + 8.0f * scale_,
                          lay.content.right - lay.content.left - pad * 2, 36.0f * scale_);
+        }
+
+        draw_card(lay.release_card);
+        {
+            const D2D1_RECT_F& card = lay.release_card;
+            const float x0 = card.left + 16.0f * scale_;
+            const float head_w = (std::max)(0.0f, lay.release_all.left - 12.0f * scale_ - x0);
+            MakeBrush(dc, theme.text, brText_);
+            DrawTextRect(dc, compositor_->TextFormat(), brText_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::ReleaseNotes),
+                         x0, card.top + 12.0f * scale_, head_w, 22.0f * scale_);
+            MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+            DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::ReleaseNotesDesc),
+                         x0, card.top + 38.0f * scale_, head_w, 22.0f * scale_);
+            fluent::ControlState all{};
+            all.enabled = true;
+            all.hovered = IsHovered(vm, HitTestResult::SettingsAboutAction, 2);
+            painter_.DrawButton({lay.release_all, pulse::l10n::Get(pulse::l10n::StringId::ReleaseAll),
+                                 {}, fluent::ButtonKind::Standard, all});
+            const auto* notes = vm.settings_release_notes;
+            IDWriteTextFormat* small_fmt = compositor_->SmallFormat();
+            const auto measure_small = [&](const std::wstring& t) {
+                return MeasureTextWidth(compositor_->DwriteFactory(), small_fmt, t);
+            };
+            for (size_t i = 0; notes && i < notes->size() && i < lay.release_rows.size(); ++i) {
+                const auto& note = (*notes)[i];
+                const D2D1_RECT_F& row = lay.release_rows[i];
+                const bool expanded = static_cast<int>(i) == vm.settings_release_expanded;
+                if (VisibleInContent(row, lay.content)) {
+                    if (IsHovered(vm, HitTestResult::SettingsReleaseNote, static_cast<int>(i))) {
+                        MakeBrush(dc, theme.fill_hover, brFillHover_);
+                        FillRoundedRect(dc, brFillHover_.get(), row.left, row.top,
+                                        row.right - row.left, row.bottom - row.top, 4.0f * scale_);
+                    }
+                    painter_.DrawGlyph(expanded ? L"\uE70D" : L"\uE76C",
+                                       D2D1::RectF(row.left + 6.0f * scale_, row.top,
+                                                   row.left + 26.0f * scale_, row.bottom),
+                                       theme.text_secondary);
+                    const float vx = row.left + kReleaseTextInsetDip * scale_;
+                    const std::wstring version_title = L"Pulse " + note.version;
+                    const float title_w = MeasureTextWidth(compositor_->DwriteFactory(),
+                                                           compositor_->TextFormat(), version_title);
+                    MakeBrush(dc, theme.text, brText_);
+                    DrawTextRect(dc, compositor_->TextFormat(), brText_.get(), version_title,
+                                 vx, row.top + 7.0f * scale_, title_w + 4.0f * scale_, 22.0f * scale_);
+                    float after = vx + title_w + 12.0f * scale_;
+                    if (note.current) {
+                        const std::wstring badge = pulse::l10n::Get(pulse::l10n::StringId::ReleaseCurrent);
+                        const float bw = painter_.MeasureBadgeWidth(badge);
+                        fluent::BadgeSpec spec{};
+                        spec.bounds = D2D1::RectF(after, row.top + 8.0f * scale_, after + bw,
+                                                  row.top + 28.0f * scale_);
+                        spec.text = badge;
+                        spec.kind = fluent::BadgeKind::Accent;
+                        painter_.DrawBadge(spec);
+                        after += bw + 12.0f * scale_;
+                    }
+                    const float preview_w = row.right - 12.0f * scale_ - after;
+                    if (!expanded && !note.lines.empty() && preview_w > 60.0f * scale_) {
+                        MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+                        DrawTextRect(dc, small_fmt, brTextSecondary_.get(),
+                                     FitEndEllipsis(note.lines.front(), preview_w, measure_small),
+                                     after, row.top + 8.0f * scale_, preview_w, 20.0f * scale_);
+                    }
+                }
+                if (!expanded || lay.release_body.bottom <= lay.release_body.top) continue;
+                const D2D1_RECT_F& body = lay.release_body;
+                const float text_x = body.left + kReleaseTextInsetDip * scale_;
+                const float text_w = ReleaseTextWidth(body.right - body.left, scale_);
+                float ly = body.top + 4.0f * scale_;
+                MakeBrush(dc, theme.accent, brAccent_);
+                for (size_t k = 0; k < note.lines.size(); ++k) {
+                    if (ly > lay.content.bottom) break;
+                    const float h = ReleaseLineHeight(&painter_, note.lines[k], text_w, scale_);
+                    if (ly + h >= lay.content.top) {
+                        if (k < note.bullets.size() && note.bullets[k]) {
+                            const float r = 2.5f * scale_;
+                            dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(text_x - 12.0f * scale_,
+                                                                        ly + 9.0f * scale_), r, r),
+                                            brAccent_.get());
+                        }
+                        painter_.DrawWrappedCaption(note.lines[k], D2D1::Point2F(text_x, ly), text_w,
+                                                    theme.text);
+                    }
+                    ly += h + kReleaseLineGapDip * scale_;
+                }
+            }
         }
     } else if (vm.settings_page == 4) {
         auto draw_card = [&](const D2D1_RECT_F& card) {
@@ -706,7 +824,10 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::ListSmartDate: target=l.list_style_row[0];break;
     case I::ListZebraRows: target=l.list_style_row[1];break;
     case I::ListSizeBar: target=l.list_style_row[2];break;
+    case I::SettingsFolderSort: target=l.folder_sort_card;break;
     case I::SettingsWallpaper: target=l.wallpaper_card;break;
+    case I::SettingsWallpaperLook: target=l.wallpaper_look_card;break;
+    case I::SettingsWallpaperBlur: target=l.wallpaper_blur_card;break;
     case I::SettingsTrayIcon: target=l.tray_icon_card;break;
     case I::SettingsShowHidden: target=l.hidden_files_row;break;
     case I::SettingsShowProtected: target=l.protected_files_row;break;
@@ -721,6 +842,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::LocalDrives: if(!l.index_volume_rows.empty()) target=l.index_volume_rows.front();break;
     case I::Exclusions: target=l.index_exclude_action;break;
     case I::ServerFolders: target=l.network_action[0];break;
+    case I::ReleaseNotes: target=l.release_card;break;
     default: return 0;
     }
     return (std::max)(0.0f,target.top-l.content_origin-20*scale_);

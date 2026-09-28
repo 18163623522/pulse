@@ -44,6 +44,9 @@ enum MenuCmd : int {
     CmdSortPath,
     CmdSortAscending,
     CmdSortDescending,
+    CmdFolderSortTop,     // 文件夹优先：始终置顶
+    CmdFolderSortFollow,  // 文件夹优先：跟随排序方向
+    CmdFolderSortMixed,   // 文件夹优先：与文件混排
     CmdLayoutSingle = 50,
     CmdLayoutTwoVertical,
     CmdLayoutTwoHorizontal,
@@ -91,6 +94,8 @@ enum MenuCmd : int {
     CmdPinQuickAccess,
     CmdUnpinQuickAccess,
     CmdViewRecentChanges = 180,
+    CmdColumnLayout = 181,
+    CmdShortcutHelp = 182,
     CmdRecentBase = 200,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
@@ -146,6 +151,7 @@ struct BackgroundViewOptions {
     ui::ViewMode view_mode = ui::ViewMode::Details;
     ui::SortColumn sort_column = ui::SortColumn::Name;
     ui::SortDirection sort_direction = ui::SortDirection::Asc;
+    int folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
     bool details_panel = false;
     bool can_sort = true;
     bool indexed_search = false;
@@ -154,6 +160,8 @@ struct BackgroundViewOptions {
 };
 void AppendBackgroundViewCommands(std::vector<ui::FluentMenuItem>& items,
                                   const BackgroundViewOptions& options);
+std::vector<ui::FluentMenuItem> BuildSortMenu(const BackgroundViewOptions& options);
+ui::FluentMenuItem BuildShortcutHints();
 std::vector<ui::FluentMenuItem> BuildRecycleItemMenu(bool can_undo,
                                                      const std::wstring& undo_label);
 std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,

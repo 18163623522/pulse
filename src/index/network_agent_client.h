@@ -66,6 +66,10 @@ private:
     std::map<uint64_t,uint32_t> session_requests_;
     std::thread search_thread_;
     HANDLE agent_process_ = nullptr;
+    ULONGLONG last_spawn_tick_ = 0;  // guarded by request_mu_
+    static constexpr ULONGLONG kRespawnBackoffMs = 5000;
+    // Must match the mutex created by RunAgent() in network_agent_main.cpp.
+    static constexpr const wchar_t* kAgentSingletonName = L"Local\\Pulse.Index.NetworkAgent.Singleton";
 };
 
 } // namespace pulse::index

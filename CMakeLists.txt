@@ -271,6 +271,10 @@ target_link_libraries(pulse_fluent_gallery PRIVATE
     pulse_localization)
 pulse_enable_lumatext(pulse_fluent_gallery)
 
+# ---- Focused visual regression: offscreen commands and theme tokens ----
+add_executable(pulse_command_icon_test src/bench/command_icon_test.cpp)
+target_link_libraries(pulse_command_icon_test PRIVATE d2d1 dwrite dwmapi ole32 windowscodecs user32)
+
 # ---- Pulse.exe: main UI process ----
 file(GLOB_RECURSE PULSE_APP_SOURCES CONFIGURE_DEPENDS
     src/app/*.cpp src/ui/*.cpp src/fs/*.cpp src/ops/*.cpp src/ipc/*.cpp src/index/*.cpp)
@@ -289,7 +293,7 @@ list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "(document_(host_main|reader|filter)
 option(PULSE_WITH_SELFTEST "Embed the legacy --selftest suite in Pulse.exe" OFF)
 if(NOT PULSE_WITH_SELFTEST)
     list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "selftest_1b2\\.cpp$")
-    list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "index_(engine|engine_pinyin|visibility|mft|paths|delta)\\.cpp$")
+    list(FILTER PULSE_APP_SOURCES EXCLUDE REGEX "index_(engine|engine_pinyin|visibility|mft|paths|delta|folder_sizes)\\.cpp$")
 endif()
 list(APPEND PULSE_APP_SOURCES src/index/network_agent_client.cpp)
 if(PULSE_APP_SOURCES)
@@ -298,6 +302,8 @@ if(PULSE_APP_SOURCES)
         target_compile_definitions(pulse PRIVATE PULSE_WITH_SELFTEST=1)
     endif()
     target_sources(pulse PRIVATE src/app/pulse.rc)
+    include(cmake/release_notes.cmake)
+    pulse_embed_release_notes(pulse)
     set_property(SOURCE src/app/pulse.rc APPEND PROPERTY OBJECT_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/global-search-logo.png"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/app/pulse.ico"
@@ -445,6 +451,7 @@ add_executable(pulse_app_controllers_test
     src/app/single_instance_coordinator.cpp
     src/app/tray_controller.cpp
     src/app/app_prefs.cpp
+    src/app/folder_view_prefs.cpp
     src/app/context_menu_prefs.cpp
     src/ui/view_layout.cpp
     src/index/index_client.cpp
@@ -513,6 +520,9 @@ add_executable(pulse_index_pinyin_test
     src/index/index_query.cpp src/index/search_kinds.cpp src/index/index_mft.cpp
     src/index/index_paths.cpp src/index/index_delta.cpp src/index/index_shard.cpp src/fs/fs_enum.cpp)
 target_link_libraries(pulse_index_pinyin_test PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr)
+foreach(folder_size_target pulse_index pulse_index_engine_test pulse_index_pinyin_test)
+    target_sources(${folder_size_target} PRIVATE src/index/index_folder_sizes.cpp)
+endforeach()
 
 foreach(search_target pulse pulse_index pulse_content_search_test)
     if(NOT search_target STREQUAL "pulse")

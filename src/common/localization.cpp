@@ -10,9 +10,11 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_COLUMN_LAYOUT;
+constexpr UINT kLastString = IDS_UPDATED_CLICK;
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
-              static_cast<UINT>(StringId::ChangeDisabled) <= kLastString);
+              static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
+              static_cast<UINT>(StringId::FolderSortMixed) <= kLastString &&
+              static_cast<UINT>(StringId::WallpaperBlurStrong) <= kLastString);
 
 HINSTANCE g_module = nullptr;
 std::atomic<Language> g_preference{Language::System};

@@ -1,3 +1,4 @@
+#include "toolbar_layout.h"
 // ui_hit_test.cpp — Hit testing and tab-strip queries.
 #include "ui_renderer.h"
 #include "address_search_layout.h"
@@ -216,6 +217,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     }
                 }
                 for (int i = 0; i < 3; ++i) {
+                    if (ContainsPt(lay.folder_sort_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsFolderSort;
+                        r.index = i;
+                        return r;
+                    }
+                }
+                for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.tray_icon_row[i], x, y)) {
                         r.region = HitTestResult::SettingsTrayIcon;
                         r.index = i;
@@ -245,6 +253,18 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     r.region = HitTestResult::SettingsWallpaper;
                     r.index = 1;
                     return r;
+                }
+                for (int i = 0; i < 3; ++i) {
+                    if (ContainsPt(lay.wallpaper_look_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsWallpaperLook;
+                        r.index = i;
+                        return r;
+                    }
+                    if (ContainsPt(lay.wallpaper_blur_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsWallpaperBlur;
+                        r.index = i;
+                        return r;
+                    }
                 }
                 if (ContainsPt(lay.hidden_files_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle;
@@ -340,6 +360,20 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 }
                 if(ContainsPt(lay.context_restore,x,y)) {r.region=HitTestResult::SettingsRestore;return r;}
             } else if (vm.settings_page == 3) {
+                for (int i = 0; i < 3; ++i) {
+                    if (ContainsPt(i < 2 ? lay.about_action[i] : lay.release_all, x, y)) {
+                        r.region = HitTestResult::SettingsAboutAction;
+                        r.index = i;
+                        return r;
+                    }
+                }
+                for (size_t i = 0; i < lay.release_rows.size(); ++i) {
+                    if (ContainsPt(lay.release_rows[i], x, y)) {
+                        r.region = HitTestResult::SettingsReleaseNote;
+                        r.index = static_cast<int>(i);
+                        return r;
+                    }
+                }
                 if (ContainsPt(lay.diagnostics_perf, x, y)) {
                     r.region = HitTestResult::SettingsToggle;
                     r.index = 4;
@@ -431,78 +465,55 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         return r;
     }
 
-    // Toolbar.
-    if (y < title_bar_height_ + toolbar_height_) {
-        const bool compact = rect.right < 900.0f * scale_;
-        float tx = margin_;
-        auto hitBtn = [&](float w, HitTestResult::Region reg) -> bool {
-            if (x >= tx && x < tx + w) { r.region = reg; return true; }
-            tx += kCommandIconStepDip * scale_;
-            return false;
-        };
-        const float commandButtonWidth = kCommandIconButtonDip * scale_;
-        if (hitBtn(commandButtonWidth, HitTestResult::NavBack)) return r;
-        if (!compact && hitBtn(commandButtonWidth, HitTestResult::NavForward)) return r;
-        if (hitBtn(commandButtonWidth, HitTestResult::NavUp)) return r;
-        if (hitBtn(commandButtonWidth, HitTestResult::NavRefresh)) return r;
-        D2D1_RECT_F addrRc = AddressBarRect(rect.right);
-        if (x >= addrRc.left && x < addrRc.right) {
+    // Drawing and hit testing share both toolbar rows.
+    if (x >= EffectiveSidebarWidth(rect.right) && y < title_bar_height_ + toolbar_height_) {
+        const auto toolbar = MakeToolbarLayout(rect.right, scale_, title_bar_height_, margin_,
+            NewButtonWidthPx(rect.right-EffectiveSidebarWidth(rect.right) < 600 * scale_), EffectiveSidebarWidth(rect.right), vm.pane.filter_expand);
+        const HitTestResult::Region nav[] = {HitTestResult::NavBack, HitTestResult::NavForward,
+            HitTestResult::NavUp, HitTestResult::NavRefresh};
+        const bool searchOverlay=vm.address_searching && rect.right-EffectiveSidebarWidth(rect.right)<480*scale_;
+        if (!searchOverlay)
+            for (int i=0; i<4; ++i) if (RectContains(toolbar.navigation[i],x,y)) {r.region=nav[i]; return r;}
+        const auto searchBounds=searchOverlay ? SearchBarRect(rect.right) : toolbar.search;
+        if (RectContains(searchBounds,x,y)) {
+            r.region = HitTestResult::AddressSearch;
             if (vm.address_searching) {
-                const auto layout = LayoutAddressSearch(addrRc, scale_);
-                if (x < layout.scope.right) r.region = HitTestResult::AddressSearchScope;
-                else if (x < layout.name.right) r.region = HitTestResult::AddressSearchMode;
-                else if (x < layout.content.right) r.region = HitTestResult::AddressSearchContent;
-                else if (layout.close.right > layout.close.left && x >= layout.close.left) r.region = HitTestResult::AddressSearchClose;
-                else if (x >= layout.options.left) r.region = HitTestResult::AddressSearchOptions;
-                else if (vm.address_search_has_text && layout.clear.right > layout.clear.left && x >= layout.clear.left)
-                    r.region = HitTestResult::AddressSearchClear;
-                else r.region = HitTestResult::AddressBar;
-                return r;
+                const auto layout = LayoutAddressSearch(searchBounds,scale_);
+                r.region = HitTestResult::AddressSearchInput;
+                if (RectContains(layout.scope,x,y)) r.region=HitTestResult::AddressSearchScope;
+                else if (RectContains(layout.name,x,y)) r.region=HitTestResult::AddressSearchMode;
+                else if (RectContains(layout.content,x,y)) r.region=HitTestResult::AddressSearchContent;
+                else if (RectContains(layout.close,x,y)) r.region=HitTestResult::AddressSearchClose;
+                else if (RectContains(layout.options,x,y)) r.region=HitTestResult::AddressSearchOptions;
+                else if (vm.address_search_has_text && RectContains(layout.clear,x,y)) r.region=HitTestResult::AddressSearchClear;
             }
-            if (vm.address_editing) {
-                r.region = HitTestResult::AddressBar;
-                return r;
-            }
-            if (x >= AddressSearchButtonRect(rect.right).left) {
-                r.region = HitTestResult::AddressSearch;
-                return r;
-            }
-            std::vector<BreadcrumbPlaced> placed;
-            BreadcrumbLayout(vm.pane, rect.right, placed);
-            const float edit_zone = 28.0f * scale_;
-            if (x >= addrRc.right - edit_zone) {
-                r.region = HitTestResult::AddressBar;
-                return r;
-            }
-            for (size_t i = 0; i < placed.size(); ++i) {
-                if (x >= placed[i].rc.left && x < placed[i].rc.right) {
-                    r.region = HitTestResult::BreadcrumbSegment;
-                    r.index = (int)i;
-                    r.path = placed[i].path;
-                    return r;
-                }
-            }
-            r.region = HitTestResult::AddressBar;
             return r;
         }
-        tx = addrRc.right + margin_;
-        const float newW = NewButtonWidthPx(compact);
-        if (x >= tx && x < tx + newW) { r.region = HitTestResult::NewButton; return r; }
-        tx += newW + margin_;
-        if (!compact) {
-            tx += 12.0f * scale_;
-            if (hitBtn(commandButtonWidth, HitTestResult::Cut)) return r;
-            if (hitBtn(commandButtonWidth, HitTestResult::Copy)) return r;
-            if (hitBtn(commandButtonWidth, HitTestResult::Paste)) return r;
-            if (hitBtn(commandButtonWidth, HitTestResult::Rename)) return r;
-            if (hitBtn(commandButtonWidth, HitTestResult::Delete)) return r;
-            tx += 12.0f * scale_;
-            if (hitBtn(commandButtonWidth, HitTestResult::SplitButton)) return r;
-            if (hitBtn(commandButtonWidth, HitTestResult::DetailsToggle)) return r;
+        if (RectContains(toolbar.address,x,y)) {
+            r.region=HitTestResult::AddressBar;
+            if (!vm.address_editing && x < toolbar.address.right-28*scale_) {
+                std::vector<BreadcrumbPlaced> placed;
+                BreadcrumbLayout(vm.pane,rect.right,placed);
+                for (size_t i=0;i<placed.size();++i) if (RectContains(placed[i].rc,x,y)) {
+                    r.region=HitTestResult::BreadcrumbSegment; r.index=(int)i; r.path=placed[i].path; break;
+                }
+            }
+            return r;
         }
+        if (RectContains(toolbar.sort,x,y)) {r.region=HitTestResult::ToolbarSort; return r;}
+        if (RectContains(toolbar.overflow,x,y)) {r.region=HitTestResult::ToolbarMore; return r;}
+        if (RectContains(toolbar.filter,x,y)) {
+            r.region = !vm.pane.filter_text.empty() && vm.pane.filter_expand >= 0.985f &&
+                RectContains(FilterClearRect(rect,vm.pane.filter_expand),x,y)
+                ? HitTestResult::FilterClear : HitTestResult::FilterBox;
+            return r;
+        }
+        if (RectContains(toolbar.create,x,y)) {r.region=HitTestResult::NewButton; return r;}
+        const HitTestResult::Region commands[]={HitTestResult::Cut,HitTestResult::Copy,HitTestResult::Paste,
+            HitTestResult::Rename,HitTestResult::Delete,HitTestResult::SplitButton,HitTestResult::DetailsToggle,HitTestResult::PaneColumnLayout};
+        for(int i=0;i<8;++i) if(RectContains(toolbar.commands[i],x,y)) {r.region=commands[i]; return r;}
         return r;
     }
-
     // Status bar. Only the transfer summary (center-right) is a control;
     // the left folder/selection text must not reopen the copy dialog.
     if (y >= rect.bottom - status_height_) {
@@ -562,29 +573,41 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 return r;
             }
             if (slot.kind == SidebarSlot::TrayPanel) {
-                // Scatter deck: inverse-rotate the point into each icon's
-                // local space; hovered (topmost) first, then bottom-up.
-                // Ghosts are inert.
+                // Card stack: only the top live card is interactive (the
+                // peeking layers are decoration); ghosts are inert. Footer
+                // pager buttons page through the stack.
                 if (!compact) {
-                    const TrayFanGeom g = TrayFanGeometry(slot.rc, vm.tray_deck.live_count,
-                                                          vm.tray_deck.open, scale_,
-                                                          tray_icon_dip_);
-                    const std::vector<int> order = TrayCardPaintOrder(vm.tray_deck, g, scale_);
-                    for (auto it = order.rbegin(); it != order.rend(); ++it) {
-                        const int c = *it;
-                        const TrayCardView& card = vm.tray_deck.cards[static_cast<size_t>(c)];
-                        if (card.ghost) continue;
-                        bool close_zone = false;
-                        if (!TrayCardHit(g, card, scale_, x, y, &close_zone)) continue;
-                        if (close_zone && c == vm.tray_deck.hovered) {
-                            r.region = HitTestResult::TrayItemRemove;
-                            r.index = card.batch;
-                            r.sub_index = card.sub;
-                        } else {
-                            r.region = HitTestResult::TrayCard;
-                            r.index = c; // display index (hover identity)
+                    const TrayDeckView& deck = vm.tray_deck;
+                    if (deck.live_count > 0) {
+                        const std::wstring index_text = TrayIndexText(deck);
+                        const TrayFooterGeom f = TrayFooterGeometry(slot.rc, scale_,
+                            deck.total_count, compositor_ ? MeasureTextWidth(
+                                compositor_->DwriteFactory(), compositor_->SmallFormat(),
+                                index_text) : 30.0f * scale_);
+                        if (f.pager && RectContains(f.prev, x, y)) {
+                            r.region = HitTestResult::TrayPrev;
+                            return r;
                         }
-                        return r;
+                        if (f.pager && RectContains(f.next, x, y)) {
+                            r.region = HitTestResult::TrayNext;
+                            return r;
+                        }
+                        const TrayStackGeom g = TrayStackGeometry(slot.rc, scale_, deck.thumb_dip);
+                        for (int c = 0; c < deck.live_count; ++c) {
+                            const TrayCardView& card = deck.cards[static_cast<size_t>(c)];
+                            if (card.ghost || card.depth > 0.5f) continue;
+                            bool close_zone = false;
+                            if (!TrayCardHit(g, card, deck.spread, x, y, &close_zone)) continue;
+                            if (close_zone) {
+                                r.region = HitTestResult::TrayItemRemove;
+                                r.index = card.batch;
+                                r.sub_index = card.sub;
+                            } else {
+                                r.region = HitTestResult::TrayCard;
+                                r.index = c; // display index (hover identity)
+                            }
+                            return r;
+                        }
                     }
                 }
                 return r;
@@ -699,7 +722,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         }
     }
 
-    auto hitPaneBounds = [&](const PaneViewModel& paneVm, const D2D1_RECT_F& paneRect, int paneIndex) -> HitTestResult {
+    auto hitPaneBounds = [&](const PaneViewModel& paneVm, const D2D1_RECT_F& paneRect, int paneIndex, bool focused) -> HitTestResult {
         // Header controls use the full pane; below the header the column
         // view narrows the regular list to its body.
         D2D1_RECT_F paneRc = paneRect;
@@ -707,51 +730,16 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         out.pane_index = paneIndex;
         if (x < paneRc.left || x >= paneRc.right || y < paneRc.top || y >= paneRc.bottom)
             return out;
-        D2D1_RECT_F filterRc = FilterBoxRect(paneRc, paneVm.filter_expand);
-        if (RectContains(filterRc, x, y)) {
-            out.region = !paneVm.filter_text.empty() && paneVm.filter_expand >= 0.985f &&
-                RectContains(FilterClearRect(paneRc, paneVm.filter_expand), x, y)
-                ? HitTestResult::FilterClear : HitTestResult::FilterBox;
-            out.index = paneIndex;
-            return out;
-        }
-        const D2D1_RECT_F mediumRc = PaneMediumIconsRect(paneRc, paneVm.filter_expand);
-        if (RectContains(mediumRc, x, y)) {
-            out.region = HitTestResult::PaneMediumIcons;
-            out.index = paneIndex;
-            return out;
-        }
-        if (RectContains(PaneColumnLayoutRect(paneRc, paneVm.filter_expand), x, y)) {
-            out.region = HitTestResult::PaneColumnLayout;
-            out.index = paneIndex;
-            return out;
-        }
-        const D2D1_RECT_F viewRc = PaneViewButtonRect(paneRc, paneVm.filter_expand);
-        if (RectContains(viewRc, x, y)) {
-            out.region = HitTestResult::PaneViewButton;
-            out.index = paneIndex;
-            return out;
-        }
-        const D2D1_RECT_F navBackRc = PaneNavBackRect(paneRc, paneVm.filter_expand);
-        if (RectContains(navBackRc, x, y)) {
-            out.region = HitTestResult::NavBack;
-            out.index = paneIndex;
-            return out;
-        }
-        if (compositor_ && ContainsPt(ChangeTitleRect(paneRc, navBackRc.left - 8 * scale_, pane_header_height_, paneVm.title_change_badge, scale_, compositor_, paneVm.header_text), x, y)) {
+        const D2D1_RECT_F detailsRc = PaneDetailsRect(paneRc);
+        if (compositor_ && ContainsPt(ChangeTitleRect(paneRc, detailsRc.left - 8 * scale_, pane_header_height_, paneVm.title_change_badge, scale_, compositor_, paneVm.header_text), x, y)) {
             out.region = HitTestResult::ChangeBadge; out.index = -1; return out;
         }
-        const D2D1_RECT_F navForwardRc = PaneNavForwardRect(paneRc, paneVm.filter_expand);
-        if (RectContains(navForwardRc, x, y)) {
-            out.region = HitTestResult::NavForward;
-            out.index = paneIndex;
-            return out;
-        }
-        const D2D1_RECT_F navUpRc = PaneNavUpRect(paneRc, paneVm.filter_expand);
-        if (RectContains(navUpRc, x, y)) {
-            out.region = HitTestResult::NavUp;
-            out.index = paneIndex;
-            return out;
+        if (focused && paneVm.header_controls_opacity > 0.05f) {
+            const D2D1_RECT_F buttons[] = {detailsRc, PaneMediumIconsRect(paneRc), PaneViewButtonRect(paneRc)};
+            const HitTestResult::Region actions[] = {HitTestResult::PaneDetails, HitTestResult::PaneMediumIcons, HitTestResult::PaneViewButton};
+            for (int i=0;i<3;++i) if (RectContains(buttons[i],x,y)) {
+                out.region=actions[i]; out.index=paneIndex; return out;
+            }
         }
         if (y >= paneRect.top + pane_header_height_ && paneVm.column_strip.Active()) {
             if (HitTestColumnStrip(paneVm, paneRect, x, y, out)) return out;
@@ -894,6 +882,10 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         const D2D1_RECT_F nameRc = layout.NameRect(viewRow);
                         const D2D1_RECT_F cell = layout.ItemRect(viewRow);
                         const ListEntryView& entry = MakeVisibleEntry(paneVm, static_cast<size_t>(idx));
+                        if (ShowsFolderSize(paneVm.view_mode) && paneVm.folder_size_actions.contains(idx) &&
+                            ContainsPt(layout.FolderSizeRect(viewRow), x, y)) {
+                            out.region = HitTestResult::RowFolderSize; out.index = idx; return out;
+                        }
                         const std::vector<int>* tagIndices = paneVm.tag_catalog
                             ? paneVm.tag_catalog->TagIndicesForPath(entry.path) : nullptr;
                         size_t tagCount = tagIndices ? tagIndices->size() : 0;
@@ -927,7 +919,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                             entry.name, static_cast<int>(std::min<size_t>(3, tagCount)), badgeW,
                             showActions, showActions && paneVm.hover_index == idx && entry.is_dir,
                             showActions && rowHot,
-                            compositor_, compositor_->DwriteFactory(), compositor_->TextFormat(), change != nullptr,
+                            compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), change != nullptr,
                             paneVm.view_mode == ViewMode::Details ? (entry.is_dir ? 3 : 2) : 0,
                             NameMatchRanges(entry.name, NameHighlightTerms(paneVm.filter_text,
                                 paneVm.is_search ? paneVm.search_query : L"")));
@@ -967,12 +959,12 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             const auto& slot = vm.pane_slots[static_cast<size_t>(i)];
             if (x >= slot.rect.left && x < slot.rect.right &&
                 y >= slot.rect.top && y < slot.rect.bottom) {
-                return hitPaneBounds(slot.pane, slot.rect, i);
+                return hitPaneBounds(slot.pane, slot.rect, i, slot.focused);
             }
         }
         return r;
     }
-    return hitPaneBounds(vm.pane, content, 0);
+    return hitPaneBounds(vm.pane, content, 0, true);
 }
 
 } // namespace pulse::ui

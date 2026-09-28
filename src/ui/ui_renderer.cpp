@@ -1,6 +1,8 @@
 // ui_renderer.cpp — Chrome orchestration (title, toolbar, status, render).
 #include "legacy_icons.h"
 #include "ui_renderer.h"
+#include "command_icons.h"
+#include "toolbar_layout.h"
 #include "ui_renderer_internal.h"
 #include "../common/localization.h"
 #include "../common/display_path.h"
@@ -23,6 +25,7 @@ namespace pulse::ui {
 MainRenderer::MainRenderer() = default;
 
 void MainRenderer::SetCompositor(Compositor* comp) {
+    paneHeaderStroke_.reset();
     tray_shadows_.clear();
     ClearTextWidthCache();
     sized_icon_formats_.clear();
@@ -68,7 +71,7 @@ void MainRenderer::SetScale(float scale) {
     }
     scale_ = scale;
     title_bar_height_ = kTitleBarHeight * scale;
-    toolbar_height_ = 44.0f * scale;
+    toolbar_height_ = 88.0f * scale;
     status_height_ = 28.0f * scale;
     sidebar_width_ = sidebar_width_dip_ * scale;
     pane_header_height_ = 40.0f * scale;
@@ -123,24 +126,24 @@ D2D1_RECT_F MainRenderer::TitleBarRect(float w) const {
 }
 
 D2D1_RECT_F MainRenderer::ToolbarRect(float w) const {
-    return D2D1::RectF(0, title_bar_height_, w, title_bar_height_ + toolbar_height_);
+    return D2D1::RectF(EffectiveSidebarWidth(w), title_bar_height_, w, title_bar_height_ + toolbar_height_);
 }
 
 D2D1_RECT_F MainRenderer::AddressBarRect(float w) const {
-    const bool compact = w < 900.0f * scale_;
-    const float nav_count = compact ? 3.0f : 4.0f;
-    float x = margin_ + 34.0f * scale_ * nav_count + margin_;
-    float right = w - margin_;
-    float actions = NewButtonWidthPx(compact) + margin_;
-    if (!compact) {
-        actions += (12.0f + 5.0f * kCommandIconStepDip + 12.0f + 2.0f * kCommandIconStepDip)
-            * scale_;
-    }
-    float addrW = std::max(104.0f * scale_, right - x - actions);
-    return D2D1::RectF(x, title_bar_height_ + 4 * scale_,
-                       x + addrW, title_bar_height_ + toolbar_height_ - 4 * scale_);
+    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).address;
 }
-
+D2D1_RECT_F MainRenderer::SearchBarRect(float w) const {
+    if (w-EffectiveSidebarWidth(w)<480*scale_)
+        return D2D1::RectF(EffectiveSidebarWidth(w)+margin_,title_bar_height_+4*scale_,
+            w-margin_,title_bar_height_+40*scale_);
+    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).search;
+}
+D2D1_RECT_F MainRenderer::NewCommandRect(float w) const {
+    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).create;
+}
+D2D1_RECT_F MainRenderer::SplitCommandRect(float w) const {
+    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).commands[5];
+}
 float MainRenderer::NewButtonWidthPx(bool compact) const {
     if (compact) return kCommandIconButtonDip * scale_;
     return painter_.MeasureButtonWidth(
@@ -262,7 +265,7 @@ void MainRenderer::BreadcrumbLayout(const PaneViewModel& vm, float w,
     D2D1_RECT_F addr = AddressBarRect(w);
     const float segPad = 8.0f * scale_;
     const float chevronW = 14.0f * scale_;
-    const float hint = addr.right - AddressSearchButtonRect(w).left + 6.0f * scale_;
+    const float hint = 0.0f;
     const float avail = std::max(0.0f, addr.right - addr.left - 2 * margin_ - hint);
 
     IDWriteFactory2* dwrite = compositor_ ? compositor_->DwriteFactory() : nullptr;
@@ -332,6 +335,14 @@ void MainRenderer::DrawIconText(float x, float y, float w, float h,
     const std::wstring& glyph, const std::wstring& fallback,
     const D2D1_COLOR_F& color, float size_factor) {
     ID2D1DeviceContext* dc = compositor_->Dc();
+    const auto command = command_icons::FromGlyph(glyph);
+    if (command != command_icons::Icon::None) {
+        if (!paneHeaderStroke_.get()) command_icons::CreateStrokeStyle(dc, &paneHeaderStroke_);
+        MakeBrush(dc, color, brText_);
+        const auto bounds = command_icons::CenteredBounds(D2D1::RectF(x, y, x + w, y + h),
+                                                           20.0f * scale_ * size_factor);
+        if (command_icons::Draw(dc, brText_.get(), paneHeaderStroke_.get(), command, bounds)) return;
+    }
     IDWriteTextFormat* iconFmt = compositor_->IconFormat();
     std::wstring txt = glyph;
     IDWriteTextFormat* fmt = iconFmt;
@@ -381,31 +392,44 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
     text_background_ = theme.bg;
     painter_.BeginFrame(theme, IsHighContrast());
 
-    // None effect + selected image: the wallpaper itself covers the window
-    // base; a scrim plus the translucent panels (backdrop_enabled) let it
-    // show through.
+    // None effect + selected image: the (optionally blurred) wallpaper covers
+    // the window base; the title scrim, one shared sheet and the pane cards
+    // stack over it with the opacities from ComputeLayerAlphas.
     const bool image_mode = vm.window_effect == WindowEffect::None &&
                             !vm.background_image.empty() && !IsHighContrast();
     bool backdrop_drawn = false;
     if (image_mode) {
-        backdrop_drawn = material_.DrawSourceCover(dc, rect, vm.background_image);
+        backdrop_drawn = material_.DrawSourceCover(dc, rect, vm.background_image,
+                                                   WallpaperBlurDip(vm.wallpaper_blur) * scale_);
     } else {
         backdrop_drawn = material_.DrawBackdrop(
             dc, rect, vm.window_effect, vm.dark,
             (vm.window_effect == WindowEffect::None) ? std::wstring{} : vm.background_image);
     }
-    D2D1_COLOR_F micaTint = theme.bg;
-    if (image_mode) {
-        // Decode failure must fall back to opaque, never a hole to the desktop.
-        micaTint.a = backdrop_drawn ? (vm.dark ? 0.55f : 0.60f) : 1.0f;
-    } else if (backdrop_drawn) {
-        micaTint.a = 0.0f;
-    } else if (vm.backdrop_enabled) {
-        micaTint.a = vm.dark ? 0.72f : 0.78f;
+    const LayerAlphas layers = ComputeLayerAlphas(image_mode, backdrop_drawn,
+        vm.backdrop_enabled, vm.dark, vm.wallpaper_look, vm.wallpaper_blur);
+    if (!backdrop_drawn && !vm.backdrop_enabled) {
+        // Lower pane opacity must reveal the theme canvas when no material or
+        // wallpaper exists, instead of exposing an unpainted transparent base.
+        MakeBrush(dc, theme.bg, brBg_);
+        dc->FillRectangle(rect, brBg_.get());
     }
-    if (micaTint.a > 0.0f) {
-        MakeBrush(dc, micaTint, brBg_);
-        FillRect(dc, brBg_.get(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+    sheet_alpha_ = layers.sheet;
+    card_alpha_ = layers.card;
+    auto tint_background = [&](D2D1_RECT_F bounds, D2D1_COLOR_F color, float alpha) {
+        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top || alpha <= 0) return;
+        MakeBrush(dc, WithAlpha(color, alpha), brBg_);
+        dc->FillRectangle(bounds, brBg_.get());
+    };
+    if (layers.title > 0.0f) {
+        tint_background(rect, theme.surface_title, layers.title);
+    }
+    // One sheet below the title strip carries the toolbar, sidebar and status
+    // bar; the active tab uses the same fill and meets it on a whole pixel so
+    // translucent layers never double up into a seam.
+    if (sheet_alpha_ > 0.0f) {
+        const float sheetTop = std::round(title_bar_height_);
+        tint_background({rect.left, sheetTop, rect.right, rect.bottom}, theme.surface_sheet, sheet_alpha_);
     }
 
     DrawTitleBar(vm, rect, theme);
@@ -529,7 +553,6 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     const float y = 0.0f;
     const float h = title_bar_height_;
     const float right = rect.right;
-    const bool compact = TitleBarCompact(rect.right, scale_, vm.tabs.size());
 
     // Product mark: the packaged app icon; the monogram is the fallback.
     float x = 12.0f * scale_;
@@ -554,13 +577,22 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         }
     }
     x += mark + 8.0f * scale_;
-    if (!compact) {
-        MakeBrush(dc, theme.text_secondary, brTextSecondary_);
-        DrawTextRect(dc, compositor_->HeaderFormat(), brTextSecondary_.get(), L"Pulse",
-            x, 0.0f, 64.0f * scale_, h);
-        x += 72.0f * scale_;
-    } else {
-        x += 4.0f * scale_;
+    const float brandRight = EffectiveSidebarWidth(right) - 12.0f * scale_;
+    const float nameWidth = MeasureLayoutText(compositor_, compositor_->DwriteFactory(),
+        compositor_->HeaderFormat(), L"Pulse");
+    if (x + nameWidth <= brandRight) {
+        MakeBrush(dc, theme.text, brText_);
+        DrawTextRect(dc, compositor_->HeaderFormat(), brText_.get(), L"Pulse",
+            x, 0.0f, nameWidth + 1.0f * scale_, h);
+        x += nameWidth + 12.0f * scale_;
+        const auto description = l10n::Get(l10n::StringId::AppDescription);
+        const float descriptionWidth = MeasureLayoutText(compositor_, compositor_->DwriteFactory(),
+            compositor_->SmallFormat(), description);
+        if (x + descriptionWidth <= brandRight) {
+            MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+            DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(), description,
+                x, 0.0f, descriptionWidth + 1.0f * scale_, h);
+        }
     }
 
     const float ctrlW = 46.0f * scale_;
@@ -581,7 +613,9 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         shape.bottom_radius = 8.0f * scale_;
         shape.connect_bottom = connect;
         const float tabTop = tabY;
-        const float tabBottom = connect ? (h + 1.0f) : (tabY + tabH);
+        // Opaque tabs overlap the sheet by a pixel; translucent ones must abut it.
+        const float tabBottom = connect ? (sheet_alpha_ < 1.0f ? std::round(h) : h + 1.0f)
+                                        : (tabY + tabH);
         const D2D1_RECT_F tabRc = D2D1::RectF(left, tabTop, left + tabW, tabBottom);
         if (raised) {
             D2D1_RECT_F shadow = tabRc;
@@ -591,14 +625,11 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
             shadow.bottom += 1.0f * scale_;
             MakeBrush(dc, D2D1::ColorF(0.0f, 0.0f, 0.0f, vm.dark ? 0.09f : 0.07f), brFillPressed_);
             FillChromeTab(dc, brFillPressed_.get(), shadow, shape);
-            D2D1_COLOR_F fill = theme.header_bg;
-            if (vm.backdrop_enabled) fill.a = vm.dark ? 0.78f : 0.84f;
-            MakeBrush(dc, fill, brFillSelected_);
+            MakeBrush(dc, WithAlpha(theme.surface_sheet, sheet_alpha_), brFillSelected_);
             FillChromeTab(dc, brFillSelected_.get(), tabRc, shape);
         } else if (active) {
-            D2D1_COLOR_F fill = theme.header_bg;
-            if (vm.backdrop_enabled) fill.a = vm.dark ? 0.78f : 0.84f;
-            MakeBrush(dc, fill, brFillSelected_);
+            // A solid light plate remains identifiable over pale chrome and wallpapers.
+            MakeBrush(dc, vm.dark ? WithAlpha(theme.surface_sheet, sheet_alpha_) : HexColor(0xFFFFFF), brFillSelected_);
             FillChromeTab(dc, brFillSelected_.get(), tabRc, shape);
         } else {
             // Grouped tabs get a tinted body; ungrouped keep the stock look.
@@ -608,7 +639,7 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
                 tint.a *= hovered ? 0.16f : 0.10f;
                 MakeBrush(dc, tint, brFillHover_);
             } else {
-                MakeBrush(dc, hovered ? theme.fill_hover : theme.tab_bg, brFillHover_);
+                MakeBrush(dc, hovered ? theme.fill_hover : kTransparent, brFillHover_);
             }
             FillChromeTab(dc, brFillHover_.get(), tabRc, shape);
         }
@@ -621,9 +652,11 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
             if (!active) line.a *= 0.55f;
             MakeBrush(dc, line, brAccent_);
             FillChromeTabAccent(dc, brAccent_.get(), tabRc, shape, 2.0f * scale_);
-        } else if (active) {
-            MakeBrush(dc, theme.accent, brAccent_);
-            FillChromeTabAccent(dc, brAccent_.get(), tabRc, shape, 2.0f * scale_);
+        }
+        if (active) {
+            MakeBrush(dc, vm.tabs[i].color_rgb ? HexColor(vm.tabs[i].color_rgb) : theme.accent, brAccent_);
+            FillRoundedRect(dc, brAccent_.get(), tabRc.left + 15*scale_, tabRc.bottom - 3*scale_,
+                std::min(28*scale_, tabW - 24*scale_), 2*scale_, scale_);
         }
         if (pinned && !vm.show_pinned_tab_names) {
             // Chrome pinned tab: centered icon, no title, no close button.
@@ -810,143 +843,6 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     DrawIconText(minRc.left, minRc.top, ctrlW, ctrlH, kIconMinimize, L"_", theme.text, 0.66f);
 }
 
-void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
-    ID2D1DeviceContext* dc = compositor_->Dc();
-    const float y = title_bar_height_;
-    const float h = toolbar_height_;
-    const bool compact = rect.right < 900.0f * scale_;
-    float x = margin_;
-    const float commandHeight = kCommandIconButtonDip * scale_;
-    const float commandTop = y + (h - commandHeight) * 0.5f;
-    const float commandBottom = commandTop + commandHeight;
-
-    D2D1_COLOR_F toolbarBackground = theme.header_bg;
-    if (vm.backdrop_enabled) toolbarBackground.a = vm.dark ? 0.78f : 0.84f;
-    MakeBrush(dc, toolbarBackground, brFillInput_);
-    FillRect(dc, brFillInput_.get(), 0.0f, y, rect.right, h);
-    FillRect(dc, brStrokeDivider_.get(), 0.0f, y + h - 1.0f, rect.right, 1.0f);
-
-    auto navBtn = [&](const wchar_t* glyph, const wchar_t* fallback, bool enabled,
-                      HitTestResult::Region region) {
-        D2D1_RECT_F rc = D2D1::RectF(x, commandTop,
-                                     x + kCommandIconButtonDip * scale_, commandBottom);
-        const bool hovered = IsHovered(vm, region) && vm.hover_control_index < 0;
-        DrawButton(rc, theme, hovered ? theme.fill_hover : kTransparent,
-            glyph, fallback, enabled ? theme.text : theme.text_disabled, true, true, 0.8f);
-        x += kCommandIconStepDip * scale_;
-    };
-    navBtn(kIconBack, L"<", vm.can_go_back, HitTestResult::NavBack);
-    if (!compact) navBtn(kIconForward, L">", vm.can_go_forward, HitTestResult::NavForward);
-    navBtn(kIconUp, L"^", true, HitTestResult::NavUp);
-    navBtn(kIconRefresh, L"R", true, HitTestResult::NavRefresh);
-
-    x += margin_;
-
-    // Breadcrumb address bar: segments clickable, empty area -> edit mode.
-    D2D1_RECT_F addrRc = AddressBarRect(rect.right);
-    fluent::ControlState addrState{};
-    addrState.focused = vm.address_editing;
-    addrState.hovered = !vm.address_editing && IsHovered(vm, HitTestResult::AddressBar);
-    painter_.DrawTextFieldFrame(addrRc, addrState);
-    if (!vm.address_editing && !vm.address_searching) {
-        std::vector<BreadcrumbPlaced> placed;
-        BreadcrumbLayout(vm.pane, rect.right, placed);
-        for (size_t i = 0; i < placed.size(); ++i) {
-            const auto& seg = placed[i];
-            if ((int)i == vm.breadcrumb_drop) {
-                // Drop target: accent 2px stroke (ui.md §5.2 rule 7).
-                dc->DrawRoundedRectangle(
-                    D2D1::RoundedRect(seg.rc, theme.radius_control * scale_, theme.radius_control * scale_),
-                    brAccent_.get(), 2.0f * scale_);
-            } else if ((int)i == vm.breadcrumb_hover) {
-                MakeBrush(dc, theme.fill_hover, brFillHover_);
-                FillRoundedRect(dc, brFillHover_.get(), seg.rc.left, seg.rc.top,
-                    seg.rc.right - seg.rc.left, seg.rc.bottom - seg.rc.top,
-                    theme.radius_control * scale_);
-            }
-            if (i > 0) {
-                // Chevron separator.
-                float chX = seg.rc.left - 14.0f * scale_;
-                DrawIconText(chX, addrRc.top, 14.0f * scale_, addrRc.bottom - addrRc.top,
-                    kIconChevronRight, L">", theme.text_secondary, 0.55f);
-            }
-            MakeBrush(dc, theme.text, brText_);
-            // Width measured exactly; let the ink use the right padding as slack
-            // so the trailing glyph is not shaved by the clip rect.
-            DrawTextRect(dc, compositor_->AddressFormat(), brText_.get(), seg.text,
-                seg.rc.left + 8 * scale_, seg.rc.top, seg.rc.right - seg.rc.left - 8 * scale_,
-                seg.rc.bottom - seg.rc.top);
-        }
-        if (placed.empty() && !vm.pane.path.empty()) {
-            MakeBrush(dc, theme.text, brText_);
-            DrawTextRect(dc, compositor_->AddressFormat(), brText_.get(), vm.pane.path,
-                addrRc.left + 12.0f * scale_, addrRc.top,
-                AddressSearchButtonRect(rect.right).left - addrRc.left - 18.0f * scale_,
-                addrRc.bottom - addrRc.top);
-        }
-    }
-    DrawAddressSearchChrome(vm, rect.right, theme);
-    x = addrRc.right + margin_;
-
-    // Quiet New: standard bordered button + Color add, same weight as op icons.
-    const std::wstring new_label = pulse::l10n::Get(pulse::l10n::StringId::New);
-    const float newW = NewButtonWidthPx(compact);
-    D2D1_RECT_F newRc = D2D1::RectF(x, commandTop, x + newW, commandBottom);
-    fluent::ButtonSpec neu;
-    neu.bounds = newRc;
-    neu.text = compact ? std::wstring_view{} : std::wstring_view{new_label};
-    neu.glyph = kIconAdd;
-    neu.kind = fluent::ButtonKind::Standard;
-    neu.icon_only = compact;
-    neu.drop_down = !compact;
-    neu.state.hovered = IsHovered(vm, HitTestResult::NewButton);
-    neu.skip_glyph = !IsHighContrast() && EnsureFluentSvg(IDR_FLUENT_ADD_SVG);
-    painter_.DrawButton(neu);
-    if (neu.skip_glyph) {
-        DrawFluentSvg(IDR_FLUENT_ADD_SVG, painter_.ButtonGlyphRect(newRc, compact), 1.0f);
-    }
-    x = newRc.right + margin_;
-
-    const bool hasSelection = vm.pane.selected_count > 0;
-    auto opBtn = [&](int svg_id, const wchar_t* glyph, const wchar_t* fallback, bool enabled,
-                     HitTestResult::Region region) {
-        D2D1_RECT_F rc = D2D1::RectF(x, commandTop,
-                                     x + kCommandIconButtonDip * scale_, commandBottom);
-        if (IsHovered(vm, region)) {
-            MakeBrush(dc, theme.fill_hover, brFillHover_);
-            FillRoundedRect(dc, brFillHover_.get(), rc.left, rc.top,
-                rc.right - rc.left, rc.bottom - rc.top, theme.radius_control * scale_);
-        }
-        const float icon = 20.0f * scale_;
-        const float pad_x = (rc.right - rc.left - icon) * 0.5f;
-        const float pad_y = (rc.bottom - rc.top - icon) * 0.5f;
-        const D2D1_RECT_F icon_rc = D2D1::RectF(rc.left + pad_x, rc.top + pad_y,
-                                                rc.right - pad_x, rc.bottom - pad_y);
-        const float opacity = enabled ? 1.0f : 0.4f;
-        if (IsHighContrast() || !DrawFluentSvg(svg_id, icon_rc, opacity)) {
-            DrawIconText(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
-                glyph, fallback, enabled ? theme.text : theme.text_disabled, 0.8f);
-        }
-        x += kCommandIconStepDip * scale_;
-    };
-    if (!compact) {
-        x += 4.0f * scale_;
-        FillRect(dc, brStrokeDivider_.get(), x, y + 10.0f * scale_, 1.0f, h - 20.0f * scale_);
-        x += 7.0f * scale_;
-        opBtn(IDR_FLUENT_CUT_SVG, kIconCut, L"Cut", hasSelection, HitTestResult::Cut);
-        opBtn(IDR_FLUENT_COPY_SVG, kIconCopy, L"Copy", hasSelection, HitTestResult::Copy);
-        opBtn(IDR_FLUENT_PASTE_SVG, kIconPaste, L"Paste", true, HitTestResult::Paste);
-        opBtn(IDR_FLUENT_RENAME_SVG, kIconRename, L"Ren", hasSelection, HitTestResult::Rename);
-        opBtn(IDR_FLUENT_DELETE_SVG, kIconDelete, L"Del", hasSelection, HitTestResult::Delete);
-        x += 4.0f * scale_;
-        FillRect(dc, brStrokeDivider_.get(), x, y + 10.0f * scale_, 1.0f, h - 20.0f * scale_);
-        x += 7.0f * scale_;
-        opBtn(IDR_FLUENT_APPS_SVG, kIconSplit, L"Spl", true, HitTestResult::SplitButton);
-        opBtn(vm.details_visible ? IDR_FLUENT_PANEL_CLOSE_SVG : IDR_FLUENT_PANEL_SVG,
-              vm.details_visible ? kIconDetailsClose : kIconDetailsOpen,
-              L"Det", true, HitTestResult::DetailsToggle);
-    }
-}
 void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
     ID2D1DeviceContext* dc = compositor_->Dc();
     IDWriteFactory2* factory = compositor_->DwriteFactory();
@@ -955,11 +851,7 @@ void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& r
         vm, rect, scale_, status_height_, factory, small_fmt);
     const bool centered_progress = vm.status.query_active || vm.status.task_is_update;
     float y = sb.bar.top;
-    D2D1_COLOR_F statusBackground = theme.status_bg;
-    if (vm.backdrop_enabled) statusBackground.a = vm.dark ? 0.76f : 0.82f;
-    MakeBrush(dc, statusBackground, brFillInput_);
-    FillRect(dc, brFillInput_.get(), 0, y, rect.right, status_height_);
-    FillRect(dc, brStrokeDivider_.get(), 0, y, rect.right, 1);
+    // Sits on the shared sheet painted by Render(); no own fill or top rule.
     MakeBrush(dc, theme.text_secondary, brTextSecondary_);
     const float gap = 16.0f * scale_;
     const float statusLimit = centered_progress ? std::min(rect.right * 0.30f, sb.task.left - gap) : rect.right * 0.30f;
@@ -1044,9 +936,9 @@ void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& r
 MainRenderer::TabStripMetrics MainRenderer::ComputeTabStrip(
     const WindowViewModel& vm, float window_w) const {
     TabStripMetrics m;
-    const bool compact = TitleBarCompact(window_w, scale_, vm.tabs.size());
+
     const TitleChrome chrome = MakeTitleChrome(window_w, scale_, title_bar_height_);
-    m.x0 = compact ? 44.0f * scale_ : 112.0f * scale_;
+    m.x0 = EffectiveSidebarWidth(window_w) + margin_;
     const float tabsRight = chrome.settings_left - 8.0f * scale_;
 
     // Group chips: one at the start of each consecutive same-group run. Their

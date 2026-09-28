@@ -66,6 +66,7 @@ public:
     void RecreateTextFormats(float scale);
     bool UpdateTextRenderingParams(HMONITOR monitor);
     IDWriteTextFormat* TextFormat() const { return textFormat_.get(); }
+    IDWriteTextFormat* FileNameFormat() const { return fileNameFormat_.get(); }
     IDWriteTextFormat* SmallFormat() const { return smallFormat_.get(); }
     IDWriteTextFormat* HeaderFormat() const { return headerFormat_.get(); }
     IDWriteTextFormat* TabFormat() const { return tabFormat_.get(); }
@@ -115,6 +116,7 @@ private:
     ComPtr<IDWriteFactory2> dwriteFactory_;
     ComPtr<IDWriteRenderingParams2> textRenderingParams_;
     ComPtr<IDWriteTextFormat> textFormat_;
+    ComPtr<IDWriteTextFormat> fileNameFormat_;
     ComPtr<IDWriteTextFormat> smallFormat_;
     ComPtr<IDWriteTextFormat> headerFormat_;
     ComPtr<IDWriteTextFormat> tabFormat_;

@@ -493,6 +493,20 @@ void ClientThread(std::shared_ptr<Client> c) {
             if(!reader.GetU64(session)) break;
             std::lock_guard lock(c->subscriptions_mu);
             if(auto found=c->subscriptions.find(session);found!=c->subscriptions.end()) {++*found->second.latest;c->subscriptions.erase(found);}
+        } else if (hdr.type == kFolderSizeRequest) {
+            PayloadReader reader(payload.data(), payload.size());
+            uint32_t version = 0, count = 0;
+            if (!reader.GetU32(version) || version != 1 || !reader.GetU32(count) || !count || count > kFolderSizeBatch) break;
+            std::vector<std::wstring> paths;
+            bool valid = true;
+            for (uint32_t i = 0; i < count; ++i) {
+                std::wstring path;
+                if (!reader.GetString(path) || path.empty() || path.size() > 32768) { valid = false; break; }
+                paths.push_back(std::move(path));
+            }
+            if (!valid || reader.remaining()) break;
+            PayloadWriter writer; PutFolderSizes(writer, g.engine.FolderSizes(paths));
+            if (!WriteFrame(*c, kFolderSizeResponse, hdr.request_id, writer.data())) break;
         } else if (hdr.type == kFeedRequest) {
             PayloadReader reader(payload.data(),payload.size()); uint32_t version=0,changes=0;
             std::wstring root; uint64_t epoch=0,cursor=0;

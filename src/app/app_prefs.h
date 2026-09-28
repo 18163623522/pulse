@@ -1,5 +1,6 @@
 // app_prefs.h — General app settings (startup, close-to-tray).
 #pragma once
+#include "folder_view_prefs.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -18,6 +19,9 @@ struct AppPrefs {
     bool list_smart_date = true;
     bool list_zebra_rows = true;
     bool list_size_bar = false;
+    // 0 folders first, 1 follow the sort direction, 2 mixed with files
+    int folder_sort_mode = 0;
+    FolderViewPrefs folder_views;
     bool search_pinyin = true;
     bool global_search_enabled = false;
     uint32_t global_search_modifiers = 1; // MOD_ALT
@@ -34,19 +38,25 @@ struct AppPrefs {
     // none / acrylic-material / mica / mica-alt  (legacy dwm-blur → acrylic)
     std::wstring window_effect = L"mica-alt";
     std::wstring background_image;
+    int wallpaper_look = 1; // image mode layer opacity: 0 subtle, 1 balanced, 2 vivid
+    int wallpaper_blur = 1; // image mode blur: 0 off, 1 light, 2 strong
     int row_height = 34; // file-list row height in DIPs (24..48)
     int sidebar_width = 224; // DIPs
     bool address_search_current = false;
     bool address_search_content = false;
     int tray_icon_size = 48; // staging-tray deck icon edge in DIPs (32..64)
-    // Empty = follow Windows accent; otherwise "RRGGBB".
+    // Empty = theme default, or Windows when explicitly selected.
     std::wstring accent_rgb;
+    bool accent_follow_system = false;
     // Tag colors the user added via the custom color dialog (0xRRGGBB),
     // appended after the seven Finder defaults in the swatch strip.
     std::vector<uint32_t> custom_tag_colors;
     int duplicate_scan_scope = 0; // 0 folder, 1 drive, 2 all local disks
     std::wstring duplicate_scan_folder;
     std::wstring duplicate_scan_drive;
+    // Version that last ran with these prefs; drives the one-time "updated" toast.
+    std::wstring last_seen_version;
+    bool had_file = false; // runtime only: app.json existed when Load() ran
 
     void ResetToDefaults();
     bool Load();

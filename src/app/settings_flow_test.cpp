@@ -418,6 +418,23 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
     auto check=[&](bool ok,const char* label){log<<(ok ? "[PASS] " : "[FAIL] ")<<label<<'\n';if(!ok)++failures;};
     s.appPrefs.persist=false;
     app::AppPrefs prefs; prefs.persist=false;
+    const auto color_close=[](float a,float b) { return std::fabs(a-b)<0.001f; };
+    auto pine=ResolveAccentColor(prefs,false);
+    check(color_close(pine.r,82/255.0f) && color_close(pine.g,125/255.0f) && color_close(pine.b,112/255.0f),
+        "light theme defaults to concept pine green");
+    const auto charcoal=ui::MakeTheme(true,pine);
+    check(color_close(charcoal.bg.r,26/255.0f) && color_close(charcoal.bg.r,charcoal.bg.g) &&
+        color_close(charcoal.surface_sheet.r,charcoal.surface_sheet.b),"dark theme restores neutral charcoal backgrounds");
+    const auto warm=ui::MakeTheme(false,pine);
+    check(color_close(warm.bg.r,243/255.0f) && color_close(warm.bg.g,245/255.0f) && color_close(warm.bg.b,241/255.0f),
+        "light theme uses concept warm canvas");
+    prefs.accent_follow_system=true;
+    app::AppPrefs accent_roundtrip; accent_roundtrip.persist=false;
+    check(accent_roundtrip.FromJson(prefs.ToJson()) && accent_roundtrip.accent_follow_system,
+        "explicit Windows accent survives preference round trip");
+    prefs.accent_rgb=L"8861AA";
+    auto custom=ResolveAccentColor(prefs,false);
+    check(color_close(custom.r,136/255.0f) && color_close(custom.b,170/255.0f),"custom accent overrides theme palette");
     prefs.FromJson(L"{\"language\":\"en-US\"}");check(prefs.theme_mode==-1,"old profiles retain session theme");
     for(int mode=0;mode<3;++mode) {
         prefs.theme_mode=mode;const auto json=prefs.ToJson();app::AppPrefs loaded;loaded.persist=false;
@@ -439,7 +456,7 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
         s.compositor.RecreateTextFormats(scale);s.renderer.SetScale(scale);painter.SetScale(scale);
         for(float width:{720.0f,820.0f,1280.0f,1920.0f}) {
             const auto window=D2D1::RectF(0,0,width*scale,1000*scale);
-            auto vm=BuildVm(s,false);vm.settings_open=true;vm.settings_scroll=0;
+            auto vm=BuildVm(s,false);vm.settings_open=true;vm.settings_scroll=0;vm.settings_bloom=&s.bloom_accent;
             vm.settings_content_folders={{LR"(C:\Projects\Very long project folder name)",L"Ready",false},{LR"(D:\Unavailable)",L"Unavailable (3)",true}};
             for(int page=0;page<5;++page) {
                 vm.settings_page=page;vm.settings_expanded=0;
@@ -453,8 +470,12 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
                 if(page==0) {
                     check(hit(layout.theme_tile[0]).region==H::SettingsTheme && hit(layout.theme_tile[0]).index==1,"light theme preview hit target");
                     check(hit(layout.accent_picker).region==H::SettingsAccent,"original color wheel remains interactive");
-                    check(hit(layout.effect_choice).region==H::SettingsDropdown && hit(layout.language_choice).index==1,"dropdown controls match layout");
-                    check(hit(layout.density_row[2]).region==H::SettingsDensity,"density segments remain reachable");
+                    check(layout.effect_choice.right == 0 && hit(layout.language_choice).index==1,"window effect has no duplicate dropdown; language dropdown remains");
+                    auto scrolled=vm;
+                    scrolled.settings_scroll=layout.density_card.top-layout.content.top;
+                    const auto density_layout=ui::MakeSettingsLayout(scrolled,window,scale,s.renderer.TitleBarHeight(),28*scale,&painter);
+                    const auto density=density_layout.density_row[2];
+                    check(s.renderer.HitTest(scrolled,window,(density.left+density.right)/2,(density.top+density.bottom)/2).region==H::SettingsDensity,"density segments remain reachable after scrolling into view");
                     check(layout.wallpaper_card.bottom==0 && layout.startup_row[2].bottom==0,"collapsed advanced settings have no invisible hit targets");
                     for(const auto* locale:{L"zh-CN",L"en-US"}) {
                         l10n::SetLanguage(locale);bool fits=true;
@@ -501,7 +522,10 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
     click(layout().theme_tile[0]);check(!s.darkMode && s.appPrefs.theme_mode==1,"mouse click applies and saves light theme");
     click(layout().theme_tile[1]);check(s.darkMode && s.appPrefs.theme_mode==2,"mouse click applies and saves dark theme");
     click(layout().theme_tile[2]);check(s.themeOverride==ui::ThemeMode::Auto && s.appPrefs.theme_mode==0,"system theme is a persistent explicit selection");
+    s.settings.SetScroll(layout().density_card.top-layout().content.top,
+        s.renderer.SettingsMaxScroll(BuildVm(s,false),window.right,window.bottom));
     click(layout().density_row[0]);check(s.appPrefs.row_height==28,"mouse click changes density through existing controller");
+    s.settings.SetScroll(0,0);
     auto vm=BuildVm(s,false);
     const auto collapsed_max=s.renderer.SettingsMaxScroll(vm,window.right,window.bottom);
     H toggle;toggle.region=H::SettingsDisclosure;toggle.index=0;HandleSettingsControl(s,toggle);

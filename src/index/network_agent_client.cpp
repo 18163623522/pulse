@@ -55,11 +55,25 @@ bool NetworkAgentClient::EnsureAgent() {
         CloseHandle(agent_process_);
         agent_process_ = nullptr;
     }
+    // The agent is a per-session singleton (see RunAgent in network_agent_main.cpp). It may be
+    // owned by another Pulse window or outlive the Pulse instance that started it. Spawning a
+    // duplicate would exit immediately and cause a respawn loop on every request (and a
+    // flickering AppStarting cursor), so reuse whichever agent currently holds the singleton.
+    if (HANDLE existing = OpenMutexW(SYNCHRONIZE, FALSE, kAgentSingletonName)) {
+        CloseHandle(existing);
+        return true;
+    }
+    if (GetLastError() == ERROR_ACCESS_DENIED) return true; // exists, owned by an elevated agent
+    // A crashing agent must not be relaunched on every 1 s status poll.
+    const ULONGLONG now = GetTickCount64();
+    if (last_spawn_tick_ && now - last_spawn_tick_ < kRespawnBackoffMs) return false;
     const std::wstring exe = ExePath();
     if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
     STARTUPINFOW startup{ sizeof(startup) };
+    startup.dwFlags = STARTF_FORCEOFFFEEDBACK; // background helper: no AppStarting cursor
     PROCESS_INFORMATION process{};
     std::wstring command = L"\"" + exe + L"\" --network-agent";
+    last_spawn_tick_ = now;
     if (!CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) return false;
     CloseHandle(process.hThread);
