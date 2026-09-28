@@ -1925,8 +1925,10 @@ void TestMenuModel() {
     Check(bg[0].children.size() == 9 && bg[0].children[1].radio &&
           bg[0].children.back().checked, L"menu: background reflects view and details pane");
     const auto& sort = bg[1].children;
-    Check(sort.size() == 6 && sort[3].command == CmdSortSize && sort[3].radio &&
-          !sort[4].radio && sort[5].radio,
+    Check(sort.size() == 9 && sort[3].command == CmdSortSize && sort[3].radio &&
+          !sort[4].radio && sort[5].radio && sort[5].separator_after &&
+          sort[6].command == CmdFolderSortTop && sort[6].radio &&
+          !sort[7].radio && !sort[8].radio,
           L"menu: background reflects size descending with separate radio groups");
     Check(bg[2].command == CmdRefresh && bg[2].shortcut == L"F5" &&
           bg.back().command == CmdFolderProperties,
@@ -1936,7 +1938,7 @@ void TestMenuModel() {
     options.sort_column = ui::SortColumn::Path;
     auto virtual_bg = BuildBackgroundMenu(false, false, L"");
     AppendBackgroundViewCommands(virtual_bg, options);
-    Check(virtual_bg[1].children.size() == 7 && virtual_bg[1].children[4].radio &&
+    Check(virtual_bg[1].children.size() == 10 && virtual_bg[1].children[4].radio &&
           virtual_bg.back().command != CmdFolderProperties,
           L"menu: search offers path sorting without folder properties");
     options.indexed_search = true;
@@ -5537,8 +5539,8 @@ void TestDetailsPreviewInteraction() {
         Check(std::abs(renderer.SidebarMaxWidthDip(1600.0f) - 1000.0f) < 0.5f,
             L"panels: the open details panel is reserved by the sidebar limit");
         renderer.SetDetailsPanelVisible(false);
-        Check(std::abs(renderer.SidebarMaxWidthDip(1600.0f) - 1480.0f) < 0.5f,
-            L"panels: hiding the details panel frees the sidebar limit");
+        Check(std::abs(renderer.SidebarMaxWidthDip(1600.0f) - 1240.0f) < 0.5f,
+            L"panels: hiding details still reserves space for the shared toolbar");
         renderer.SetDetailsPanelVisible(true);
         renderer.SetSidebarWidthDip(700.0f);
         const float list_left = renderer.EffectiveSidebarWidth(1000.0f) + renderer.Margin();
