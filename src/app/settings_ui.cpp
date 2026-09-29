@@ -143,8 +143,10 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
         if(hit.index==0) {
             if(app::CopyTextToClipboard(s.hwnd,app::AboutRowsText(BuildVm(s,false).settings_about_rows)))
                 s.renderer.NotifyCopied(static_cast<int>(H::SettingsAboutAction),0);
-        } else if(hit.index==1 || hit.index==2) {
-            ShellExecuteW(s.hwnd,L"open",hit.index==1?app::kPulseHomepage:app::kPulseReleasesPage,nullptr,nullptr,SW_SHOWNORMAL);
+        } else if(hit.index>=1 && hit.index<=4) {
+            static constexpr const wchar_t* kPages[]={app::kPulseHomepage,app::kPulseReleasesPage,
+                                                      app::kLumenPdfHomepage,app::kLumaShotHomepage};
+            ShellExecuteW(s.hwnd,L"open",kPages[hit.index-1],nullptr,nullptr,SW_SHOWNORMAL);
         }
         break;
     case H::SettingsReleaseNote: {
