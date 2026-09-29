@@ -72,7 +72,13 @@ const wchar_t* FramePump::ClockName() const noexcept {
 }
 
 void FramePump::Run() {
-    SetThreadDescription(GetCurrentThread(), L"Pulse frame pump");
+    // Thread names are optional; Windows 8.1 does not export this API.
+    if (HMODULE kernel = GetModuleHandleW(L"kernel32.dll")) {
+        using SetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+        auto set_description = reinterpret_cast<SetThreadDescriptionFn>(
+            reinterpret_cast<void*>(GetProcAddress(kernel, "SetThreadDescription")));
+        if (set_description) set_description(GetCurrentThread(), L"Pulse frame pump");
+    }
     // Frame timing matters more than throughput here; the work per wake-up
     // is one PostMessage.
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
