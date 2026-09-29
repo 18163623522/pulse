@@ -94,6 +94,10 @@ enum class StringId : UINT {
     ArcFamArchive = IDS_ARC_FAM_ARCHIVE,
     ArcFamProgram = IDS_ARC_FAM_PROGRAM,
     ArcFamOther = IDS_ARC_FAM_OTHER,
+    AboutMoreApps = IDS_ABOUT_MORE_APPS,
+    AboutMoreAppsDesc = IDS_ABOUT_MORE_APPS_DESC,
+    AboutLumenPdfDesc = IDS_ABOUT_LUMENPDF_DESC,
+    AboutLumaShotDesc = IDS_ABOUT_LUMASHOT_DESC,
 
     GlobalSearchSaveFailed = IDS_GLOBAL_SEARCH_SAVE_FAILED,
     GlobalSearchOpenFailed = IDS_GLOBAL_SEARCH_OPEN_FAILED,
