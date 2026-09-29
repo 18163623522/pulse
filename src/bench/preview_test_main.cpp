@@ -1955,13 +1955,15 @@ int wmain(int argc, wchar_t** argv) {
             redThumb.response.status == 0 && redThumb.response.width > 0;
         std::wprintf(L"[INFO] red embedded thumbnail -> %ux%u\n", redThumb.response.width, redThumb.response.height);
         Check(redOk && isRed(pixelAt(redThumb, redThumb.response.width / 2, redThumb.response.height / 2)),
-              L"docx with a real embedded thumbnail keeps the shell's thumbnail");
+              L"docx preserves a real embedded thumbnail without requiring an Office provider");
         Result blankThumb;
         Check(host.Request(path(L"blank_thumb.docx"), blankThumb, MAXDWORD, 256) &&
               blankThumb.response.status == 0 && blankThumb.response.width == 181 &&
               blankThumb.response.height == 256 && badgeColour(blankThumb, 256, 0x2B579A),
               L"docx with an all-white embedded thumbnail gets the sketch instead");
         Result broken;
+        Check(WriteBytes(path(L"sample.bin"), {0, 1, 2, 3, 0, 255}),
+              L"create standalone non-office binary fixture");
         Check(host.Request(path(L"sample.bin"), broken, MAXDWORD, 256) && broken.response.status == 0,
               L"non-office files are unaffected by the sketch");
     }

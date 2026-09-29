@@ -12,6 +12,7 @@
 #include "preview_file_utils.h"
 #include "psd_raster.h"
 #include "svg_raster.h"
+#include "zip_entry.h"
 #include <shobjidl.h>
 #include <shlobj.h>
 #include <shlguid.h>
@@ -207,18 +208,24 @@ bool MakeTextOrHex(const std::wstring& path, DWORD attrs, ipc::PreviewContentKin
 
 static bool DecodeImage(const std::wstring& path, DWORD attrs, UINT pixels,
                         std::vector<uint8_t>& out, UINT& width, UINT& height, UINT& stride,
-                        UINT& source_width, UINT& source_height) {
+                        UINT& source_width, UINT& source_height,
+                        const std::vector<unsigned char>* embedded = nullptr) {
     if (IsOfflinePlaceholder(attrs)) return false;
     ComPtr<IWICImagingFactory> factory;
     ComPtr<IWICBitmapDecoder> decoder;
     ComPtr<IWICBitmapFrameDecode> frame;
     ComPtr<IWICBitmapScaler> scaler;
     ComPtr<IWICFormatConverter> converter;
+    ComPtr<IWICStream> stream;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&factory))) ||
-        FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                  WICDecodeMetadataCacheOnDemand, &decoder)) ||
-        FAILED(decoder->GetFrame(0, &frame))) return false;
+                                IID_PPV_ARGS(&factory)))) return false;
+    if (embedded) {
+        if (embedded->empty() || embedded->size() > MAXDWORD || FAILED(factory->CreateStream(&stream)) ||
+            FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(embedded->data()), static_cast<DWORD>(embedded->size()))) ||
+            FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder))) return false;
+    } else if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                         WICDecodeMetadataCacheOnDemand, &decoder))) return false;
+    if (FAILED(decoder->GetFrame(0, &frame))) return false;
 
     UINT sourceWidth = 0, sourceHeight = 0;
     if (FAILED(frame->GetSize(&sourceWidth, &sourceHeight)) ||
@@ -727,7 +734,20 @@ static DecodeStep RunShellPreview(const DecodeRequest& q, DecodeResult& r) {
         r.error = L"provider-failed";
         return DecodeStep::Failed;
     }
-    made = ShellThumbnailInto(q, r);
+    if (sketchable) {
+        // OOXML previews remain available without an installed Office Shell provider.
+        for (const char* member : {"docProps/thumbnail.jpeg", "docProps/thumbnail.jpg", "docProps/thumbnail.png"}) {
+            std::vector<unsigned char> bytes;
+            if (preview::ReadZipEntry(q.path, member, 8u * 1024u * 1024u, bytes, nullptr) &&
+                DecodeImage(q.path, q.request.attrs, q.cap, r.pixels, r.width, r.height, r.stride,
+                            r.source_width, r.source_height, &bytes) &&
+                !preview::IsBlankThumbnail(r.pixels, r.width, r.height, r.stride)) {
+                made = true;
+                break;
+            }
+        }
+    }
+    if (!made) made = ShellThumbnailInto(q, r);
     if (made && sketchable && preview::IsBlankThumbnail(r.pixels, r.width, r.height, r.stride)) {
         // A blank embedded thumbnail (Mac Word writes all-white ones) says
         // less than the sketch below.
