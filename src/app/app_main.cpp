@@ -3,6 +3,7 @@
 #include "vertical_tabs.h"
 #include "filter_animation.h"
 #include "sidebar_resize.h"
+#include "ui_timer_pacer.h"
 // app_main.cpp — Pulse UI process entry point, window, input, shot mode.
 #include "../ui/ui_compositor.h"
 #include "../ui/lumatext_renderer.h"
@@ -240,21 +241,37 @@ void Render(AppState& s) {
     if (s.framePump.Running() && s.renderer.TickMotion(GetTickCount64())) s.framePump.Arm();
 }
 
-// kTimerUi drives animations and light polling. Minimized or hidden to the
-// tray nothing animates, so poll gently instead of 60 wakeups per second.
-constexpr UINT kUiTimerVisibleMs = 16;
-constexpr UINT kUiTimerHiddenMs = 200;
-static UINT g_uiTimerMs = kUiTimerVisibleMs;
+// kTimerUi drives animations and light polling. The pacer keeps the display
+// rate while anything changes and polls gently once the window is quiet,
+// minimized or hidden to the tray (see ui_timer_pacer.h).
+static app::UiTimerPacer g_uiTimerPacer;
 
 static void SyncUiTimerRate(HWND hwnd, bool visible) {
-    const UINT want = visible ? kUiTimerVisibleMs : kUiTimerHiddenMs;
-    if (want == g_uiTimerMs) return;
-    g_uiTimerMs = want;
-    SetTimer(hwnd, kTimerUi, want, nullptr);
+    UINT period = 0;
+    if (g_uiTimerPacer.Update(visible, GetTickCount64(), period))
+        SetTimer(hwnd, kTimerUi, period, nullptr);
+}
+
+// Input, painting and window-state changes can start motion or schedule
+// timer work (hover delays, slow-click rename, search debounce), so each
+// restores the fast period before the next tick is due.
+static bool IsUiActivityMessage(UINT msg) {
+    return (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
+           (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
+           (msg >= WM_NCMOUSEMOVE && msg <= WM_NCXBUTTONDBLCLK) ||
+           msg == WM_MOUSELEAVE || msg == WM_NCMOUSELEAVE || msg == WM_PAINT ||
+           msg == WM_SETFOCUS || msg == WM_KILLFOCUS || msg == WM_ACTIVATE ||
+           msg == WM_SIZE || msg == WM_CAPTURECHANGED || msg == WM_DPICHANGED;
+}
+
+static void NoteUiActivity(HWND hwnd, bool visible) {
+    g_uiTimerPacer.NoteActivity(GetTickCount64());
+    SyncUiTimerRate(hwnd, visible);
 }
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    if (s && IsUiActivityMessage(msg)) NoteUiActivity(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
     if (s && s->notification_toast.HandleMessage(hwnd, msg, wParam, lParam)) return 0;
 
     switch (msg) {
@@ -611,7 +628,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->lastFrameTime = std::chrono::steady_clock::now();
         s->renderer.SetDetailsPanelVisible(s->showDetailsPanel);
         s->renderer.SetDetailsPanelWidth(s->detailsPanelWidth);
-        SetTimer(hwnd, kTimerUi, 16, nullptr);
+        SetTimer(hwnd, kTimerUi, g_uiTimerPacer.Current(), nullptr);
         s->framePump.Start(hwnd, WM_FRAME_PUMP);
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
@@ -812,7 +829,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_SHOWWINDOW:
         // Sent before the window becomes visible; restore full rate right away.
-        if (s && wParam && !IsIconic(hwnd)) SyncUiTimerRate(hwnd, true);
+        if (s && wParam && !IsIconic(hwnd)) NoteUiActivity(hwnd, true);
         break;
 
     case WM_ACTIVATE:
@@ -841,7 +858,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s) {
             s->compositor.Resize(LOWORD(lParam), HIWORD(lParam));
             s->maximized = (wParam == SIZE_MAXIMIZED);
-            if (wParam != SIZE_MINIMIZED && IsWindowVisible(hwnd)) SyncUiTimerRate(hwnd, true);
+            if (wParam != SIZE_MINIMIZED && IsWindowVisible(hwnd)) NoteUiActivity(hwnd, true);
             if (s->addressEditing) LayoutAddressEditor(*s);
             if (s->filterEditing && !s->filterFocusPending) LayoutFilterEditor(*s);
             if (!s->tagRenameId.empty()) LayoutTagRenameOverlay(*s);
@@ -1012,7 +1029,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             }
             QueueVisibleTagDiscovery(*s);
             UpdateOperationWindow(*s, false);
-            if (dirty) InvalidateRect(hwnd, nullptr, FALSE);
+            if (dirty) {
+                g_uiTimerPacer.NoteActivity(GetTickCount64());
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
         }
         return 0;
     }
