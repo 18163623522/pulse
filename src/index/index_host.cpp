@@ -52,7 +52,15 @@ constexpr UINT WM_ENGINE_NOTIFY = WM_APP + 1;
 constexpr UINT WM_QUIT_HOST = WM_APP + 2;
 constexpr DWORD kServiceReloadControl = 128;
 constexpr UINT kIdleTimer = 1;
+constexpr UINT kBroadcastTimer = 2;
 constexpr UINT kIdleMs = 15000;
+// Engine notifications follow USN batches, often 10+ per second on a busy
+// system disk. Every broadcast wakes each client's UI thread and re-runs its
+// live subscriptions, so broadcasts are coalesced: at most one per window, and
+// the latest state still goes out within kBroadcastMinMs.
+constexpr ULONGLONG kBroadcastMinMs = 250;
+ULONGLONG g_last_broadcast = 0;
+bool g_broadcast_pending = false;
 constexpr DWORD kMaxClients = 16;
 
 struct Client {
@@ -633,8 +641,29 @@ void AcceptLoop() {
     }
 }
 
+// UI thread of the host window only; the timer carries a deferred broadcast.
+void ScheduleBroadcast(HWND hwnd) {
+    if (g_broadcast_pending) return;
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG since = now - g_last_broadcast;
+    if (g_last_broadcast == 0 || since >= kBroadcastMinMs ||
+        !SetTimer(hwnd, kBroadcastTimer, static_cast<UINT>(kBroadcastMinMs - since), nullptr)) {
+        g_last_broadcast = now;
+        BroadcastStatus();
+        return;
+    }
+    g_broadcast_pending = true;
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_ENGINE_NOTIFY) {
+        ScheduleBroadcast(hwnd);
+        return 0;
+    }
+    if (msg == WM_TIMER && wParam == kBroadcastTimer) {
+        KillTimer(hwnd, kBroadcastTimer);
+        g_broadcast_pending = false;
+        g_last_broadcast = GetTickCount64();
         BroadcastStatus();
         return 0;
     }
