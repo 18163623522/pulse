@@ -22,6 +22,7 @@
 
 namespace pulse { struct ContentSizeSummary; struct ContentSelectionRestore; }
 namespace pulse::app {
+struct ContentNavigationState;
 
 // When navigating from a descendant to one of its ancestors, returns the
 // immediate child of the destination that the user just left. Empty means the
@@ -83,6 +84,7 @@ struct Tab {
     std::wstring git_root;
     std::shared_ptr<std::vector<fs::DirEntry>> search_entries;
     std::shared_ptr<index::ContentResultStore> content_results;
+    std::vector<std::shared_ptr<ContentNavigationState>> content_navigation;
     uint64_t content_revision = 0;
     bool content_count_final = false;
     DWORD content_scan_error = ERROR_SUCCESS;

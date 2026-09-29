@@ -20,7 +20,7 @@ struct FolderSizesUiTest {
             if (!hwnd || !compositor.Init(hwnd)) { if (hwnd) DestroyWindow(hwnd); return false; }
             MainRenderer renderer;
             renderer.SetCompositor(&compositor);
-            for (float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (bool dark : {false, true}) for (int width : {920, 440}) for (auto mode : {ViewMode::Tiles, ViewMode::MediumIcons, ViewMode::LargeIcons, ViewMode::ExtraLargeIcons, ViewMode::Content}) {
+            for (float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (bool dark : {false, true}) for (int width : {920, 440}) for (auto mode : {ViewMode::Details, ViewMode::Tiles, ViewMode::MediumIcons, ViewMode::LargeIcons, ViewMode::ExtraLargeIcons, ViewMode::Content}) {
                 compositor.Resize(static_cast<UINT>(width * scale), static_cast<UINT>(550 * scale));
                 compositor.RecreateTextFormats(scale);
                 renderer.SetScale(scale);
@@ -49,7 +49,7 @@ struct FolderSizesUiTest {
                 ViewLayout geometry(mode, {0, 0, static_cast<float>(width)*scale, 550*scale}, 9, 0, 0, scale);
                 const auto name_bounds = geometry.NameRect(0);
                 const auto size_bounds = geometry.FolderSizeRect(0);
-                const bool fits = size_bounds.top >= name_bounds.bottom && size_bounds.bottom <= geometry.ItemRect(0).bottom &&
+                const bool fits = mode == ViewMode::Details || size_bounds.top >= name_bounds.bottom && size_bounds.bottom <= geometry.ItemRect(0).bottom &&
                     size_bounds.bottom-size_bounds.top >= 21*scale;
                 log << (fits ? "[PASS] " : "[FAIL] ") << "capacity line fits below name within cell\n";
                 ok &= fits;
@@ -73,8 +73,12 @@ struct FolderSizesUiTest {
                     ViewLayout positions(mode, list, pane.EntryCount(), 0, 0, scale);
                     const int action = mode == ViewMode::Tiles ? 6 : 0;
                     const auto name = positions.NameRect(action);
+                    const auto columns = renderer.DetailsColumns(list, pane);
+                    const auto cell = positions.ItemRect(action);
+                    const float hit_x = mode == ViewMode::Details ? columns.Left(MainRenderer::ColumnKind::Size) + 4 * scale : name.left + 4 * scale;
+                    const float hit_y = mode == ViewMode::Details ? (cell.top + cell.bottom) / 2 : name.top + 32 * scale;
                     const auto hit = renderer.HitTest(vm, D2D1::RectF(0, 0, 920 * scale, 550 * scale),
-                        name.left + 4 * scale, name.top + 32 * scale);
+                        hit_x, hit_y);
                     const bool clickable = hit.region == HitTestResult::RowFolderSize && hit.index == action;
                     log << (clickable ? "[PASS] " : "[FAIL] ") << "manual size label hit-tests independently of folder open\n";
                     ok &= clickable;
@@ -199,7 +203,29 @@ bool RunFolderSizesTest() {
         }
         vm.pane_slots[0].pane.view_mode = ui::ViewMode::Details;
         FillFolderSizes(*state, vm);
-        check(vm.pane_slots[0].pane.folder_size_labels.empty(), "unsupported layout removes size labels and requests");
+        check(vm.pane_slots[0].pane.folder_size_labels[0] == L"0 B", "details view receives folder total");
+        vm.pane_slots[0].pane.is_file_system = false;
+        vm.pane_slots[0].pane.is_search = true;
+        vm.pane_slots[0].pane.path = L"pulse:search:test";
+        FillFolderSizes(*state, vm);
+        check(vm.pane_slots[0].pane.folder_size_labels[0] == L"0 B", "search results use each folder's real path");
+        auto& search_pane = vm.pane_slots[0].pane;
+        search_pane.content_results = std::make_shared<index::ContentResultStore>(nullptr, 0);
+        index::ContentHit hit;
+        hit.path = nested + L"\\file.txt"; hit.name = L"file.txt";
+        check(search_pane.content_results->Append({hit}), "content result fixture contains a paged hit");
+        search_pane.snapshot = std::make_shared<const std::vector<fs::DirEntry>>();
+        FillFolderSizes(*state, vm);
+        check(search_pane.folder_size_labels.empty(), "paged content hits never index the empty directory snapshot");
+        search_pane.snapshot.reset();
+        search_pane.entries.clear();
+        FillFolderSizes(*state, vm);
+        check(search_pane.folder_size_labels.empty(), "paged content hits never index the empty entry vector");
+        search_pane.content_results.reset();
+        search_pane.entries.push_back(e);
+        vm.pane_slots[0].pane.is_recycle = true;
+        FillFolderSizes(*state, vm);
+        check(vm.pane_slots[0].pane.folder_size_labels.empty(), "recycle results do not request folder sizes");
         state->folderSizes.Stop();
     }
     check(RunFolderSizeIndexClientTest(fixture, log), "folder size index IPC integration");

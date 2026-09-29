@@ -62,9 +62,12 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         y+=8*scale; l.wallpaper_blur_card=row(narrow ? 98.0f : 64.0f); segments(l.wallpaper_blur_card,l.wallpaper_blur_row,3,282);
         y+=8*scale; l.tray_icon_card=row(narrow ? 98.0f : 64.0f); segments(l.tray_icon_card,l.tray_icon_row,3,282);
         y+=8*scale; l.startup_row[2]=row(64);
+        y+=8*scale; l.win_e_row=row(64);
+        y+=8*scale; l.shell_tags_row=row(64);
         y+=8*scale; l.hidden_files_row=row(64);
         y+=8*scale; l.protected_files_row=row(64);
         y+=8*scale; l.pinned_names_row=row(64);
+        y+=8*scale; l.vertical_tabs_row=row(64);
         y+=8*scale; l.blank_click_row=row(64);
         y+=8*scale; l.change_tracking_row=row(64);
         l.change_days_row=row(narrow ? 98.0f : 64.0f); segments(l.change_days_row,l.change_days,3,282);

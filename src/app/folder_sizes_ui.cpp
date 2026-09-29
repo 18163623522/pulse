@@ -14,20 +14,24 @@ void FillFolderSizes(AppState& s, ui::WindowViewModel& vm) {
         auto& pane = slot.pane;
         pane.folder_size_labels.clear();
         pane.folder_size_actions.clear();
-        if (!ui::ShowsFolderSize(pane.view_mode) || pane.loading || !pane.is_file_system ||
-            pane.is_search || pane.is_recycle) continue;
+        // Content hits are files held in a separate paged store, not snapshot/entries.
+        if (!ui::ShowsFolderSize(pane.view_mode) || pane.loading || pane.content_results ||
+            (!pane.is_file_system && !pane.is_search) || pane.is_recycle) continue;
         const auto list = s.renderer.PaneListRect(pane, slot.rect);
-        ui::ViewLayout layout(pane.view_mode, list, pane.EntryCount(), pane.scroll_x, pane.scroll_y, s.scale);
+        ui::ViewLayout layout(pane.view_mode, list, pane.EntryCount(), pane.scroll_x, pane.scroll_y, s.scale,
+                              s.renderer.ListRowHeightDip(pane, list));
         const auto [first, last] = layout.VisibleRange();
         for (int i = std::max(0, first); i <= last; ++i) {
             const int source = pane.SourceIndex(i);
             if (source < 0) continue;
             std::wstring path;
             if (pane.snapshot) {
+                if (static_cast<size_t>(source) >= pane.snapshot->size()) continue;
                 const auto& entry = (*pane.snapshot)[static_cast<size_t>(source)];
                 if (!entry.is_dir) continue;
-                path = entry.full_path.empty() ? pane.path + L"\\" + entry.name : entry.full_path;
+                path = entry.full_path.empty() && !pane.is_search ? pane.path + L"\\" + entry.name : entry.full_path;
             } else {
+                if (static_cast<size_t>(source) >= pane.entries.size()) continue;
                 const auto& entry = pane.entries[static_cast<size_t>(source)];
                 if (!entry.is_dir) continue;
                 path = entry.path;

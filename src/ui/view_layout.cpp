@@ -42,7 +42,7 @@ ViewMode ViewModeFromIndex(int index) noexcept {
 bool ShowsColumnHeader(ViewMode mode) noexcept { return mode == ViewMode::Details; }
 
 bool ShowsFolderSize(ViewMode mode) noexcept {
-    return mode == ViewMode::Tiles || mode == ViewMode::Content ||
+    return mode == ViewMode::Details || mode == ViewMode::Tiles || mode == ViewMode::Content ||
         mode == ViewMode::MediumIcons || mode == ViewMode::LargeIcons ||
         mode == ViewMode::ExtraLargeIcons;
 }

@@ -43,9 +43,9 @@ struct SettingDestination { I title;int page;unsigned expanded; };
 constexpr SettingDestination destinations[]={
     {I::SettingsTheme,0,0},{I::SettingsThemeColor,0,0},{I::SettingsWindowEffect,0,0},{I::SettingsLanguage,0,0},
     {I::SettingsLaunch,0,0},{I::SettingsKeepRunning,0,0},{I::SettingsRowHeight,0,0},{I::SettingsShowPerformance,0,0},
-    {I::ListSmartDate,0,0},{I::ListZebraRows,0,0},{I::ListSizeBar,0,0},{I::SettingsFolderSort,0,0},
-    {I::SettingsWallpaper,0,1},{I::SettingsWallpaperLook,0,1},{I::SettingsWallpaperBlur,0,1},{I::SettingsTrayIcon,0,1},{I::SettingsShowHidden,0,1},{I::SettingsShowProtected,0,1},{I::PinnedNames,0,1},
-    {I::SettingsBlankClickBack,0,1},{I::SettingsChangeTracking,0,1},{I::SettingsOpenFolders,0,1},
+    {I::ListSmartDate,0,0},{I::ListZebraRows,0,0},{I::ListSizeBar,0,0},{I::ListTagNameColor,0,0},{I::SettingsFolderSort,0,0},
+    {I::SettingsWallpaper,0,1},{I::SettingsWallpaperLook,0,1},{I::SettingsWallpaperBlur,0,1},{I::SettingsTrayIcon,0,1},{I::SettingsShowHidden,0,1},{I::SettingsShowProtected,0,1},{I::PinnedNames,0,1},{I::SettingsVerticalTabs,0,1},
+    {I::SettingsBlankClickBack,0,1},{I::SettingsChangeTracking,0,1},{I::SettingsOpenFolders,0,1},{I::SettingsWinE,0,1},{I::SettingsShellTags,0,1},
     {I::GlobalSearch,1,0},{I::GlobalSearchHotkey,1,0},{I::SearchPinyin,1,0},{I::ContentIndexManage,1,0},{I::IndexLocation,1,2},{I::LocalDrives,1,2},
     {I::Exclusions,1,2},{I::ServerFolders,1,2},{I::SettingsContextMenu,2,0},{I::SettingsDuplicates,4,0},{I::SettingsAboutDiagnostics,3,0},
 };
@@ -142,7 +142,7 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     case H::SettingsAboutAction:
         if(hit.index==0) {
             if(app::CopyTextToClipboard(s.hwnd,app::AboutRowsText(BuildVm(s,false).settings_about_rows)))
-                s.notification_toast.Show(s.hwnd,l10n::Get(I::AboutPulse),l10n::Get(I::AboutCopied),false);
+                s.renderer.NotifyCopied(static_cast<int>(H::SettingsAboutAction),0);
         } else if(hit.index==1 || hit.index==2) {
             ShellExecuteW(s.hwnd,L"open",hit.index==1?app::kPulseHomepage:app::kPulseReleasesPage,nullptr,nullptr,SW_SHOWNORMAL);
         }

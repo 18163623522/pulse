@@ -504,10 +504,18 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             const std::wstring leaf =
                 slash == std::wstring::npos ? full : full.substr(slash + 1);
             if (!parent.empty() && !leaf.empty()) {
+                NavigateTo(s, parent);
                 tab->pending_selected_name = leaf;
                 tab->pending_selected_names = { leaf };
                 tab->pending_ensure_selection_visible = true;
-                NavigateTo(s, parent);
+                if (tab->snapshot) {
+                    for (size_t i = 0; i < tab->snapshot->size(); ++i) {
+                        if (_wcsicmp((*tab->snapshot)[i].name.c_str(), leaf.c_str()) != 0) continue;
+                        tab->SelectOnly(static_cast<int>(i));
+                        EnsureRowVisible(s, *tab, static_cast<int>(i));
+                        break;
+                    }
+                }
             }
         }
         break;
@@ -1328,8 +1336,7 @@ void ShowSortDropdown(AppState& s) {
     options.show_path = kind == L"search" || kind == L"saved-search" || kind == L"recycle";
     const float width = static_cast<float>(s.compositor.Width());
     const float left = s.renderer.EffectiveSidebarWidth(width);
-    const auto layout = ui::MakeToolbarLayout(width,s.scale,s.renderer.TitleBarHeight(),s.renderer.Margin(),
-        s.renderer.NewButtonWidthPx(width-left < 600*s.scale),left);
+    const auto layout = s.renderer.ToolbarLayoutAt(width,s.renderer.NewButtonWidthPx(width-left < 600*s.scale));
     POINT anchor{static_cast<LONG>(layout.sort.left),static_cast<LONG>(layout.sort.bottom)};
     ClientToScreen(s.hwnd,&anchor);
     const int cmd = s.menu->TrackPopup(anchor,app::BuildSortMenu(options));
@@ -1372,8 +1379,8 @@ void ShowToolbarMore(AppState& s) {
     items.push_back(app::BuildShortcutHints());
     const float width=static_cast<float>(s.compositor.Width());
     const float left=s.renderer.EffectiveSidebarWidth(width);
-    const auto layout=ui::MakeToolbarLayout(width,s.scale,s.renderer.TitleBarHeight(),s.renderer.Margin(),
-        s.renderer.NewButtonWidthPx(true),left);
+    const auto layout=s.renderer.ToolbarLayoutAt(width,s.renderer.NewButtonWidthPx(true));
+    (void)left;
     POINT anchor{static_cast<LONG>(layout.overflow.left),static_cast<LONG>(layout.overflow.bottom)};
     ClientToScreen(s.hwnd,&anchor);
     const int cmd=s.menu->TrackPopup(anchor,items);
@@ -1392,8 +1399,18 @@ void ShowAdvancedSearch(AppState& s, bool require_scope) {
         if (kind != L"search") rest.clear();
     }
     app::AdvancedSearchSpec spec = app::ParseSearchQuery(rest, current);
+    if (s.addressSearching && IsWindow(s.hwndAddressEdit)) {
+        std::wstring draft(static_cast<size_t>(GetWindowTextLengthW(s.hwndAddressEdit)) + 1, L'\0');
+        draft.resize(GetWindowTextW(s.hwndAddressEdit, draft.data(), static_cast<int>(draft.size())));
+        if (s.addressSearchContent) spec.content = draft;
+        else { spec.name = draft; spec.content.clear(); spec.content_exclude.clear(); }
+        spec.current_folder = s.addressSearchRoot;
+        spec.custom_folder.clear();
+        spec.location = s.addressSearchCurrent && !spec.current_folder.empty()
+            ? app::LocationScope::CurrentFolder : app::LocationScope::Indexed;
+    }
     if (spec.location == app::LocationScope::Indexed && !current.empty() &&
-        (require_scope || rest.empty()))
+        (require_scope || (rest.empty() && !s.addressSearching)))
         spec.location = app::LocationScope::CurrentFolder;
     const auto result = ui::ShowAdvancedSearchDialog(s.hwnd, spec, s.darkMode, s.accentColor);
     if (result.accepted)
@@ -1747,7 +1764,31 @@ void ToggleQuickPreview(AppState& s) {
         const auto effect = s.appPrefs.background_image.empty()
             ? ui::WindowEffectFromId(s.appPrefs.window_effect)
             : ui::WindowEffect::None;
-        s.quickPreview.Show(item, s.darkMode, effect, s.safeMode);
+        // Grow the preview out of the selected item's icon (screen point).
+        POINT origin{};
+        const POINT* zoom_from = nullptr;
+        if (app::Tab* tab = ActiveTab(s); tab && s.pane) {
+            ui::PaneViewModel pane;
+            app::FillPaneViewModel(pane, *s.pane, &s.places);
+            const int view = pane.ViewIndex(tab->selected_index);
+            if (view >= 0) {
+                const D2D1_RECT_F bounds = FocusedPaneRect(s);
+                const D2D1_RECT_F list = s.renderer.PaneListRect(pane, bounds);
+                const D2D1_RECT_F cell = s.renderer.ItemRectInPane(pane, bounds, view);
+                const float cy = (cell.top + cell.bottom) * 0.5f;
+                const float row_h = cell.bottom - cell.top;
+                // Wide rows (details/list): the icon sits at the left edge;
+                // icon grids: the cell centre.
+                const float cx = cell.right - cell.left > row_h * 3.0f
+                    ? cell.left + row_h * 0.8f : (cell.left + cell.right) * 0.5f;
+                if (cy >= list.top && cy <= list.bottom) {
+                    origin = POINT{static_cast<LONG>(cx), static_cast<LONG>(cy)};
+                    ClientToScreen(s.hwnd, &origin);
+                    zoom_from = &origin;
+                }
+            }
+        }
+        s.quickPreview.Show(item, s.darkMode, effect, s.safeMode, zoom_from);
     }
 }
 
@@ -1885,7 +1926,7 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
         s.renderer.SetRowHeightDip(static_cast<float>(s.appPrefs.row_height));
     if (app::HasEffect(effects, app::SettingsEffect::ListStyle))
         s.renderer.SetListStyle(s.appPrefs.list_smart_date, s.appPrefs.list_zebra_rows,
-                                s.appPrefs.list_size_bar);
+                                s.appPrefs.list_size_bar, s.appPrefs.list_tag_name_color);
     if (app::HasEffect(effects, app::SettingsEffect::FolderSort)) {
         app::SetFolderSortMode(app::FolderSortModeFromInt(s.appPrefs.folder_sort_mode));
         // Cached snapshots hold the previous order; drop and re-sort what is visible.

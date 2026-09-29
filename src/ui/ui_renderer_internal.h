@@ -9,6 +9,7 @@
 #include "../app/places.h"
 #include "../app/search_query.h"
 #include "../common/text_format.h"
+#include "../common/display_path.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -89,26 +90,34 @@ void ClearTextWidthCache() {
     // active tab/toolbar/sidebar/status bar, and the pane/details cards. The
     // active tab and the sheet must use the same value so they read as one.
     struct LayerAlphas { float title = 1.0f, sheet = 1.0f, card = 1.0f; };
+    // Piecewise-linear lookup at t = 0, .25, .5, .75, 1.
+    inline float LerpStops(float t, const float (&v)[5]) noexcept {
+        t = std::clamp(t, 0.0f, 1.0f) * 4.0f;
+        const int i = (std::min)(3, static_cast<int>(t));
+        return v[i] + (v[i + 1] - v[i]) * (t - static_cast<float>(i));
+    }
+    // transparency: 0..90 slider; 25/50/75 reproduce the former
+    // subtle/balanced/vivid tables exactly.
     inline LayerAlphas ComputeLayerAlphas(bool image_mode, bool backdrop_drawn,
                                           bool backdrop_enabled, bool dark,
-                                          int wallpaper_look, int wallpaper_blur) noexcept {
+                                          int transparency, int wallpaper_blur) noexcept {
         LayerAlphas a;
+        const float t = static_cast<float>(std::clamp(transparency, 0, 90)) / 100.0f;
         if (image_mode) {
             // Decode failure stays opaque rather than exposing the desktop.
             if (!backdrop_drawn) return a;
-            // Rows: subtle, balanced, vivid. Columns: title, sheet, card.
             // Dark wallpaper uses the legacy single scrim. Balanced restores
             // its 55% cover; blur affects image detail, not the tint strength.
             if (dark) {
-                static constexpr float cover[] = {0.70f, 0.55f, 0.40f};
-                return {cover[std::clamp(wallpaper_look, 0, 2)], 0.0f, 0.0f};
+                static constexpr float cover[5] = {0.85f, 0.70f, 0.55f, 0.40f, 0.25f};
+                return {LerpStops(t, cover), 0.0f, 0.0f};
             }
-            static constexpr float kLight[3][3] = {
-                {0.60f, 0.68f, 0.94f}, {0.50f, 0.55f, 0.90f}, {0.40f, 0.45f, 0.85f}};
-            const float* v = kLight[std::clamp(wallpaper_look, 0, 2)];
-            a.title = v[0];
-            a.sheet = v[1];
-            a.card = v[2];
+            static constexpr float kTitle[5] = {0.70f, 0.60f, 0.50f, 0.40f, 0.30f};
+            static constexpr float kSheet[5] = {0.80f, 0.68f, 0.55f, 0.45f, 0.35f};
+            static constexpr float kCard[5] = {0.97f, 0.94f, 0.90f, 0.85f, 0.78f};
+            a.title = LerpStops(t, kTitle);
+            a.sheet = LerpStops(t, kSheet);
+            a.card = LerpStops(t, kCard);
             // Sidebar text sits directly on the sheet; unblurred detail needs more cover.
             if (wallpaper_blur <= 0) {
                 a.title = (std::min)(1.0f, a.title + 0.10f);
@@ -119,13 +128,29 @@ void ClearTextWidthCache() {
         if (backdrop_drawn) a.title = 0.0f;
         else if (backdrop_enabled) a.title = dark ? 0.72f : 0.78f;
         if (backdrop_enabled) {
-            a.sheet = dark ? 0.55f : 0.60f;
-            a.card = dark ? 0.72f : 0.78f;
+            // Acrylic / Mica: the slider scales the default (t = .5) opacities.
+            static constexpr float kScale[5] = {1.40f, 1.20f, 1.0f, 0.80f, 0.60f};
+            const float k = LerpStops(t, kScale);
+            a.sheet = (std::min)(1.0f, (dark ? 0.55f : 0.60f) * k);
+            a.card = (std::min)(1.0f, (dark ? 0.72f : 0.78f) * k);
         }
         return a;
     }
     inline float WallpaperBlurDip(int wallpaper_blur) noexcept {
-        return wallpaper_blur <= 0 ? 0.0f : (wallpaper_blur == 1 ? 14.0f : 28.0f);
+        return static_cast<float>(std::clamp(wallpaper_blur, 0, 40));
+    }
+    constexpr int kPanelTransparencyMax = 90;
+    constexpr int kWallpaperBlurMax = 40;
+    // Settings slider track inside the three segment cells the layout reserves;
+    // the right 50 DIPs hold the value label.
+    struct SettingsSliderGeom { float left = 0.0f, right = 0.0f, cy = 0.0f; };
+    inline SettingsSliderGeom SettingsSlider(const D2D1_RECT_F* cells, float scale) noexcept {
+        return {cells[0].left + 9.0f * scale, cells[2].right - 50.0f * scale,
+                (cells[0].top + cells[0].bottom) * 0.5f - 5.0f * scale};
+    }
+    inline int SettingsSliderValue(const SettingsSliderGeom& g, float x, int max_value) noexcept {
+        const float t = std::clamp((x - g.left) / (std::max)(1.0f, g.right - g.left), 0.0f, 1.0f);
+        return static_cast<int>(t * static_cast<float>(max_value) + 0.5f);
     }
     constexpr float kTabMinW = 72.0f;
     constexpr float kTabMaxW = 240.0f;
@@ -329,6 +354,9 @@ void ClearTextWidthCache() {
         return m;
     }
 
+    // Extra space under the vertical-tabs block; its divider sits mid-gap.
+    constexpr float kSidebarTabsDividerGapDip = 8.0f;
+
     float SidebarItemHeight(const SidebarItem& item, const SidebarMetrics& m) {
         if (item.is_drive) return m.driveH;
         if (item.is_tag) return m.tagH;
@@ -366,6 +394,8 @@ void ClearTextWidthCache() {
                     height += SidebarItemHeight(item, m) + m.itemGap;
                 height += m.groupGap - m.itemGap;
             }
+            // Same extra gap LayoutSidebar leaves under the vertical-tabs well.
+            if (group.tabs_section) height += kSidebarTabsDividerGapDip * m.scale;
         }
         return height + m.pad;
     }
@@ -472,6 +502,7 @@ void ClearTextWidthCache() {
                 y += m.headerH + 4.0f * scale;
             }
             if (has_header && group.collapsed) {
+                if (group.tabs_section) y += kSidebarTabsDividerGapDip * scale;
                 if (bands) bands->push_back(
                     { g, band_top, std::min(y + m.groupGap - m.itemGap, contentBottom) });
                 continue;
@@ -502,6 +533,7 @@ void ClearTextWidthCache() {
                 y += h + m.itemGap;
             }
             y += m.groupGap - m.itemGap;
+            if (group.tabs_section) y += kSidebarTabsDividerGapDip * scale;
             if (bands) bands->push_back({ g, band_top, std::min(y, contentBottom) });
         }
 
@@ -714,7 +746,7 @@ void ClearTextWidthCache() {
     }
 
     bool SidebarItemHasUnpin(const SidebarItem& item) {
-        return item.indent == 0 && item.path.starts_with(L"pulse:workspace:");
+        return item.tab_row || (item.indent == 0 && item.path.starts_with(L"pulse:workspace:"));
     }
 
     D2D1_RECT_F WorkspaceUnpinRect(const D2D1_RECT_F& row, float scale) {
@@ -732,7 +764,12 @@ void ClearTextWidthCache() {
         return D2D1::RectF(right - size, top, right, top + size);
     }
 
-    bool PathIsSelfOrChild(const std::wstring& root, const std::wstring& path) {
+    bool PathIsSelfOrChild(const std::wstring& root_in, const std::wstring& path_in) {
+        // Sidebar items hold normalized paths (\\?\C:\..., \\?\UNC\...), while the
+        // pane path is display text without that prefix; compare both as display
+        // text or file-system rows never match.
+        const std::wstring root = pulse::path::FriendlyPathText(root_in);
+        const std::wstring path = pulse::path::FriendlyPathText(path_in);
         if (root.empty() || path.empty()) return false;
         if (_wcsicmp(root.c_str(), path.c_str()) == 0) return true;
         std::wstring prefix = root;
@@ -1496,7 +1533,7 @@ struct SettingsLayout {
     D2D1_RECT_F effect_card{};
     D2D1_RECT_F effect_row[kWindowEffectCount]{};
     D2D1_RECT_F density_card{};
-    D2D1_RECT_F list_style_row[3]{};
+    D2D1_RECT_F list_style_row[4]{};
     D2D1_RECT_F density_row[3]{};
     D2D1_RECT_F folder_sort_card{};
     D2D1_RECT_F folder_sort_row[3]{};
@@ -1516,7 +1553,10 @@ struct SettingsLayout {
     D2D1_RECT_F hidden_files_row{};
     D2D1_RECT_F protected_files_row{};
     D2D1_RECT_F pinned_names_row{};
+    D2D1_RECT_F vertical_tabs_row{};
     D2D1_RECT_F blank_click_row{};
+    D2D1_RECT_F win_e_row{};
+    D2D1_RECT_F shell_tags_row{};
     D2D1_RECT_F change_tracking_row{}, change_days_row{}, change_days[3]{};
     D2D1_RECT_F search_pinyin_row{};
     D2D1_RECT_F global_search_row{}, global_search_hotkey_row{}, global_search_hotkey_button{};

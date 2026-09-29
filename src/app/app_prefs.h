@@ -12,6 +12,8 @@ struct AppPrefs {
     bool launch_on_startup = false;
     bool keep_running_on_close = false;
     bool open_folders_in_pulse = false;
+    bool take_over_win_e = false;
+    bool shell_tag_menu = false;    // File Explorer "Pulse tags" submenu (shell_tag_menu.cpp syncs HKCU)   // registry is the source of truth (not in app.json)
     bool verify_copies = false;
     bool show_status_performance = false;
     bool show_pinned_tab_names = true;
@@ -19,6 +21,9 @@ struct AppPrefs {
     bool list_smart_date = true;
     bool list_zebra_rows = true;
     bool list_size_bar = false;
+    bool list_tag_name_color = false; // tint tagged names with their first tag's color
+    bool vertical_tabs = false;       // tabs as the first sidebar section
+    bool sidebar_collapsed = false;   // sidebar folded to its icon rail (Ctrl+B)
     // 0 folders first, 1 follow the sort direction, 2 mixed with files
     int folder_sort_mode = 0;
     FolderViewPrefs folder_views;
@@ -38,8 +43,10 @@ struct AppPrefs {
     // none / acrylic-material / mica / mica-alt  (legacy dwm-blur → acrylic)
     std::wstring window_effect = L"mica-alt";
     std::wstring background_image;
-    int wallpaper_look = 1; // image mode layer opacity: 0 subtle, 1 balanced, 2 vivid
-    int wallpaper_blur = 1; // image mode blur: 0 off, 1 light, 2 strong
+    // Interface transparency 0..90 (json panel_transparency). 25/50/75 match the
+    // former subtle/balanced/vivid levels; applies to image, Acrylic and Mica.
+    int wallpaper_look = 50;
+    int wallpaper_blur = 14; // wallpaper blur in DIPs 0..40 (json wallpaper_blur_px)
     int row_height = 34; // file-list row height in DIPs (24..48)
     int sidebar_width = 224; // DIPs
     bool address_search_current = false;
@@ -71,6 +78,12 @@ struct AppPrefs {
     // HKCU Directory/Drive open verbs; call after Load() and on toggle.
     bool ReadFolderOpen() const;
     bool ApplyFolderOpen(bool on);
+
+    // HKCU "File Explorer" launch verb used by Win+E and the taskbar Explorer
+    // pin ({52205fd8-...}\shell\opennewwindow). A user's previous custom
+    // command is kept as PulseBackup and restored when turned off.
+    bool ReadWinE() const;
+    bool ApplyWinE(bool on);
 
     bool StoreBackgroundImage(const std::wstring& source_path);
     void ClearBackgroundImage();

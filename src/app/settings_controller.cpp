@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cwchar>
 #include <thread>
 
@@ -294,16 +295,30 @@ void SettingsController::TrayIconSize(int index) {
 }
 
 // Both only change how the next frame is painted; the caller invalidates.
-void SettingsController::WallpaperLook(int index) {
-    static constexpr int values[] = {0, 1, 2};
-    if (prefs_ && SelectValue(index, values, prefs_->wallpaper_look))
-        SaveAndApply(SettingsEffect::None);
+// Values snap to the former preset levels unless Shift is held.
+bool SettingsController::SliderValue(int which, int value) {
+    if (!prefs_ || which < 0 || which > 1) return false;
+    const bool snap = GetKeyState(VK_SHIFT) >= 0;
+    int& target = which == 0 ? prefs_->wallpaper_look : prefs_->wallpaper_blur;
+    value = std::clamp(value, 0, which == 0 ? 90 : 40);
+    if (snap) {
+        static constexpr int kLook[] = {25, 50, 75};
+        static constexpr int kBlur[] = {14, 28};
+        if (which == 0) {
+            for (int level : kLook) if (std::abs(value - level) <= 2) value = level;
+        } else {
+            for (int level : kBlur) if (std::abs(value - level) <= 1) value = level;
+        }
+    }
+    if (target == value) return false;
+    target = value;
+    return true;
 }
 
-void SettingsController::WallpaperBlur(int index) {
-    static constexpr int values[] = {0, 1, 2};
-    if (prefs_ && SelectValue(index, values, prefs_->wallpaper_blur))
-        SaveAndApply(SettingsEffect::None);
+void SettingsController::EndSlider() {
+    if (slider_drag_ < 0) return;
+    slider_drag_ = -1;
+    if (prefs_) prefs_->Save();
 }
 
 void SettingsController::Language(std::wstring_view language_id) {
@@ -401,6 +416,13 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 6) {
         prefs_->show_pinned_tab_names = !prefs_->show_pinned_tab_names;
         SaveAndApply(SettingsEffect::None);
+    } else if (index == 20) {
+        prefs_->ApplyWinE(!prefs_->take_over_win_e);
+        SaveAndApply(SettingsEffect::None);
+    } else if (index == 21) {
+        // shell_tag_menu.cpp installs/removes the HKCU verbs on the next UI tick.
+        prefs_->shell_tag_menu = !prefs_->shell_tag_menu;
+        SaveAndApply(SettingsEffect::None);
     } else if (index == 7) {
         prefs_->blank_click_go_back = !prefs_->blank_click_go_back;
         SaveAndApply(SettingsEffect::None);
@@ -419,6 +441,12 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 19) {
         prefs_->list_size_bar = !prefs_->list_size_bar;
         SaveAndApply(SettingsEffect::ListStyle);
+    } else if (index == 22) {
+        prefs_->list_tag_name_color = !prefs_->list_tag_name_color;
+        SaveAndApply(SettingsEffect::ListStyle);
+    } else if (index == 23) {
+        prefs_->vertical_tabs = !prefs_->vertical_tabs;
+        SaveAndApply(SettingsEffect::None);
     } else if (index == 15) {
         prefs_->global_search_enabled = !prefs_->global_search_enabled;
         if (!prefs_->Save()) {

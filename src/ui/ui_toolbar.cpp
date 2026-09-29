@@ -7,7 +7,7 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
     auto* dc = compositor_->Dc();
     const float left = EffectiveSidebarWidth(rect.right);
     const bool compact = rect.right-left < 600*scale_;
-    const auto layout = MakeToolbarLayout(rect.right,scale_,title_bar_height_,margin_,NewButtonWidthPx(compact),left,vm.pane.filter_expand);
+    const auto layout = ToolbarLayoutAt(rect.right,NewButtonWidthPx(compact),vm.pane.filter_expand);
     const bool searchOverlay=vm.address_searching && rect.right-left<480*scale_;
     if (!searchOverlay) {
         const wchar_t* nav_glyphs[] = {kIconBack,kIconForward,kIconUp,kIconRefresh};

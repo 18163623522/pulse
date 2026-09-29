@@ -47,6 +47,7 @@ void AppPrefs::ResetToDefaults() {
     launch_on_startup = false;
     keep_running_on_close = false;
     open_folders_in_pulse = false;
+    shell_tag_menu = false;
     verify_copies = false;
     show_status_performance = false;
     show_pinned_tab_names = true;
@@ -68,8 +69,8 @@ void AppPrefs::ResetToDefaults() {
     language = L"system";
     window_effect = L"mica-alt";
     background_image.clear();
-    wallpaper_look = 1;
-    wallpaper_blur = 1;
+    wallpaper_look = 50;
+    wallpaper_blur = 14;
     row_height = 34;
     sidebar_width = 224;
     address_search_current = false;
@@ -96,6 +97,8 @@ std::wstring AppPrefs::ToJson() const {
     out += keep_running_on_close ? L"true" : L"false";
     out += L",\n  \"open_folders_in_pulse\":";
     out += open_folders_in_pulse ? L"true" : L"false";
+    out += L",\n  \"shell_tag_menu\":";
+    out += shell_tag_menu ? L"true" : L"false";
     out += L",\n  \"verify_copies\":";
     out += verify_copies ? L"true" : L"false";
     out += L",\n  \"show_status_performance\":";
@@ -108,6 +111,12 @@ std::wstring AppPrefs::ToJson() const {
     out += list_zebra_rows ? L"true" : L"false";
     out += L",\n  \"list_size_bar\":";
     out += list_size_bar ? L"true" : L"false";
+    out += L",\n  \"list_tag_name_color\":";
+    out += list_tag_name_color ? L"true" : L"false";
+    out += L",\n  \"vertical_tabs\":";
+    out += vertical_tabs ? L"true" : L"false";
+    out += L",\n  \"sidebar_collapsed\":";
+    out += sidebar_collapsed ? L"true" : L"false";
     out += L",\n  \"folder_sort_mode\":";
     out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
     out += L",\n  \"show_hidden_files\":";
@@ -142,10 +151,13 @@ std::wstring AppPrefs::ToJson() const {
     out += L",\n  \"address_search_content\":" + std::to_wstring(address_search_content);
     out += L",\n  \"tray_icon_size\":";
     out += std::to_wstring(tray_icon_size);
+    // Legacy three-level keys stay for older builds reading the same app.json.
     out += L",\n  \"wallpaper_look\":";
-    out += std::to_wstring(wallpaper_look);
+    out += std::to_wstring(wallpaper_look < 38 ? 0 : (wallpaper_look < 63 ? 1 : 2));
     out += L",\n  \"wallpaper_blur\":";
-    out += std::to_wstring(wallpaper_blur);
+    out += std::to_wstring(wallpaper_blur <= 0 ? 0 : (wallpaper_blur <= 21 ? 1 : 2));
+    out += L",\n  \"panel_transparency\":" + std::to_wstring(wallpaper_look);
+    out += L",\n  \"wallpaper_blur_px\":" + std::to_wstring(wallpaper_blur);
     out += L",\n  \"accent_rgb\":\"";
     {
         std::wstring escaped_accent;
@@ -194,12 +206,16 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
+    shell_tag_menu = pulse::json::ExtractBool(json, L"shell_tag_menu", false);
     verify_copies = pulse::json::ExtractBool(json, L"verify_copies", false);
     show_status_performance = pulse::json::ExtractBool(json, L"show_status_performance", false);
     show_pinned_tab_names = pulse::json::ExtractBool(json, L"show_pinned_tab_names", true);
     list_smart_date = pulse::json::ExtractBool(json, L"list_smart_date", true);
     list_zebra_rows = pulse::json::ExtractBool(json, L"list_zebra_rows", true);
     list_size_bar = pulse::json::ExtractBool(json, L"list_size_bar", false);
+    list_tag_name_color = pulse::json::ExtractBool(json, L"list_tag_name_color", false);
+    vertical_tabs = pulse::json::ExtractBool(json, L"vertical_tabs", false);
+    sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
     if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
     search_pinyin = pulse::json::ExtractBool(json, L"search_pinyin", true);
@@ -234,10 +250,19 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     if (row_height < 24 || row_height > 48) row_height = 34;
     tray_icon_size = pulse::json::ExtractInt(json, L"tray_icon_size", 48);
     if (tray_icon_size < 32 || tray_icon_size > 64) tray_icon_size = 48;
-    wallpaper_look = pulse::json::ExtractInt(json, L"wallpaper_look", 1);
-    if (wallpaper_look < 0 || wallpaper_look > 2) wallpaper_look = 1;
-    wallpaper_blur = pulse::json::ExtractInt(json, L"wallpaper_blur", 1);
-    if (wallpaper_blur < 0 || wallpaper_blur > 2) wallpaper_blur = 1;
+    {
+        // Continuous values; migrate the former 0/1/2 levels when absent.
+        static constexpr int kLookLevels[] = {25, 50, 75};
+        static constexpr int kBlurLevels[] = {0, 14, 28};
+        int legacy = pulse::json::ExtractInt(json, L"wallpaper_look", 1);
+        if (legacy < 0 || legacy > 2) legacy = 1;
+        wallpaper_look = pulse::json::ExtractInt(json, L"panel_transparency", kLookLevels[legacy]);
+        if (wallpaper_look < 0 || wallpaper_look > 90) wallpaper_look = kLookLevels[legacy];
+        legacy = pulse::json::ExtractInt(json, L"wallpaper_blur", 1);
+        if (legacy < 0 || legacy > 2) legacy = 1;
+        wallpaper_blur = pulse::json::ExtractInt(json, L"wallpaper_blur_px", kBlurLevels[legacy]);
+        if (wallpaper_blur < 0 || wallpaper_blur > 40) wallpaper_blur = kBlurLevels[legacy];
+    }
     accent_rgb = pulse::json::ExtractString(json, L"accent_rgb");
     accent_follow_system = pulse::json::ExtractInt(json, L"accent_follow_system", 0) != 0;
     uint32_t accent_parsed = 0;
@@ -495,6 +520,81 @@ bool AppPrefs::ApplyFolderOpen(bool on) {
     return ok;
 }
 
+namespace {
+constexpr wchar_t kWinEVerbKey[] =
+    L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\\shell\\opennewwindow";
+constexpr wchar_t kWinEBackupValue[] = L"PulseBackup";
+
+bool SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
+    return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                          static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+}
+
+std::wstring ReadRegString(const std::wstring& path, const wchar_t* name) {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS)
+        return {};
+    wchar_t value[2048]{};
+    DWORD bytes = sizeof(value) - sizeof(wchar_t);
+    DWORD type = 0;
+    const LONG st = RegQueryValueExW(h, name, nullptr, &type, reinterpret_cast<LPBYTE>(value), &bytes);
+    RegCloseKey(h);
+    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return {};
+    return value;
+}
+} // namespace
+
+bool AppPrefs::ReadWinE() const {
+    const std::wstring exe = ExePath();
+    if (exe.empty()) return false;
+    const std::wstring command = std::wstring(kWinEVerbKey) + L"\\command";
+    return FolderOpenCommandIsOurs(ReadRegString(command, nullptr), exe);
+}
+
+bool AppPrefs::ApplyWinE(bool on) {
+    take_over_win_e = on;
+    if (!persist) return true;
+    const std::wstring exe = ExePath();
+    if (exe.empty()) return false;
+    const std::wstring verb = kWinEVerbKey;
+    const std::wstring command_key = verb + L"\\command";
+    const std::wstring current = ReadRegString(command_key, nullptr);
+    const bool ours = FolderOpenCommandIsOurs(current, exe);
+    if (on) {
+        // No arguments: the single-instance forwarder just brings Pulse up.
+        const std::wstring line = L"\"" + exe + L"\"";
+        if (ours && current == line) return true;
+        HKEY h = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, command_key.c_str(), 0, nullptr, 0,
+                            KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
+            return false;
+        bool ok = true;
+        if (!current.empty() && !ours) ok = SetRegString(h, kWinEBackupValue, current) && ok;
+        ok = SetRegString(h, nullptr, line) && ok;
+        // Empty DelegateExecute makes the shell run the command line.
+        ok = SetRegString(h, L"DelegateExecute", L"") && ok;
+        RegCloseKey(h);
+        return ok;
+    }
+    if (!ours) return true;   // someone else's command (or none): leave it alone
+    const std::wstring backup = ReadRegString(command_key, kWinEBackupValue);
+    if (!backup.empty()) {
+        HKEY h = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, command_key.c_str(), 0, KEY_SET_VALUE, &h) != ERROR_SUCCESS)
+            return false;
+        const bool ok = SetRegString(h, nullptr, backup);
+        RegDeleteValueW(h, kWinEBackupValue);
+        RegCloseKey(h);
+        return ok;
+    }
+    SHDeleteKeyW(HKEY_CURRENT_USER, verb.c_str());
+    // Drop the now-empty parents so Explorer falls back to its HKLM defaults.
+    const std::wstring shell = verb.substr(0, verb.rfind(L'\\'));
+    SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.c_str());
+    SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.substr(0, shell.rfind(L'\\')).c_str());
+    return true;
+}
+
 bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept {
     const wchar_t* p = text.c_str();
     if (!p || !*p) return false;
@@ -515,6 +615,7 @@ bool AppPrefs::Load() {
     if (dir.empty()) {
         launch_on_startup = ReadLaunchOnStartup();
         open_folders_in_pulse = ReadFolderOpen();
+        take_over_win_e = ReadWinE();
         return false;
     }
     std::wstring json;
@@ -524,6 +625,7 @@ bool AppPrefs::Load() {
     }
     launch_on_startup = ReadLaunchOnStartup();
     open_folders_in_pulse = ReadFolderOpen();
+    take_over_win_e = ReadWinE();
     // Repair older installs that wrote open\command but left shell default as none.
     if (persist && open_folders_in_pulse)
         ApplyFolderOpen(true);

@@ -1,5 +1,6 @@
 // app_runtime.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "vertical_tabs.h"
 #include "app_column_view.h"
 #include "folder_sizes_ui.h"
 #include "update_status.h"
@@ -406,6 +407,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 vm.settings_content_folders.push_back(std::move(folder));
             }
             vm.settings_open_folders = s.appPrefs.open_folders_in_pulse;
+            vm.settings_win_e = s.appPrefs.take_over_win_e;
+            vm.settings_shell_tags = s.appPrefs.shell_tag_menu;
             vm.settings_blank_click_go_back = s.appPrefs.blank_click_go_back;
             vm.settings_change_tracking = s.appPrefs.change_tracking_enabled;
             vm.settings_change_days = s.appPrefs.change_tracking_days;
@@ -1436,6 +1439,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_list_smart_date = s.appPrefs.list_smart_date;
     vm.settings_list_zebra_rows = s.appPrefs.list_zebra_rows;
     vm.settings_list_size_bar = s.appPrefs.list_size_bar;
+    vm.settings_list_tag_names = s.appPrefs.list_tag_name_color;
+    vm.settings_vertical_tabs = s.appPrefs.vertical_tabs;
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
     vm.sidebar_scroll = s.sidebarScroll;
     if (s.groupDragActive) {
@@ -1458,6 +1463,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         vm.status.task_text = st.last_error.empty() ? st.summary
             : st.summary + L" — " + st.last_error;
         vm.status.task_progress = st.active ? st.percent : -1.0f;
+        vm.status.task_active = st.active;
+        vm.status.task_failed = !st.last_error.empty();
         if(s.contentSelectionAction) vm.status.selection_text=l10n::Get(l10n::StringId::OpPreparingList);
     }
     app::ApplyUpdateStatus(vm.status, UpdateProgressForView(s), st.active);
@@ -1693,6 +1700,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             deck.puffs.push_back(view);
         }
     }
+    // Vertical tabs join the sidebar before its scroll range is measured.
+    ApplyVerticalTabs(s, vm);
     // The tray (including exiting cards) determines the sidebar viewport.
     // Clamp only after it is populated, using the same model as draw/hit-test.
     s.sidebarScroll = std::clamp(s.sidebarScroll, 0.0f, s.renderer.SidebarMaxScroll(
@@ -1870,8 +1879,10 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
 // every hover needs a name hint. EffectiveSidebarWidth returns pixels (the
 // upstream DIP-scaling fix), which is what the rail test expects.
 bool SidebarRailActive(const AppState& s) {
-    return ui::SidebarRailLayout(
-        s.renderer.EffectiveSidebarWidth(static_cast<float>(s.compositor.Width())), s.scale);
+    // SidebarRect, not EffectiveSidebarWidth: the hover-peek overlay has text.
+    const D2D1_RECT_F sb = s.renderer.SidebarRect(static_cast<float>(s.compositor.Width()),
+                                                  static_cast<float>(s.compositor.Height()));
+    return ui::SidebarRailLayout(sb.right - sb.left, s.scale);
 }
 
 void ApplyHoverTarget(AppState& s, const ui::HitTestResult& hit) {
@@ -2015,7 +2026,9 @@ std::wstring TooltipForHover(AppState& s) {
     case R::RowStar: return text(I::Star);
     case R::RowNewTab: return text(I::OpenNewTab);
     case R::RowMore: return text(I::MoreActions);
-    case R::SidebarItemAction: return text(I::Unpin);
+    case R::SidebarItemAction:
+        return text(IsVerticalTabPath(s.hoverPath) ? I::TooltipCloseTab : I::Unpin);
+    case R::SidebarToggle: return text(I::ToggleSidebar);
     // On the icon rail there is no text to read, so every row (and every folded
     // section's icon) names itself on hover.
     case R::SidebarHeader: return SidebarRailActive(s) ? s.hoverLabel : L"";

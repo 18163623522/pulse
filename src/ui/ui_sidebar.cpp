@@ -40,7 +40,8 @@ void DrawSidebarInsertionLine(ID2D1DeviceContext* dc, ID2D1SolidColorBrush* brus
 D2D1_RECT_F MainRenderer::SidebarRect(float w, float h) const {
     float top = title_bar_height_ + margin_;
     float bottom = h - status_height_ - margin_;
-    return D2D1::RectF(0.0f, top, EffectiveSidebarWidth(w), bottom);
+    const float right = SidebarPeekVisible(w) ? SidebarFullWidth(w) : EffectiveSidebarWidth(w);
+    return D2D1::RectF(0.0f, top, right, bottom);
 }
 
 void MainRenderer::SidebarGroupBands(const WindowViewModel& vm, float w, float h,
@@ -64,13 +65,42 @@ int MainRenderer::TrayDeckCapacity(float window_w) const {
     (void)window_w;
     return 4;
 }
+// Hover peek: the expanded sidebar floats over the panes on a raised card.
+void MainRenderer::DrawSidebarPeek(const WindowViewModel& vm, const D2D1_RECT_F& rect,
+                                   const Theme& theme) {
+    ID2D1DeviceContext* dc = compositor_->Dc();
+    const D2D1_RECT_F sb = SidebarRect(rect.right, rect.bottom);
+    const float r = theme.radius_flyout * scale_;
+    const D2D1_RECT_F card = D2D1::RectF(sb.left + 4.0f * scale_, sb.top - 2.0f * scale_,
+                                         sb.right + 6.0f * scale_, sb.bottom + 2.0f * scale_);
+    // Cheap layered shadow; no effect graph for a transient overlay.
+    for (int i = 3; i >= 1; --i) {
+        const float g = static_cast<float>(i) * 3.0f * scale_;
+        MakeBrush(dc, D2D1_COLOR_F{0.0f, 0.0f, 0.0f, vm.dark ? 0.12f : 0.045f}, brFillHover_);
+        FillRoundedRect(dc, brFillHover_.get(), card.left - g * 0.5f, card.top + g * 0.4f,
+                        card.right - card.left + g, card.bottom - card.top + g * 0.6f, r + g);
+    }
+    MakeBrush(dc, BlendOver(theme.surface_flyout, theme.bg), brFillSelected_);
+    FillRoundedRect(dc, brFillSelected_.get(), card.left, card.top,
+                    card.right - card.left, card.bottom - card.top, r);
+    MakeBrush(dc, theme.stroke_card, brStrokeCard_);
+    dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(card.left + 0.5f, card.top + 0.5f,
+        card.right - 0.5f, card.bottom - 0.5f), r, r), brStrokeCard_.get(), 1.0f);
+    DrawSidebar(vm, rect, theme);
+}
+
 void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
     ID2D1DeviceContext* dc = compositor_->Dc();
     D2D1_RECT_F sb = SidebarRect(rect.right, rect.bottom);
+    const D2D1_RECT_F sb_clip = sb;
+    // Collapse/expand: lay out at the expanded width and reveal it through
+    // the easing width, so labels slide rather than re-wrap every frame.
+    if (collapse_anim_ && rect.right / scale_ >= kSidebarRailWindowDip)
+        sb.right = (std::max)(sb.right, SidebarFullWidth(rect.right));
     const float w = sb.right - sb.left;
 
     // Partially visible scrolled rows must not paint over the toolbar or status bar.
-    dc->PushAxisAlignedClip(sb, D2D1_ANTIALIAS_MODE_ALIASED);
+    dc->PushAxisAlignedClip(sb_clip, D2D1_ANTIALIAS_MODE_ALIASED);
 
     // The sidebar sits on the shared sheet painted by Render(); the pane cards
     // beside it provide the edge, so it has no fill or divider of its own.
@@ -79,6 +109,84 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
     LayoutSidebar(vm, sb, scale_, slots);
     const bool compact = SidebarRailLayout(w, scale_);
     painter_.BeginFrame(theme, IsHighContrast());
+
+    // Only the most specific matching row is selected (Desktop, not also the
+    // C: drive that contains it). That row owns one pill that glides to the
+    // newly selected row (ui_motion.h); reorder gestures and high contrast
+    // keep the static fill.
+    int selected_slot = -1;
+    {
+        size_t best = 0;
+        for (size_t k = 0; k < slots.size(); ++k) {
+            const auto& slot = slots[k];
+            if (slot.kind != SidebarSlot::Item && slot.kind != SidebarSlot::Drive &&
+                slot.kind != SidebarSlot::Tag) continue;
+            if (slot.group < 0 || slot.item < 0) continue;
+            const auto& item = vm.sidebar[slot.group].items[slot.item];
+            if (item.tab_row) continue;  // tabs mark themselves (active card)
+            if (!PathIsSelfOrChild(item.path, vm.pane.path)) continue;
+            if (selected_slot < 0 || item.path.size() > best) {
+                selected_slot = static_cast<int>(k);
+                best = item.path.size();
+            }
+        }
+    }
+    const bool reordering = vm.tag_drag_group >= 0 || vm.sidebar_pin_drag_index >= 0 ||
+                            vm.sidebar_group_drag_id >= 0;
+    const int pill_slot = !reordering && !IsHighContrast() ? selected_slot : -1;
+    const auto isSelectedSlot = [&](const SidebarSlot& slot) {
+        return selected_slot >= 0 && &slot == &slots[static_cast<size_t>(selected_slot)];
+    };
+    // Vertical tabs: the block sits in a recessed well so open tabs read as
+    // their own thing, apart from the places below; the active tab's card
+    // rises out of it.
+    for (int g = 0; g < static_cast<int>(vm.sidebar.size()); ++g) {
+        if (!vm.sidebar[static_cast<size_t>(g)].tabs_section) continue;
+        float top = 1e9f, bottom = -1.0f, left = 1e9f, right = -1.0f;
+        for (const auto& slot : slots) {
+            if (slot.group != g) continue;
+            top = (std::min)(top, slot.rc.top);
+            bottom = (std::max)(bottom, slot.rc.bottom);
+            left = (std::min)(left, slot.rc.left);
+            right = (std::max)(right, slot.rc.right);
+        }
+        if (bottom < 0.0f) break;
+        const float pad = (compact ? 2.0f : 4.0f) * scale_;
+        const D2D1_RECT_F well = D2D1::RectF((std::max)(sb.left + 2.0f * scale_, left - pad),
+            top - pad, (std::min)(sb.right - 2.0f * scale_, right + pad), bottom + pad);
+        const float r = theme.radius_flyout * scale_;
+        MakeBrush(dc, vm.dark ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.045f}
+                              : D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.035f}, brFillHover_);
+        FillRoundedRect(dc, brFillHover_.get(), well.left, well.top,
+                        well.right - well.left, well.bottom - well.top, r);
+        MakeBrush(dc, vm.dark ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.06f}
+                              : D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.05f}, brStrokeDivider_);
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(well.left + 0.5f, well.top + 0.5f,
+            well.right - 0.5f, well.bottom - 0.5f), r, r), brStrokeDivider_.get(), 1.0f);
+        break;
+    }
+    if (pill_slot >= 0) {
+        const auto& slot = slots[static_cast<size_t>(pill_slot)];
+        const auto& item = vm.sidebar[slot.group].items[slot.item];
+        const uint64_t context = compact ? 1u : 2u;
+        const int64_t key = static_cast<int64_t>(std::hash<std::wstring>{}(item.path)) ^
+                            (static_cast<int64_t>(slot.group) << 48);
+        const D2D1_RECT_F pill = sidebar_pill_.Update(context, key, slot.rc, motion_frame_,
+                                                      motion_now_, 200);
+        const float radius = (compact ? theme.radius_control : theme.radius_flyout) * scale_;
+        // Same fills the static rows use (Painter::DrawSidebarItem / rail).
+        D2D1_COLOR_F fill = theme.fill_selected;
+        if (!compact) {
+            fill = vm.dark ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 26.0f / 255.0f}
+                           : D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 20.0f / 255.0f};
+        }
+        MakeBrush(dc, fill, brFillSelected_);
+        FillRoundedRect(dc, brFillSelected_.get(), pill.left, pill.top,
+                        pill.right - pill.left, pill.bottom - pill.top, radius);
+    }
+    const auto isPillSlot = [&](const SidebarSlot& slot) {
+        return pill_slot >= 0 && &slot == &slots[static_cast<size_t>(pill_slot)];
+    };
 
     if (compact) {
         for (const auto& slot : slots) {
@@ -136,8 +244,9 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
             }
             if (slot.group < 0 || slot.item < 0) continue;
             const auto& item = vm.sidebar[slot.group].items[slot.item];
-            const bool selected = PathIsSelfOrChild(item.path, vm.pane.path);
-            const bool hovered = IsHovered(vm, HitTestResult::SidebarItem, slot.run);
+            const bool pill_row = isPillSlot(slot);
+            const bool selected = (!pill_row && isSelectedSlot(slot)) || item.tab_active;
+            const bool hovered = !pill_row && IsHovered(vm, HitTestResult::SidebarItem, slot.run);
             if (selected || hovered || slot.run == vm.sidebar_drop_index) {
                 MakeBrush(dc, selected ? theme.fill_selected : theme.fill_hover, brFillSelected_);
                 FillRoundedRect(dc, brFillSelected_.get(), slot.rc.left, slot.rc.top,
@@ -157,6 +266,28 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                 DrawIconText(slot.rc.left, slot.rc.top, slot.rc.right - slot.rc.left,
                     slot.rc.bottom - slot.rc.top, item.icon_glyph, item.fallback_text,
                     iconColor, 0.92f);
+            }
+            if (item.tab_row && item.tab_number > 0 && item.tab_number <= 9) {
+                // Rail tab icons carry their Ctrl+N number.
+                IDWriteTextFormat* fmt = compositor_->SmallFormat();
+                const wchar_t num[2] = {static_cast<wchar_t>(L'0' + item.tab_number), 0};
+                const float d = 14.0f * scale_;
+                const D2D1_RECT_F b = D2D1::RectF(icon_rc.right - d * 0.45f, icon_rc.bottom - d * 0.55f,
+                                                  icon_rc.right + d * 0.55f, icon_rc.bottom + d * 0.45f);
+                MakeBrush(dc, item.tab_active ? theme.accent : theme.text_secondary, brAccent_);
+                dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F((b.left + b.right) * 0.5f,
+                    (b.top + b.bottom) * 0.5f), d * 0.5f, d * 0.5f), brAccent_.get());
+                // Center with DirectWrite alignment on the shared format, then
+                // put its alignment back for the other users.
+                const DWRITE_TEXT_ALIGNMENT oldAlign = fmt->GetTextAlignment();
+                const DWRITE_PARAGRAPH_ALIGNMENT oldPara = fmt->GetParagraphAlignment();
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                MakeBrush(dc, HexColor(0xFFFFFF), brText_);
+                dc->DrawText(num, 1, fmt, b, brText_.get(), D2D1_DRAW_TEXT_OPTIONS_NONE,
+                             DWRITE_MEASURING_MODE_NATURAL);
+                fmt->SetTextAlignment(oldAlign);
+                fmt->SetParagraphAlignment(oldPara);
             }
         }
         dc->PopAxisAlignedClip();
@@ -220,7 +351,7 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
 
         const auto& item = vm.sidebar[slot.group].items[slot.item];
         fluent::ControlState state;
-        state.selected = PathIsSelfOrChild(item.path, vm.pane.path);
+        state.selected = isSelectedSlot(slot);
         state.hovered = IsHovered(vm, HitTestResult::SidebarItem, slot.run) ||
             IsHovered(vm, HitTestResult::SidebarItemAction, slot.run) ||
             IsHovered(vm, HitTestResult::SidebarItemExpand, slot.run);
@@ -231,6 +362,30 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
         if (vm.sidebar_pin_drag_index >= 0 && slot.run == vm.sidebar_pin_drag_index)
             state.hovered = true;
         if (vm.tag_drag_group >= 0) state.hovered = false; // run indices shift mid-drag
+        if (item.tab_row && item.tab_active) {
+            // Active tab: raised card with an accent bar, like the top strip's
+            // active tab plate.
+            state.selected = false;
+            const float r = theme.radius_control * scale_;
+            MakeBrush(dc, vm.dark ? D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 0.10f} : HexColor(0xFFFFFF), brFillSelected_);
+            FillRoundedRect(dc, brFillSelected_.get(), slot.rc.left, slot.rc.top,
+                slot.rc.right - slot.rc.left, slot.rc.bottom - slot.rc.top, r);
+            MakeBrush(dc, theme.stroke_card, brStrokeCard_);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(slot.rc.left + 0.5f, slot.rc.top + 0.5f,
+                slot.rc.right - 0.5f, slot.rc.bottom - 0.5f), r, r), brStrokeCard_.get(), 1.0f);
+            const float barH = (slot.rc.bottom - slot.rc.top) - 16.0f * scale_;
+            MakeBrush(dc, item.tag_dot.a > 0.0f ? item.tag_dot : theme.accent, brAccent_);
+            FillRoundedRect(dc, brAccent_.get(), slot.rc.left + 1.0f * scale_,
+                slot.rc.top + 8.0f * scale_, 3.0f * scale_, barH, 1.5f * scale_);
+        } else if (item.tab_row) {
+            state.selected = false;
+        }
+        if (isPillSlot(slot)) {
+            // The gliding pill already painted this row's background.
+            state.selected = false;
+            state.hovered = false;
+            state.pressed = false;
+        }
         if (slot.kind == SidebarSlot::Drive) {
             fluent::DriveSidebarItemSpec drive;
             drive.bounds = slot.rc;
@@ -345,7 +500,21 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                     painter_.DrawTextFieldFrame(cell, field);
                 }
             }
-            if (unpin) {
+            if (unpin && item.tab_row) {
+                // Tab rows: close button, shown on hover and on the active tab.
+                const bool close_hot = IsHovered(vm, HitTestResult::SidebarItemAction, slot.run);
+                if (state.hovered || item.tab_active) {
+                    if (close_hot) {
+                        MakeBrush(dc, theme.fill_hover, brFillHover_);
+                        FillRoundedRect(dc, brFillHover_.get(), unpin_rc.left, unpin_rc.top,
+                            unpin_rc.right - unpin_rc.left, unpin_rc.bottom - unpin_rc.top,
+                            4.0f * scale_);
+                    }
+                    DrawIconText(unpin_rc.left, unpin_rc.top,
+                        unpin_rc.right - unpin_rc.left, unpin_rc.bottom - unpin_rc.top,
+                        kIconCloseSmall, L"x", close_hot ? theme.text : theme.text_secondary, 0.62f);
+                }
+            } else if (unpin) {
                 const bool unpin_hot = IsHovered(vm, HitTestResult::SidebarItemAction, slot.run);
                 if (unpin_hot) {
                     MakeBrush(dc, WithAlpha(theme.accent, vm.dark ? 0.22f : 0.16f), brFillHover_);

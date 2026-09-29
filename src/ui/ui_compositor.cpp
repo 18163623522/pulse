@@ -310,6 +310,68 @@ bool Compositor::UpdateTextRenderingParams(HMONITOR monitor) {
     return true;
 }
 
+namespace {
+// Cubic segments: opening eases out (1-(1-u)^3), closing eases in (u^3).
+bool BuildZoomCurve(IDCompositionDevice* device, float from, float to, double duration,
+                    bool ease_out, ComPtr<IDCompositionAnimation>& out) {
+    if (FAILED(device->CreateAnimation(&out)) || !out.get()) return false;
+    const double d = static_cast<double>(to) - static_cast<double>(from);
+    const double t = duration;
+    HRESULT hr = ease_out
+        ? out->AddCubic(0.0, from, static_cast<float>(3.0 * d / t),
+                        static_cast<float>(-3.0 * d / (t * t)), static_cast<float>(d / (t * t * t)))
+        : out->AddCubic(0.0, from, 0.0f, 0.0f, static_cast<float>(d / (t * t * t)));
+    if (SUCCEEDED(hr)) hr = out->End(duration, to);
+    return SUCCEEDED(hr);
+}
+} // namespace
+
+bool Compositor::HideContent() {
+    if (!compositionDevice_.get() || !compositionVisual_.get()) return false;
+    ComPtr<IDCompositionEffectGroup> effect;
+    if (FAILED(compositionDevice_->CreateEffectGroup(&effect)) || !effect.get()) return false;
+    effect->SetOpacity(0.0f);
+    compositionVisual_->SetTransform(static_cast<IDCompositionTransform*>(nullptr));
+    compositionVisual_->SetEffect(effect.get());
+    return SUCCEEDED(compositionDevice_->Commit());
+}
+
+bool Compositor::PlayZoom(float origin_x, float origin_y, bool opening, double duration_s) {
+    if (!compositionDevice_.get() || !compositionVisual_.get() || duration_s <= 0.0) return false;
+    constexpr float kSmall = 0.6f;
+    const float ox = std::clamp(origin_x, 0.0f, static_cast<float>(std::max(1, width_)));
+    const float oy = std::clamp(origin_y, 0.0f, static_cast<float>(std::max(1, height_)));
+    ComPtr<IDCompositionScaleTransform> scale;
+    ComPtr<IDCompositionEffectGroup> effect;
+    ComPtr<IDCompositionAnimation> scale_curve;
+    ComPtr<IDCompositionAnimation> opacity_curve;
+    if (FAILED(compositionDevice_->CreateScaleTransform(&scale)) || !scale.get() ||
+        FAILED(compositionDevice_->CreateEffectGroup(&effect)) || !effect.get() ||
+        !BuildZoomCurve(compositionDevice_.get(), opening ? kSmall : 1.0f, opening ? 1.0f : kSmall,
+                        duration_s, opening, scale_curve) ||
+        // Opacity settles a little earlier than scale when opening.
+        !BuildZoomCurve(compositionDevice_.get(), opening ? 0.0f : 1.0f, opening ? 1.0f : 0.0f,
+                        opening ? duration_s * 0.7 : duration_s, opening, opacity_curve)) {
+        ClearZoom();
+        return false;
+    }
+    scale->SetCenterX(ox);
+    scale->SetCenterY(oy);
+    scale->SetScaleX(scale_curve.get());
+    scale->SetScaleY(scale_curve.get());
+    effect->SetOpacity(opacity_curve.get());
+    compositionVisual_->SetTransform(scale.get());
+    compositionVisual_->SetEffect(effect.get());
+    return SUCCEEDED(compositionDevice_->Commit());
+}
+
+void Compositor::ClearZoom() {
+    if (!compositionDevice_.get() || !compositionVisual_.get()) return;
+    compositionVisual_->SetTransform(static_cast<IDCompositionTransform*>(nullptr));
+    compositionVisual_->SetEffect(nullptr);
+    compositionDevice_->Commit();
+}
+
 void Compositor::Present() {
     if (device_lost_) return;
     if (hwnd_) UpdateTextRenderingParams(

@@ -977,12 +977,20 @@ void TestBlankPaneClickNavigation() {
               L"blank pane: disabled single and double click preserve location");
         state->appPrefs.blank_click_go_back = true;
         tab->selected.insert(0);
+        tab->back_stack = {};
+        tab->back_stack.push(L"C:\\PulseBlankClickSelection");
         press();
+        Check(tab->SelectedCount() == 0 && state->blankClickTab == tab,
+              L"blank pane: first click clears the selection and still arms back");
         release();
+        Check(tab->current_path == initial_folder,
+              L"blank pane: clearing a selection with one click stays put");
         SendMessageW(hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, point);
         release();
-        Check(tab->SelectedCount() == 0 && tab->current_path == initial_folder,
-              L"blank pane: double click that clears a selection does not navigate");
+        Check(tab->current_path == fs::NormalizePath(L"C:\\PulseBlankClickSelection"),
+              L"blank pane: double click that clears a selection goes back");
+        tab->current_path = initial_folder;
+        tab->back_stack = {};
         press();
         state->appPrefs.blank_click_go_back = false;
         release();

@@ -1,5 +1,6 @@
 #include "../common/windows_compat.h"
 #include "quick_access.h"
+#include "vertical_tabs.h"
 #include "filter_animation.h"
 #include "sidebar_resize.h"
 // app_main.cpp — Pulse UI process entry point, window, input, shot mode.
@@ -95,6 +96,7 @@
 #pragma comment(lib, "psapi.lib")
 #include "app_internal.h"
 #include "duplicate_scan.h"
+#include "shell_tag_menu.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -233,6 +235,9 @@ void Render(AppState& s) {
             s.lastFps = static_cast<double>(s.fpsWindow.size() - 1) / span;
     }
     s.lastFrameTime = t1;
+    // Motion started or still running: the next frames follow the display
+    // clock instead of the 16 ms UI timer (see WM_FRAME_PUMP).
+    if (s.framePump.Running() && s.renderer.TickMotion(GetTickCount64())) s.framePump.Arm();
 }
 
 // kTimerUi drives animations and light polling. Minimized or hidden to the
@@ -358,9 +363,11 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         s->renderer.SetRowHeightDip(static_cast<float>(s->appPrefs.row_height));
         s->renderer.SetListStyle(s->appPrefs.list_smart_date, s->appPrefs.list_zebra_rows,
-                                 s->appPrefs.list_size_bar);
+                                 s->appPrefs.list_size_bar, s->appPrefs.list_tag_name_color);
         app::SetFolderSortMode(app::FolderSortModeFromInt(s->appPrefs.folder_sort_mode));
         s->renderer.SetSidebarWidthDip(static_cast<float>(s->appPrefs.sidebar_width));
+        s->renderer.SetVerticalTabs(s->appPrefs.vertical_tabs);
+        s->renderer.SetSidebarCollapsed(s->appPrefs.sidebar_collapsed);
         s->renderer.SetTrayIconDip(static_cast<float>(s->appPrefs.tray_icon_size));
         ApplyAccentFromPrefs(*s, true);
         ApplyAppWindowChrome(*s);
@@ -605,6 +612,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->renderer.SetDetailsPanelVisible(s->showDetailsPanel);
         s->renderer.SetDetailsPanelWidth(s->detailsPanelWidth);
         SetTimer(hwnd, kTimerUi, 16, nullptr);
+        s->framePump.Start(hwnd, WM_FRAME_PUMP);
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
             SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -705,6 +713,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_NCLBUTTONDOWN: {
         if (!s) break;
+        if (s->addressEditing && !s->addressSearching) HideAddressEditor(*s, false);
         if (wParam == HTMINBUTTON) {
             ShowWindow(hwnd, SW_MINIMIZE);
             return 0;
@@ -734,6 +743,11 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_COPYDATA: {
         auto* cds = reinterpret_cast<COPYDATASTRUCT*>(lParam);
+        if (app::ShellTagRequest tag_request; s && app::DecodeShellTagRequest(cds, tag_request)) {
+            // Explorer "Pulse tags" verb: tag in place, never raise the window.
+            QueueShellTagRequest(*s, std::move(tag_request), false);
+            return TRUE;
+        }
         std::wstring path;
         if (!s || !app::SingleInstanceCoordinator::DecodeOpenPath(cds, path)) return FALSE;
         OpenFolderInNewTab(*s, path);
@@ -858,6 +872,26 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return reinterpret_cast<LRESULT>(s->editBrush);
     }
 
+    case WM_FRAME_PUMP: {
+        if (!s) return 0;
+        s->framePump.FrameConsumed();
+        if (!IsWindowVisible(hwnd) || IsIconic(hwnd) ||
+            !s->renderer.TickMotion(GetTickCount64())) {
+            s->framePump.Disarm();  // WM_PAINT re-arms once shown again
+            return 0;
+        }
+        // Paint now rather than queue a low-priority WM_PAINT; Render re-arms
+        // while anything still moves. Posted messages outrank input, so when
+        // input is waiting the frame becomes an ordinary WM_PAINT instead:
+        // a slow frame must never starve the mouse and keyboard.
+        if (HIWORD(GetQueueStatus(QS_INPUT)) != 0) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+        return 0;
+    }
+
     case WM_TIMER: {
         if (s && wParam == kTimerUi) {
             SyncUiTimerRate(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
@@ -868,6 +902,14 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             const ULONGLONG now = GetTickCount64();
             TickUpdates(*s, now);
             if (s->renderer.TickDetailsPreview(now)) dirty = true;
+            if (s->renderer.TickMotion(now)) {
+                // Paced by the frame pump when it runs; the timer only
+                // re-arms it so the two never both render the same motion.
+                if (s->framePump.Running()) s->framePump.Arm();
+                else dirty = true;
+            }
+            if (pulse::TickSidebarPeek(*s, now)) dirty = true;
+            TickShellTagMenu(*s, now);
             if (s->detailsPreviewFoldStart) {
                 const float t = std::min(1.0f, static_cast<float>(now - s->detailsPreviewFoldStart) / 150.0f);
                 const float eased = t * t * (3.0f - 2.0f * t);
@@ -993,7 +1035,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             (float)s->compositor.Width(), (float)s->compositor.Height());
         ui::HitTestResult hit = s->renderer.HitTest(vm, bounds, (float)pt.x, (float)pt.y);
         if (s->renderer.DetailsPreviewDragging() ||
-            (hit.region == ui::HitTestResult::DetailsPreview && s->renderer.CanDetailsPreviewPan())) {
+            (hit.region == ui::HitTestResult::DetailsPreview && s->renderer.CanDetailsPreviewPan() &&
+             !s->renderer.DetailsPreviewIsArchive())) {
             SetCursor(ui::PreviewGrabCursor(s->renderer.DetailsPreviewDragging()));
             return TRUE;
         }
@@ -1055,11 +1098,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (GetCapture() == hwnd) ReleaseCapture();
         break;
     case WM_MOUSEMOVE:
+        if (s) pulse::UpdateSidebarPeek(*s, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         if (HandleSidebarResize(s, hwnd, msg, lParam)) return 0;
         if (HandleDetailsPreviewPointer(s, hwnd, msg, wParam, lParam)) return 0;
         return HandleMouseMove(s, hwnd, msg, wParam, lParam);
 
     case WM_MOUSELEAVE:
+        if (s) pulse::CloseSidebarPeek(*s);
         return HandleMouseLeave(s, hwnd, msg, wParam, lParam);
 
     case WM_LBUTTONDOWN:
@@ -1082,6 +1127,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_RBUTTONDOWN:
         return HandleRButtonDown(s, hwnd, msg, wParam, lParam);
+
+    case WM_MBUTTONUP:
+        if (s && pulse::HandleTabMiddleClick(*s, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) return 0;
+        break;
 
     case WM_RBUTTONUP:
         return HandleRButtonUp(s, hwnd, msg, wParam, lParam);
@@ -1556,6 +1605,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_DESTROY: {
         if (s) {
+            s->framePump.Stop();
             ShutdownGlobalSearch(*s);
             StopShellRegistryWatch();
             s->watches.Stop();
@@ -1633,7 +1683,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 snap.details_preview_only = s->detailsPreviewOnly;
                 snap.details_preview = s->detailsPreviewEnabled;
                 snap.details_panel_width = static_cast<int>(std::lround(s->detailsPanelWidth));
-                app::SaveSession(snap);
+                // A hidden tag-only launch must not overwrite the real
+                // window/tab session; tags and places still save below.
+                if (!ShellTagHeadlessLaunch()) app::SaveSession(snap);
                 s->places.Save();
                 s->ctxMenuPrefs.Save();
                 s->appPrefs.Save();
@@ -2022,10 +2074,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
     state.shot.start = std::chrono::steady_clock::now();
 
+    const std::optional<app::ShellTagRequest> shell_tag = app::ParseShellTagArgs(__argc, __wargv);
+    if (shell_tag) state.open_path.clear();
     if (!SkipSingletonFromArgv()) {
         const auto result = state.single_instance.Acquire();
         if (result == app::SingleInstanceCoordinator::AcquireResult::Existing) {
-            state.single_instance.ForwardOpenPath(state.open_path);
+            if (shell_tag) app::ForwardShellTagRequest(*shell_tag);
+            else state.single_instance.ForwardOpenPath(state.open_path);
             OleUninitialize();
             return 0;
         }
@@ -2077,7 +2132,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     const bool test_hidden = (state.shot.active || state.menushot || state.colorpickshot) &&
         GetEnvironmentVariableW(L"PULSE_TEST_HIDDEN_SHOT", hidden_shot, ARRAYSIZE(hidden_shot)) == 1 &&
         hidden_shot[0] == L'1';
-    ShowWindow(hwnd, test_hidden ? SW_HIDE : state.shot.active ? SW_SHOWNORMAL : nCmdShow);
+    // Started by the Explorer tag verb while Pulse was closed: stay hidden,
+    // apply the tag batch, then exit (shell_tag_menu.cpp).
+    if (shell_tag) QueueShellTagRequest(state, *shell_tag, true);
+    ShowWindow(hwnd, test_hidden || shell_tag ? SW_HIDE
+                                              : state.shot.active ? SW_SHOWNORMAL : nCmdShow);
     UpdateWindow(hwnd);
 
     if (state.menushot) {

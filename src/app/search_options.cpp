@@ -166,6 +166,10 @@ void ShowSearchOptions(AppState& s, bool management) {
                 items.insert(items.begin(), std::move(scope));
             }
         }
+        auto advanced = MenuItem(6, I::AdvancedSearch);
+        advanced.text += L"…";
+        advanced.shortcut = L"Ctrl+Shift+F";
+        items.insert(items.end() - 1, std::move(advanced));
         POINT anchor{};
         if (s.addressSearching) {
             const auto layout = ui::LayoutAddressSearch(s.renderer.SearchBarRect(static_cast<float>(s.compositor.Width())), s.scale);
@@ -184,6 +188,7 @@ void ShowSearchOptions(AppState& s, bool management) {
             return;
         }
         const int command = s.menu->TrackPopup(anchor, std::move(items));
+        if (command == 6) { ShowAdvancedSearch(s, false); return; }
         if (command == 5) { OpenSettingsTab(s, 1); return; }
         bool search = false;
         if (command == 20 || command == 21) { s.addressSearchCurrent = command == 21; search = true; }

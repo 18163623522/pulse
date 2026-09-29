@@ -14,6 +14,7 @@
 #include "../fs/fs_snapshot.h"
 #include "../fs/fs_watch.h"
 #include "app_model.h"
+#include "frame_pump.h"
 #include <deque>
 #include "content_results_ui.h"
 #include "app_worker.h"
@@ -86,6 +87,7 @@ constexpr UINT WM_UPDATE_DOWNLOADED = WM_APP + 60;
 constexpr UINT WM_UPDATE_INSTALL = WM_APP + 61;
 constexpr UINT WM_SEARCH_HISTORY = WM_APP + 62;
 constexpr UINT WM_CHANGE_TRACKING = WM_APP + 63;
+constexpr UINT WM_FRAME_PUMP = WM_APP + 67;  // app::FramePump: one display frame of motion
 constexpr UINT kTimerUi = 1;
 
 enum class OmnibarMode { Path, Mixed, Command, Project };
@@ -133,6 +135,8 @@ struct AppState {
     ui::Compositor compositor;
     ui::NotificationToast notification_toast;
     ui::MainRenderer renderer;
+    // Vsync-paced frames while highlight glides / list shifts run (frame_pump.h).
+    app::FramePump framePump;
     ui::QuickPreviewWindow quickPreview;
     // View row the quick preview was anchored to when Delete ran from inside
     // it; SyncQuickPreview re-anchors there once the listing drops the entry
@@ -171,6 +175,7 @@ struct AppState {
     uint64_t recycle_ignore_items = 0;
     bool recycle_info_guard = false;
     uint32_t sidebarCollapsedMask = 0;
+    ULONGLONG sidebarPeekArmAt = 0;     // rail hover start; 0 = not armed
     uint32_t sidebarHiddenMask = 0;  // Section menu: hidden groups are not drawn.
     // Section display order (logical SidebarSectionId values). Header drags
     // rewrite it; the masks above are indexed by id, so they survive a reorder.
@@ -463,6 +468,7 @@ struct AppState {
     int dropBreadcrumb = -1;
     int dropSidebar = -1;
     bool dropTray = false;
+    bool dropQuickAccess = false;  // folders over the Quick access header: pin
     std::wstring dropBadge;
     float dropBadgeX = 0.0f;
     float dropBadgeY = 0.0f;

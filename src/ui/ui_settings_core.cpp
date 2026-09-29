@@ -77,6 +77,43 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             painter_.DrawSegmentedItem(item);
         }
     };
+    // Continuous slider in the segment cells: accent fill, Fluent thumb, preset
+    // ticks labelled with the former level names, value at the right.
+    auto slider=[&](D2D1_RECT_F card,D2D1_RECT_F const* cells,int value,int max_value,const int* ticks,const I* tick_labels,
+                    H::Region hit,I title,I desc,const wchar_t* unit) {
+        const bool stacked=cells[0].left<card.left+100*scale_;
+        label(card,l10n::Get(title),l10n::Get(desc),L"\xE8A4",stacked ? card.right-16*scale_ : cells[0].left-12*scale_);
+        const auto g=SettingsSlider(cells,scale_);
+        const bool hot=vm.hover_region==static_cast<int>(hit);
+        const float span=(std::max)(1.0f,g.right-g.left);
+        const auto x_of=[&](int v){return g.left+span*std::clamp(static_cast<float>(v)/static_cast<float>(max_value),0.0f,1.0f);};
+        const float x=x_of(value);
+        const float th=4*scale_;
+        MakeBrush(dc,WithAlpha(theme.text,0.16f),brFillHover_);
+        dc->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(g.left,g.cy-th/2,g.right,g.cy+th/2),th/2,th/2),brFillHover_.get());
+        MakeBrush(dc,theme.accent,brAccent_);
+        if(x>g.left) dc->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(g.left,g.cy-th/2,x,g.cy+th/2),th/2,th/2),brAccent_.get());
+        for(int i=0;i<3;++i) {
+            if(ticks[i]<0) continue;
+            const float tx=x_of(ticks[i]);
+            MakeBrush(dc,WithAlpha(theme.text_secondary,value==ticks[i] ? 0.9f : 0.55f),brTextSecondary_);
+            if(ticks[i]>0) dc->FillRectangle(D2D1::RectF(tx-0.5f*scale_,g.cy+5*scale_,tx+0.5f*scale_,g.cy+8*scale_),brTextSecondary_.get());
+            const auto lr=ticks[i]==0 ? D2D1::RectF(g.left-9*scale_,g.cy+8*scale_,g.left+60*scale_,g.cy+22*scale_)
+                                      : D2D1::RectF(tx-34*scale_,g.cy+8*scale_,tx+34*scale_,g.cy+22*scale_);
+            painter_.DrawText(l10n::Get(tick_labels[i]),lr,compositor_->SmallFormat(),
+                value==ticks[i] ? theme.text : theme.text_secondary,
+                ticks[i]==0 ? fluent::HorizontalAlignment::Left : fluent::HorizontalAlignment::Center);
+        }
+        MakeBrush(dc,WithAlpha(theme.surface_card,1.0f),brFillInput_);
+        MakeBrush(dc,theme.stroke_card,brStrokeCard_);
+        const float outer=9*scale_;
+        dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x,g.cy),outer,outer),brFillInput_.get());
+        dc->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x,g.cy),outer,outer),brStrokeCard_.get(),1);
+        const float inner=(hot ? 6.0f : 5.0f)*scale_;
+        dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x,g.cy),inner,inner),brAccent_.get());
+        painter_.DrawText(std::to_wstring(value)+unit,D2D1::RectF(g.right+10*scale_,g.cy-10*scale_,cells[2].right,g.cy+10*scale_),
+            compositor_->TextFormat(),theme.text,fluent::HorizontalAlignment::Right);
+    };
     if(vm.settings_page==0) {
         section(0,I::SettingsAppearance);section(1,I::SettingsStartupShutdown);section(2,I::SettingsFileList);
         for(const auto& group:lay.group) draw_card(group);
@@ -167,6 +204,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         toggle(lay.list_style_row[0],I::ListSmartDate,I::ListSmartDateDesc,L"\xE787",vm.settings_list_smart_date,17);divider(lay.list_style_row[0]);
         toggle(lay.list_style_row[1],I::ListZebraRows,I::ListZebraRowsDesc,L"\xE8FD",vm.settings_list_zebra_rows,18);divider(lay.list_style_row[1]);
         toggle(lay.list_style_row[2],I::ListSizeBar,I::ListSizeBarDesc,L"\xE9D2",vm.settings_list_size_bar,19);divider(lay.list_style_row[2]);
+        toggle(lay.list_style_row[3],I::ListTagNameColor,I::ListTagNameColorDesc,L"\xE8EC",vm.settings_list_tag_names,22);divider(lay.list_style_row[3]);
         const I folder_sort[]={I::FolderSortTop,I::FolderSortFollow,I::FolderSortMixed};const int folder_sort_values[]={0,1,2};
         segmented(lay.folder_sort_card,lay.folder_sort_row,folder_sort,folder_sort_values,vm.settings_folder_sort,H::SettingsFolderSort,I::SettingsFolderSort,I::SettingsFolderSortDesc);
         disclosure(lay.disclosure[0],I::SettingsAdvanced,I::SettingsAdvancedDesc,L"\xE713",0,true);
@@ -212,17 +250,20 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
                               fluent::ButtonKind::Standard, clear });
 
 
-            const I looks[]={I::WallpaperLookSubtle,I::WallpaperLookBalanced,I::WallpaperLookVivid};const int levels[]={0,1,2};
-            draw_card(lay.wallpaper_look_card);segmented(lay.wallpaper_look_card,lay.wallpaper_look_row,looks,levels,vm.wallpaper_look,H::SettingsWallpaperLook,I::SettingsWallpaperLook,I::SettingsWallpaperLookDesc);
-            const I blurs[]={I::WallpaperBlurOff,I::WallpaperBlurLight,I::WallpaperBlurStrong};
-            draw_card(lay.wallpaper_blur_card);segmented(lay.wallpaper_blur_card,lay.wallpaper_blur_row,blurs,levels,vm.wallpaper_blur,H::SettingsWallpaperBlur,I::SettingsWallpaperBlur,I::SettingsWallpaperBlurDesc);
+            const I looks[]={I::WallpaperLookSubtle,I::WallpaperLookBalanced,I::WallpaperLookVivid};const int look_ticks[]={25,50,75};
+            draw_card(lay.wallpaper_look_card);slider(lay.wallpaper_look_card,lay.wallpaper_look_row,vm.wallpaper_look,kPanelTransparencyMax,look_ticks,looks,H::SettingsWallpaperLook,I::SettingsWallpaperLook,I::SettingsWallpaperLookDesc,L"%");
+            const I blurs[]={I::WallpaperBlurOff,I::WallpaperBlurLight,I::WallpaperBlurStrong};const int blur_ticks[]={0,14,28};
+            draw_card(lay.wallpaper_blur_card);slider(lay.wallpaper_blur_card,lay.wallpaper_blur_row,vm.wallpaper_blur,kWallpaperBlurMax,blur_ticks,blurs,H::SettingsWallpaperBlur,I::SettingsWallpaperBlur,I::SettingsWallpaperBlurDesc,L" px");
             const I sizes[]={I::SettingsTraySmall,I::SettingsTrayStandard,I::SettingsTrayLarge};const int icons[]={40,48,56};
             draw_card(lay.tray_icon_card);segmented(lay.tray_icon_card,lay.tray_icon_row,sizes,icons,vm.settings_tray_icon,H::SettingsTrayIcon,I::SettingsTrayIcon,I::SettingsTrayIconDesc);
             draw_card(lay.startup_row[2]);toggle(lay.startup_row[2],I::SettingsOpenFolders,I::SettingsOpenFoldersDesc,L"\xE8B7",vm.settings_open_folders,3);
+            draw_card(lay.win_e_row);toggle(lay.win_e_row,I::SettingsWinE,I::SettingsWinEDesc,L"\xE765",vm.settings_win_e,20);
+            draw_card(lay.shell_tags_row);toggle(lay.shell_tags_row,I::SettingsShellTags,I::SettingsShellTagsDesc,L"\xE8EC",vm.settings_shell_tags,21);
             draw_card(lay.hidden_files_row);toggle(lay.hidden_files_row,I::SettingsShowHidden,I::SettingsShowHiddenDesc,L"\xE890",vm.settings_show_hidden_files,5);
             // Hidden + system entries: File Explorer keeps these behind a second option.
             draw_card(lay.protected_files_row);toggle(lay.protected_files_row,I::SettingsShowProtected,I::SettingsShowProtectedDesc,L"\xE72E",vm.settings_show_protected_os_files,16);
             draw_card(lay.pinned_names_row);toggle(lay.pinned_names_row,I::PinnedNames,I::PinnedNamesDesc,L"\xE718",vm.show_pinned_tab_names,6);
+            draw_card(lay.vertical_tabs_row);toggle(lay.vertical_tabs_row,I::SettingsVerticalTabs,I::SettingsVerticalTabsDesc,L"\xE7C4",vm.settings_vertical_tabs,23);
             draw_card(lay.blank_click_row);toggle(lay.blank_click_row,I::SettingsBlankClickBack,I::SettingsBlankClickBackDesc,L"\xE72B",vm.settings_blank_click_go_back,7);
             draw_card(lay.change_tracking_row);toggle(lay.change_tracking_row,I::SettingsChangeTracking,I::SettingsChangeTrackingDesc,L"\xE823",vm.settings_change_tracking,8);
             const I days[]={I::ChangeToday,I::ChangeLast3Days,I::ChangeLast7Days};const int day_values[]={1,3,7};

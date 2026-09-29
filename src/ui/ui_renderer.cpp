@@ -43,10 +43,15 @@ void MainRenderer::SetCompositor(Compositor* comp) {
     if (!comp) {
         icon_cache_.Reset();
         thumbnail_cache_.Reset();
+        details_cache_.Reset();
         preview_handler_.Reset();
         preview_mono_format_.reset();
     }
-    else { icon_cache_.SetDeviceContext(comp->Dc()); thumbnail_cache_.SetDeviceContext(comp->Dc()); }
+    else {
+        icon_cache_.SetDeviceContext(comp->Dc());
+        thumbnail_cache_.SetDeviceContext(comp->Dc());
+        details_cache_.SetDeviceContext(comp->Dc());
+    }
 }
 
 void MainRenderer::InvalidateTypography() {
@@ -59,6 +64,7 @@ void MainRenderer::SetIconNotifyWindow(HWND hwnd) {
     notify_hwnd_ = hwnd;
     icon_cache_.SetNotifyWindow(hwnd);
     thumbnail_cache_.SetNotifyWindow(hwnd);
+    details_cache_.SetNotifyWindow(hwnd);
     preview_handler_.SetNotifyWindow(hwnd);
 }
 
@@ -71,7 +77,7 @@ void MainRenderer::SetScale(float scale) {
     }
     scale_ = scale;
     title_bar_height_ = kTitleBarHeight * scale;
-    toolbar_height_ = 88.0f * scale;
+    toolbar_height_ = (vertical_tabs_ ? 44.0f : 88.0f) * scale;
     status_height_ = 28.0f * scale;
     sidebar_width_ = sidebar_width_dip_ * scale;
     pane_header_height_ = 40.0f * scale;
@@ -85,7 +91,28 @@ void MainRenderer::SetScale(float scale) {
 
 float MainRenderer::EffectiveSidebarWidth(float window_width) const {
     const float window_dip = window_width / scale_;
-    if (window_dip < kSidebarRailWindowDip) return kSidebarRailWidthDip * scale_;
+    const float rail = kSidebarRailWidthDip * scale_;
+    if (window_dip < kSidebarRailWindowDip || collapse_value_ >= 1.0f) return rail;
+    const float full = SidebarFullWidth(window_width);
+    return collapse_value_ <= 0.0f ? full : full + (rail - full) * collapse_value_;
+}
+
+void MainRenderer::SetSidebarCollapsed(bool on, bool animate) {
+    if (on == sidebar_collapsed_) return;
+    sidebar_collapsed_ = on;
+    if (on) sidebar_peek_ = false;
+    if (animate && motion::SystemAnimationsEnabled()) {
+        collapse_from_ = collapse_value_;
+        collapse_start_ = motion::NowMs();
+        collapse_anim_ = true;
+    } else {
+        collapse_anim_ = false;
+        collapse_value_ = on ? 1.0f : 0.0f;
+    }
+}
+
+float MainRenderer::SidebarFullWidth(float window_width) const {
+    const float window_dip = window_width / scale_;
     const bool details_open = details_visible_ && window_dip >= kDetailsVisibleWindowDip;
     const float max_dip = MaxSidebarWidthDip(window_dip, details_width_, details_open,
                                              2.0f * margin_ / scale_);
@@ -98,7 +125,7 @@ float MainRenderer::DetailsPanelWidth(float window_w) const {
     const float window_dip = window_w / scale_;
     if (!details_visible_ || window_dip < kDetailsVisibleWindowDip) return 0.0f;
     const float max_dip = MaxDetailsWidthDip(window_dip, sidebar_width_dip_,
-                                             window_dip < kSidebarRailWindowDip,
+                                             (window_dip < kSidebarRailWindowDip || sidebar_collapsed_),
                                              2.0f * margin_ / scale_);
     return (std::min)(details_width_, max_dip) * scale_ + margin_;
 }
@@ -112,7 +139,7 @@ float MainRenderer::SidebarMaxWidthDip(float window_w) const {
 float MainRenderer::DetailsMaxWidthDip(float window_w) const {
     const float window_dip = window_w / scale_;
     return MaxDetailsWidthDip(window_dip, sidebar_width_dip_,
-                              window_dip < kSidebarRailWindowDip, 2.0f * margin_ / scale_);
+                              (window_dip < kSidebarRailWindowDip || sidebar_collapsed_), 2.0f * margin_ / scale_);
 }
 
 D2D1_RECT_F MainRenderer::ContentRect(float w, float h) const {
@@ -125,24 +152,55 @@ D2D1_RECT_F MainRenderer::TitleBarRect(float w) const {
     return D2D1::RectF(0, 0, w, title_bar_height_);
 }
 
+ToolbarLayout MainRenderer::ToolbarLayoutAt(float w, float create_width, float filter_expand) const {
+    const float left = EffectiveSidebarWidth(w);
+    if (!vertical_tabs_)
+        return MakeToolbarLayout(w, scale_, title_bar_height_, margin_, create_width, left, filter_expand);
+    // Command row directly under the title bar; address row centered in it,
+    // stopping short of the settings button.
+    ToolbarLayout out = MakeToolbarLayout(w, scale_, title_bar_height_ - 46.0f * scale_, margin_,
+                                          create_width, left, filter_expand);
+    const TitleChrome chrome = MakeTitleChrome(w, scale_, title_bar_height_);
+    const float row_top = (title_bar_height_ - 36.0f * scale_) * 0.5f - 4.0f * scale_;
+    const ToolbarLayout row = MakeToolbarLayout(chrome.settings_left - 4.0f * scale_, scale_, row_top,
+                                                margin_, create_width, left);
+    out.navigation = row.navigation;
+    out.address = row.address;
+    out.search = row.search;
+    return out;
+}
+
+D2D1_RECT_F MainRenderer::SidebarToggleRect(float w) const {
+    if (w / scale_ < kSidebarRailWindowDip) return {};
+    const float size = 32.0f * scale_;
+    const float top = (title_bar_height_ - size) * 0.5f;
+    if (sidebar_collapsed_) {
+        const float left = (kSidebarRailWidthDip * scale_ - size) * 0.5f;
+        return D2D1::RectF(left, top, left + size, top + size);
+    }
+    const float right = EffectiveSidebarWidth(w) - 8.0f * scale_;
+    return D2D1::RectF(right - size, top, right, top + size);
+}
+
 D2D1_RECT_F MainRenderer::ToolbarRect(float w) const {
     return D2D1::RectF(EffectiveSidebarWidth(w), title_bar_height_, w, title_bar_height_ + toolbar_height_);
 }
 
 D2D1_RECT_F MainRenderer::AddressBarRect(float w) const {
-    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).address;
+    return ToolbarLayoutAt(w,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_)).address;
 }
 D2D1_RECT_F MainRenderer::SearchBarRect(float w) const {
-    if (w-EffectiveSidebarWidth(w)<480*scale_)
-        return D2D1::RectF(EffectiveSidebarWidth(w)+margin_,title_bar_height_+4*scale_,
-            w-margin_,title_bar_height_+40*scale_);
-    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).search;
+    if (w-EffectiveSidebarWidth(w)<480*scale_) {
+        const auto lay = ToolbarLayoutAt(w, NewButtonWidthPx(true));
+        return D2D1::RectF(EffectiveSidebarWidth(w)+margin_, lay.address.top, lay.search.right, lay.address.bottom);
+    }
+    return ToolbarLayoutAt(w,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_)).search;
 }
 D2D1_RECT_F MainRenderer::NewCommandRect(float w) const {
-    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).create;
+    return ToolbarLayoutAt(w,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_)).create;
 }
 D2D1_RECT_F MainRenderer::SplitCommandRect(float w) const {
-    return MakeToolbarLayout(w,scale_,title_bar_height_,margin_,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_),EffectiveSidebarWidth(w)).commands[5];
+    return ToolbarLayoutAt(w,NewButtonWidthPx(w-EffectiveSidebarWidth(w)<600*scale_)).commands[5];
 }
 float MainRenderer::NewButtonWidthPx(bool compact) const {
     if (compact) return kCommandIconButtonDip * scale_;
@@ -386,6 +444,21 @@ void MainRenderer::DrawButton(const D2D1_RECT_F& rc, const Theme& theme, const D
 void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
                           const Theme& theme) {
     if (!compositor_ || !compositor_->Dc()) return;
+    ++motion_frame_;
+    // One timestamp per frame: every glide and the sidebar width agree.
+    motion_now_ = motion::NowMs();
+    list_loading_active_ = false;
+    if (collapse_anim_) {
+        // Sampled once per frame so every layout query agrees on the width.
+        const float t = static_cast<float>(motion_now_ - collapse_start_) / kSidebarCollapseMs;
+        const float target = sidebar_collapsed_ ? 1.0f : 0.0f;
+        if (t >= 1.0f) {
+            collapse_value_ = target;
+            collapse_anim_ = false;
+        } else {
+            collapse_value_ = collapse_from_ + (target - collapse_from_) * motion::EaseOutCubic(t);
+        }
+    }
     ID2D1DeviceContext* dc = compositor_->Dc();
     icon_cache_.SetDeviceContext(compositor_->Dc());
     UpdateBrushes(theme);
@@ -440,11 +513,13 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         DrawStatusBar(vm, rect, theme);
     } else {
         DrawToolbar(vm, rect, theme);
-        DrawSidebar(vm, rect, theme);
+        const bool peek = SidebarPeekVisible(rect.right);
+        if (!peek) DrawSidebar(vm, rect, theme);
         DrawPane(vm, rect, theme);
         if (vm.details_visible) DrawDetailsPanel(vm, rect, theme);
         else preview_handler_.Sync(notify_hwnd_, {}, L"", 0, 0, 0, 0, vm.dark,
                                    theme.bg, theme.text, false);
+        if (peek) DrawSidebarPeek(vm, rect, theme);
         DrawStatusBar(vm, rect, theme);
     }
 
@@ -558,7 +633,34 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     float x = 12.0f * scale_;
     const float mark = 24.0f * scale_;
     const float markY = (h - mark) * 0.5f;
-    if (ID2D1Bitmap* logo = LogoBitmap()) {
+    const D2D1_RECT_F toggleRc = SidebarToggleRect(right);
+    const bool hasToggle = toggleRc.right > toggleRc.left;
+    if (hasToggle) {
+        DrawButton(toggleRc, theme,
+            IsHovered(vm, HitTestResult::SidebarToggle) ? theme.fill_hover : kTransparent,
+            L"", L"", theme.text_secondary, true, true);
+        const float cx = (toggleRc.left + toggleRc.right) * 0.5f;
+        const float cy = (toggleRc.top + toggleRc.bottom) * 0.5f;
+        const float stroke = 1.25f * scale_;
+        const auto frame = D2D1::RectF(cx - 7.5f * scale_, cy - 6.5f * scale_,
+                                     cx + 7.5f * scale_, cy + 6.5f * scale_);
+        MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(frame, 2.75f * scale_, 2.75f * scale_),
+                                 brTextSecondary_.get(), stroke);
+        const bool expanded = !sidebar_collapsed_ || SidebarPeekVisible(right);
+        const float divider = frame.left + (expanded ? 5.0f : 3.75f) * scale_;
+        const float inset = expanded ? 0.0f : 3.25f * scale_;
+        dc->DrawLine({divider, frame.top + inset}, {divider, frame.bottom - inset},
+                     brTextSecondary_.get(), stroke);
+        if (!expanded) {
+            for (float edge : {frame.top + inset, frame.bottom - inset})
+                dc->FillEllipse(D2D1::Ellipse({divider, edge}, stroke * 0.5f, stroke * 0.5f),
+                                brTextSecondary_.get());
+        }
+    }
+    if (hasToggle && sidebar_collapsed_) {
+        // Rail: the toggle stands in for the brand mark.
+    } else if (ID2D1Bitmap* logo = LogoBitmap()) {
         dc->DrawBitmap(logo, D2D1::RectF(x, markY, x + mark, markY + mark), 1.0f,
                        D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
     } else {
@@ -711,6 +813,7 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         out.a = 1.0f;
         return out;
     };
+    if (!vertical_tabs_) {
     for (const auto& chip : strip.chips) {
         if (chip.group < 0 || chip.group >= static_cast<int>(vm.tab_groups.size())) continue;
         const TabGroupView& gv = vm.tab_groups[static_cast<size_t>(chip.group)];
@@ -802,6 +905,11 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     DrawButton(newRc, theme, IsHovered(vm, HitTestResult::TabNew) ? theme.fill_hover : kTransparent,
         kIconAdd, L"+", theme.text_secondary, true, true);
 
+    } else {
+        // Vertical tabs: the title bar hosts the address row; a hairline
+        // separates it from the command row.
+        FillRect(dc, brStrokeDivider_.get(), 0.0f, h - 1.0f, right, 1.0f);
+    }
     const D2D1_RECT_F settingsRc = D2D1::RectF(chrome.settings_left, tabY,
         chrome.settings_left + chrome.settings_w, tabY + tabH);
     DrawButton(settingsRc, theme,
@@ -913,26 +1021,142 @@ void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& r
         progress.indeterminate=progress_value<0.0f;
         progress.animation_progress=static_cast<float>(GetTickCount64()%1952)/1952.0f;
         painter_.DrawProgressBar(progress);
-    } else if (!vm.status.task_text.empty() || vm.status.task_progress >= 0.0f) {
-        float barW = (vm.status.task_progress >= 0.0f) ? (100 * scale_ + margin_ * 2) : 0.0f;
-        MakeBrush(dc, theme.accent, brAccentText_);
-        DrawTextRect(dc, small_fmt, brAccentText_.get(), vm.status.task_text,
-            taskX, y, std::max(0.0f, taskRight - taskX - barW), status_height_);
-        if (barW > 0.0f) {
-            float trackH = 4 * scale_;
-            float trackX = taskRight - 100 * scale_;
-            float trackY = y + (status_height_ - trackH) * 0.5f;
-            MakeBrush(dc, theme.stroke_card, brStrokeCard_);
-            FillRoundedRect(dc, brStrokeCard_.get(), trackX, trackY, 100 * scale_, trackH, trackH * 0.5f);
-            float fillW = 100 * scale_ * std::clamp(vm.status.task_progress / 100.0f, 0.0f, 1.0f);
-            if (fillW > trackH) {
-                MakeBrush(dc, theme.accent, brAccent_);
-                FillRoundedRect(dc, brAccent_.get(), trackX, trackY, fillW, trackH, trackH * 0.5f);
-            }
-        }
+    } else if (!vm.status.task_text.empty() || vm.status.task_progress >= 0.0f ||
+               vm.status.task_active) {
+        DrawTaskPill(vm, D2D1::RectF(taskX, y, taskRight, y + status_height_), theme);
+    } else {
+        task_pill_was_active_ = false;
+        task_pill_spinning_ = false;
+        task_pill_done_at_ = 0;
     }
 
 }
+
+namespace {
+// Clockwise arc starting at start_deg (0 = 12 o'clock).
+void DrawRingArc(ID2D1DeviceContext* dc, ID2D1Brush* brush, D2D1_POINT_2F c, float r,
+                 float start_deg, float sweep_deg, float stroke) {
+    if (!dc || !brush || sweep_deg <= 0.5f) return;
+    if (sweep_deg >= 359.5f) {
+        dc->DrawEllipse(D2D1::Ellipse(c, r, r), brush, stroke);
+        return;
+    }
+    ComPtr<ID2D1Factory> factory;
+    dc->GetFactory(&factory);
+    ComPtr<ID2D1PathGeometry> geometry;
+    if (!factory.get() || FAILED(factory->CreatePathGeometry(&geometry))) return;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(geometry->Open(&sink))) return;
+    auto at = [&](float deg) {
+        const float a = (deg - 90.0f) * 3.14159265f / 180.0f;
+        return D2D1::Point2F(c.x + r * std::cos(a), c.y + r * std::sin(a));
+    };
+    sink->BeginFigure(at(start_deg), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddArc(D2D1::ArcSegment(at(start_deg + sweep_deg), D2D1::SizeF(r, r), 0.0f,
+        D2D1_SWEEP_DIRECTION_CLOCKWISE,
+        sweep_deg > 180.0f ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    if (FAILED(sink->Close())) return;
+    ID2D1StrokeStyle* style = nullptr;
+    dc->DrawGeometry(geometry.get(), brush, stroke, style);
+}
+} // namespace
+
+void MainRenderer::DrawTaskPill(const WindowViewModel& vm, const D2D1_RECT_F& area,
+                                const Theme& theme) {
+    ID2D1DeviceContext* dc = compositor_->Dc();
+    IDWriteFactory2* factory = compositor_->DwriteFactory();
+    IDWriteTextFormat* fmt = compositor_->SmallFormat();
+    const ULONGLONG now = GetTickCount64();
+    const bool active = vm.status.task_active;
+    // Edge-detect completion: running -> finished without error shows the check.
+    if (active) {
+        task_pill_was_active_ = true;
+        task_pill_done_at_ = 0;
+    } else if (task_pill_was_active_) {
+        task_pill_was_active_ = false;
+        task_pill_done_at_ = vm.status.task_failed ? 0 : now;
+        task_pill_animate_ = motion::SystemAnimationsEnabled();
+    }
+    float strength = active ? 1.0f : 0.0f;   // capsule background opacity
+    bool done = false;
+    if (!active && task_pill_done_at_ != 0) {
+        const ULONGLONG age = now - task_pill_done_at_;
+        if (age < kTaskPillDoneMs) {
+            done = true;
+            strength = 1.0f;
+        } else if (task_pill_animate_ && age < kTaskPillDoneMs + kTaskPillFadeMs) {
+            done = true;
+            strength = 1.0f - motion::EaseOutCubic(
+                static_cast<float>(age - kTaskPillDoneMs) / static_cast<float>(kTaskPillFadeMs));
+        } else {
+            task_pill_done_at_ = 0;
+        }
+    }
+    const bool indeterminate = active && vm.status.task_progress < 0.0f;
+    task_pill_spinning_ = indeterminate;
+
+    const std::wstring& text = vm.status.task_text;
+    const float area_w = std::max(0.0f, area.right - area.left);
+    const float cy = (area.top + area.bottom) * 0.5f;
+    const float pill_h = std::min(area.bottom - area.top - 4.0f * scale_, 22.0f * scale_);
+    // The capsule collapses with its fade, so the text slides home instead of jumping.
+    const float ring_d = 12.0f * scale_ * (active ? 1.0f : done ? strength : 0.0f);
+    const float pad_l = 7.0f * scale_ * strength;
+    const float pad_r = 10.0f * scale_ * strength;
+    const float gap = 6.0f * scale_ * (active ? 1.0f : done ? strength : 0.0f);
+    const float text_w = text.empty() ? 0.0f : MeasureTextWidth(factory, fmt, text);
+    const float pill_w = std::min(area_w, pad_l + ring_d + gap + text_w + pad_r + 1.0f);
+    const D2D1_RECT_F pill = D2D1::RectF(area.right - pill_w, cy - pill_h * 0.5f,
+                                         area.right, cy + pill_h * 0.5f);
+    const bool hovered = IsHovered(vm, HitTestResult::StatusBarTask);
+
+    if (strength > 0.0f) {
+        D2D1_COLOR_F fill = done ? theme.accent : theme.text;
+        fill.a = done ? (vm.dark ? 0.24f : 0.14f) * strength
+                      : (hovered ? (vm.dark ? 0.12f : 0.08f) : (vm.dark ? 0.07f : 0.045f));
+        ComPtr<ID2D1SolidColorBrush> fill_brush;
+        dc->CreateSolidColorBrush(fill, &fill_brush);
+        if (fill_brush.get())
+            FillRoundedRect(dc, fill_brush.get(), pill.left, pill.top, pill_w, pill_h, pill_h * 0.5f);
+    }
+    float text_x = pill.left + pad_l;
+    if (ring_d > 0.5f) {
+        const D2D1_POINT_2F c = D2D1::Point2F(pill.left + pad_l + ring_d * 0.5f, cy);
+        const float r = ring_d * 0.5f - 1.0f * scale_;
+        const float stroke = 1.75f * scale_;
+        if (done) {
+            D2D1_COLOR_F accent = theme.accent;
+            accent.a = std::max(strength, 0.0f);
+            DrawIconText(c.x - ring_d * 0.5f - 2.0f * scale_, cy - ring_d * 0.5f - 2.0f * scale_,
+                         ring_d + 4.0f * scale_, ring_d + 4.0f * scale_,
+                         L"\xE73E", L"\u2713", accent, 0.82f);
+        } else {
+            D2D1_COLOR_F track = theme.text;
+            track.a = vm.dark ? 0.20f : 0.16f;
+            ComPtr<ID2D1SolidColorBrush> track_brush;
+            dc->CreateSolidColorBrush(track, &track_brush);
+            if (track_brush.get()) dc->DrawEllipse(D2D1::Ellipse(c, r, r), track_brush.get(), stroke);
+            MakeBrush(dc, theme.accent, brAccent_);
+            if (indeterminate) {
+                const float spin = static_cast<float>(now % 1000) * 0.36f;
+                DrawRingArc(dc, brAccent_.get(), c, r, spin, 90.0f, stroke);
+            } else {
+                const float value = std::clamp(vm.status.task_progress / 100.0f, 0.0f, 1.0f);
+                DrawRingArc(dc, brAccent_.get(), c, r, 0.0f, std::max(value * 360.0f, 12.0f), stroke);
+            }
+        }
+        text_x += ring_d + gap;
+    }
+    if (!text.empty()) {
+        D2D1_COLOR_F color = theme.accent;
+        if (vm.status.task_failed && !active) color = theme.text_secondary;
+        MakeBrush(dc, color, brAccentText_);
+        DrawTextEndEllipsis(dc, factory, fmt, brAccentText_.get(), text, text_x, area.top,
+                            std::max(0.0f, area.right - text_x - pad_r + 1.0f), status_height_);
+    }
+}
+
 MainRenderer::TabStripMetrics MainRenderer::ComputeTabStrip(
     const WindowViewModel& vm, float window_w) const {
     TabStripMetrics m;

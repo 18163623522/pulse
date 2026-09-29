@@ -50,19 +50,33 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
     static constexpr const wchar_t* kNavIcon[] = {
         kIconHome, kIconSearch, kIconSettings, kIconInfo, kIconCopy
     };
-    for (int i = 0; i < kSettingsNavCount; ++i) {
-        const bool active = vm.settings_page == i;
-        const bool hovered = IsHovered(vm, HitTestResult::SettingsNav, i);
-        const auto& rc = lay.nav_row[i];
-        if (active || hovered) {
-            MakeBrush(dc, active ? theme.fill_selected : theme.fill_hover, brFillSelected_);
+    // Hover plate and selection pill glide between rows (ui_motion.h); the
+    // accent bar travels with the pill.
+    {
+        const uint64_t now = motion_now_;
+        int hovered_row = -1;
+        for (int i = 0; i < kSettingsNavCount; ++i)
+            if (i != vm.settings_page && IsHovered(vm, HitTestResult::SettingsNav, i)) hovered_row = i;
+        if (hovered_row >= 0) {
+            const D2D1_RECT_F rc = settings_nav_hover_.Update(
+                1, hovered_row, lay.nav_row[hovered_row], motion_frame_, now, 120);
+            MakeBrush(dc, theme.fill_hover, brFillSelected_);
             FillRoundedRect(dc, brFillSelected_.get(), rc.left, rc.top,
                             rc.right - rc.left, rc.bottom - rc.top, 6.0f * scale_);
         }
-        if (active) {
+        if (vm.settings_page >= 0 && vm.settings_page < kSettingsNavCount) {
+            const D2D1_RECT_F rc = settings_nav_pill_.Update(
+                1, vm.settings_page, lay.nav_row[vm.settings_page], motion_frame_, now, 200);
+            MakeBrush(dc, theme.fill_selected, brFillSelected_);
+            FillRoundedRect(dc, brFillSelected_.get(), rc.left, rc.top,
+                            rc.right - rc.left, rc.bottom - rc.top, 6.0f * scale_);
             MakeBrush(dc, theme.accent, brFillSelected_);
             FillRoundedRect(dc, brFillSelected_.get(), rc.left, rc.top+10*scale_, 3*scale_, 20*scale_, 1.5f*scale_);
         }
+    }
+    for (int i = 0; i < kSettingsNavCount; ++i) {
+        const bool active = vm.settings_page == i;
+        const auto& rc = lay.nav_row[i];
         DrawIconText(rc.left + (compact_nav ? 13.0f : 12.0f) * scale_, rc.top, 22.0f * scale_, rc.bottom - rc.top,
                      kNavIcon[i], L"*", active ? theme.accent : theme.text_secondary, 0.85f);
         MakeBrush(dc, theme.text, brText_);
@@ -394,7 +408,13 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
                 fluent::ControlState state{};
                 state.enabled = true;
                 state.hovered = IsHovered(vm, HitTestResult::SettingsAboutAction, i);
-                painter_.DrawButton({lay.about_action[i], pulse::l10n::Get(kAboutActions[i]), {},
+                // "Copy info" confirms in place (check + "Copied") instead of a toast.
+                const bool copied = copy_feedback_.Elapsed(
+                    static_cast<int>(HitTestResult::SettingsAboutAction), i, GetTickCount64()) >= 0;
+                painter_.DrawButton({lay.about_action[i],
+                                     pulse::l10n::Get(copied ? pulse::l10n::StringId::CopiedShort
+                                                             : kAboutActions[i]),
+                                     copied ? std::wstring_view(L"\xE73E") : std::wstring_view{},
                                      fluent::ButtonKind::Standard, state});
             }
         }
@@ -824,6 +844,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::ListSmartDate: target=l.list_style_row[0];break;
     case I::ListZebraRows: target=l.list_style_row[1];break;
     case I::ListSizeBar: target=l.list_style_row[2];break;
+        case I::ListTagNameColor: target=l.list_style_row[3];break;
     case I::SettingsFolderSort: target=l.folder_sort_card;break;
     case I::SettingsWallpaper: target=l.wallpaper_card;break;
     case I::SettingsWallpaperLook: target=l.wallpaper_look_card;break;
@@ -832,7 +853,10 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsShowHidden: target=l.hidden_files_row;break;
     case I::SettingsShowProtected: target=l.protected_files_row;break;
     case I::PinnedNames: target=l.pinned_names_row;break;
+    case I::SettingsVerticalTabs: target=l.vertical_tabs_row;break;
     case I::SettingsBlankClickBack: target=l.blank_click_row;break;
+    case I::SettingsWinE: target=l.win_e_row;break;
+    case I::SettingsShellTags: target=l.shell_tags_row;break;
     case I::SettingsChangeTracking: target=l.change_tracking_row;break;
     case I::GlobalSearch: target=l.global_search_row;break;
     case I::GlobalSearchHotkey: target=l.global_search_hotkey_row;break;

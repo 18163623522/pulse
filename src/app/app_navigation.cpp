@@ -1,6 +1,7 @@
 // app_navigation.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
 #include "app_column_view.h"
+#include "content_navigation.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
 #include "../ui/drag_drop.h"
@@ -826,6 +827,12 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     tab.search_content_active = false;
     tab.search_content_stopped = false;
     tab.search_snippets.reset();
+    if (reason == PathLoadReason::History && app::RestoreContentNavigation(tab)) {
+        s.scrollTargetY = tab.scroll_y;
+        s.scrollAnimating = false;
+        SyncVisibleWatches(s);
+        return;
+    }
     if (fs::IsVirtualPath(normalized)) {
         LoadVirtualView(s, tab, normalized, reason);
         return;
@@ -1398,6 +1405,12 @@ void NavigateTo(AppState& s, const std::wstring& path) {
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
     std::wstring normalized = fs::NormalizePath(path);
+    if (normalized != tab->current_path && !fs::IsVirtualPath(normalized) && tab->content_results) {
+        s.addressLiveDue = s.addressHistoryDue = 0;
+        if (s.addressSearching) HideAddressEditor(s, false);
+        if (tab->search_content_active) CancelActiveContentSearch(s, *tab);
+        app::RememberContentNavigation(*tab);
+    }
     const std::wstring returnedChild =
         app::NavigationReturnChildName(tab->current_path, normalized);
     tab->NavigateTo(normalized);
@@ -1610,9 +1623,13 @@ void GoUp(AppState& s) {
 void GoBack(AppState& s) {
     app::Tab* tab = ActiveTab(s);
     if (!tab || !tab->CanGoBack()) return;
+    s.addressLiveDue = s.addressHistoryDue = 0;
+    if (s.addressSearching) HideAddressEditor(s, false);
+    if (tab->search_content_active) CancelActiveContentSearch(s, *tab);
+    app::RememberContentNavigation(*tab);
     const std::wstring from = tab->current_path;
     std::wstring path = tab->GoBack();
-    StartLoadingPath(s, *tab, path);
+    StartLoadingPath(s, *tab, path, PathLoadReason::History);
     RecordRecentOpen(s, path, app::PlaceItemKind::Folder);
     RestoreNavigationReturnSelection(
         s, *tab, app::NavigationReturnChildName(from, path));
@@ -1623,8 +1640,12 @@ void GoBack(AppState& s) {
 void GoForward(AppState& s) {
     app::Tab* tab = ActiveTab(s);
     if (!tab || !tab->CanGoForward()) return;
+    s.addressLiveDue = s.addressHistoryDue = 0;
+    if (s.addressSearching) HideAddressEditor(s, false);
+    if (tab->search_content_active) CancelActiveContentSearch(s, *tab);
+    app::RememberContentNavigation(*tab);
     std::wstring path = tab->GoForward();
-    StartLoadingPath(s, *tab, path);
+    StartLoadingPath(s, *tab, path, PathLoadReason::History);
     RecordRecentOpen(s, path, app::PlaceItemKind::Folder);
     s.timing.first_frame_recorded = false;
     InvalidateRect(s.hwnd, nullptr, FALSE);

@@ -204,6 +204,14 @@ void HideAddressEditor(AppState& s, bool navigate) {
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
+void DismissPathEditorOutside(AppState& s, int x, int y) {
+    if (!s.addressEditing || s.addressSearching) return;
+    const auto bounds = s.renderer.AddressBarRect(static_cast<float>(s.compositor.Width()));
+    if (x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom) return;
+    // Owner-drawn controls need not transfer keyboard focus from the native edit.
+    HideAddressEditor(s, false);
+}
+
 void ApplyFilterCue(AppState& s) {
     if (!s.hwndFilterEdit) return;
     s.filterCue = l10n::Get(s.filterSelectMode
