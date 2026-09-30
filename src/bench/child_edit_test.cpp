@@ -130,6 +130,35 @@ int wmain() {
             Check(!IsWindowVisible(edit), "parent hide automatically hides the editor");
             DestroyWindow(edit);
         }
+        for (const bool fail : {false, true}) {
+            // A dialog field's first bitmap right after it is shown (#41): a
+            // failed present must leave a visible, clickable native editor.
+            HWND fresh = pulse::ui::CreateChildEdit(parent, L"typed 中文");
+            if (!fresh) continue;
+            SetWindowSubclass(fresh, EditProc, 1, reinterpret_cast<DWORD_PTR>(&compositor));
+            SetWindowPos(fresh, nullptr, 20, 30, 320, 30, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            ShowWindow(parent, SW_SHOWNOACTIVATE);
+            const bool shown = pulse::ui::PresentChildEdit(compositor, fail ? nullptr : compositor.TextFormat(),
+                D2D1::ColorF(1, 1, 1), D2D1::ColorF(0, 0, 0), fresh);
+            BYTE alpha = 0;
+            DWORD flags = 0;
+            const bool opaque_native = GetLayeredWindowAttributes(fresh, nullptr, &alpha, &flags) &&
+                (flags & LWA_ALPHA) && alpha == 255;
+            LRESULT handled = 0;
+            const bool native_paint = !pulse::ui::HandleChildEditMessage(compositor, compositor.TextFormat(),
+                D2D1::ColorF(1, 1, 1), D2D1::ColorF(0, 0, 0), nullptr, fresh, WM_PAINT, 0, 0, handled);
+            if (fail) {
+                Check(!shown && opaque_native, "failed initial present leaves an opaque native editor");
+                Check(native_paint, "failed initial present hands painting to the native editor");
+                Check(!pulse::ui::PresentChildEdit(compositor, compositor.TextFormat(),
+                    D2D1::ColorF(1, 1, 1), D2D1::ColorF(0, 0, 0), fresh),
+                    "later presents keep the native fallback instead of painting over it");
+            } else {
+                Check(shown && !opaque_native && !native_paint, "initial present shows the LumaText bitmap");
+            }
+            ShowWindow(parent, SW_HIDE);
+            DestroyWindow(fresh);
+        }
         HWND edit = pulse::ui::CreateChildEdit(parent);
         DestroyWindow(parent);
         Check(!IsWindow(edit), "destroying parent automatically destroys its editor");

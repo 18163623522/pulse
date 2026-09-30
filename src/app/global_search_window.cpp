@@ -278,8 +278,8 @@ struct GlobalSearchWindow::Impl {
         const HRGN edit_region = CreateRoundRectRgn(0, 0, Px(edit_width) + 1, Px(35) + 1,
             Px(kEditCornerRadius * 2), Px(kEditCornerRadius * 2));
         if (edit_region && !SetWindowRgn(edit, edit_region, TRUE)) DeleteObject(edit_region);
-        if (compositor.LumaTextEnabled() && edit_format)
-            compositor.PresentLumaEdit(edit, edit_format.Get(), Theme().text, EditBackground());
+        if (edit_format)
+            ui::PresentChildEdit(compositor, edit_format.Get(), Theme().text, EditBackground(), edit);
         ClampSelection(); Invalidate();
     }
     bool EnsureTarget() {
