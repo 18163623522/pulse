@@ -68,3 +68,7 @@ pwsh ./scripts/build_release_ci.ps1 -Channel win81 -BuildDir build-ci-win81
 技术栈为 C++20、Win32、Direct2D 和 DirectComposition。文件系统、索引、预览与 Shell 任务分别放在对应模块，避免阻塞界面。
 
 更多说明：[自动更新与发布](docs/automatic-updates.md) · [Windows 兼容性](docs/windows-compatibility.md) · [索引存储与迁移](docs/index-migration.md)
+
+## 许可证
+
+Pulse 源代码以 [Apache License 2.0](LICENSE) 授权。第三方组件（例如 LumaText SDK）遵循各自附带的许可证。
