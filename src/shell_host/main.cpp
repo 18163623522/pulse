@@ -1333,6 +1333,21 @@ DWORD WINAPI ParentWatchdog(LPVOID param) {
     return 0;
 }
 
+// Scans packaged (MSIX) context-menu manifests once at startup so the first
+// right-click does not pay for it on its session thread. The result is
+// cached in PackagedContextMenuVerbs() behind its own lock.
+DWORD WINAPI PackagedVerbsPrewarm(LPVOID) {
+    const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const ULONGLONG start = GetTickCount64();
+    const size_t count = pulse::shell::PackagedContextMenuVerbs().size();
+    wchar_t buf[96];
+    swprintf_s(buf, L"Packaged verbs prewarmed %llums count=%zu",
+               GetTickCount64() - start, count);
+    HostLog(buf);
+    if (SUCCEEDED(hr)) CoUninitialize();
+    return 0;
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_EXEC_REQUEST) {
         ExecuteRequest(reinterpret_cast<Request*>(lParam));
@@ -1396,6 +1411,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     HANDLE reader = CreateThread(nullptr, 0, ReaderThread, nullptr, 0, nullptr);
+    HANDLE prewarm = CreateThread(nullptr, 0, PackagedVerbsPrewarm, nullptr, 0, nullptr);
     if (ui_pid != GetCurrentProcessId()) {
         HANDLE wd = CreateThread(nullptr, 0, ParentWatchdog,
             reinterpret_cast<LPVOID>((uintptr_t)ui_pid), 0, nullptr);
@@ -1413,6 +1429,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     if (reader) {
         WaitForSingleObject(reader, 2000);
         CloseHandle(reader);
+    }
+    if (prewarm) {
+        WaitForSingleObject(prewarm, 2000);
+        CloseHandle(prewarm);
     }
     DestroyWindow(g.hwnd_msg);
     CloseHandle(g.pipe);
