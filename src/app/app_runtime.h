@@ -62,6 +62,9 @@ std::vector<std::wstring> VisibleFolderPaths(const AppState& s);
 void SyncVisibleWatches(AppState& s);
 void BindCurrentLayout(AppState& s);
 std::wstring ResolveOpenFolderPath(std::wstring path);
+// When `raw` (a launch or forwarded path) names an existing file, selects it
+// in the active tab, which ResolveOpenFolderPath opened on its folder.
+void SelectLaunchedFile(AppState& s, const std::wstring& raw);
 void OpenFolderInNewTab(AppState& s, const std::wstring& raw);
 void PostWorkerResult(AppState& s, app::WorkResult res);
 D2D1_RECT_F FocusedPaneRect(const AppState& s);

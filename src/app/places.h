@@ -60,6 +60,16 @@ struct StarredItem {
     uint32_t badge_rgb = 0x0078D4;
 };
 
+inline constexpr uint32_t kDefaultBadgeRgb = 0x0078D4;
+
+// Badge on a non-starred sidebar link (built-in quick access, pinned folder,
+// OneDrive). The sidebar model is rebuilt from scratch, so it lives here.
+struct QuickAccessBadge {
+    std::wstring path;
+    std::wstring badge;
+    uint32_t badge_rgb = kDefaultBadgeRgb;
+};
+
 struct RecentItem {
     std::wstring path;
     PlaceItemKind kind = PlaceItemKind::Unknown;
@@ -83,6 +93,7 @@ public:
     std::vector<NetworkPlace> networks;
     std::vector<std::wstring> quick_access_paths;
     std::vector<StarredItem> starred_items;
+    std::vector<QuickAccessBadge> quick_access_badges;
     std::vector<RecentItem> recent_items;
     int active_workspace = -1;
     bool persist = true; // self-test can disable disk writes
@@ -146,6 +157,9 @@ public:
     bool SetStarredBadge(const std::wstring& path, const std::wstring& text,
                          uint32_t rgb);
     bool SetStarredKind(const std::wstring& path, PlaceItemKind kind);
+    const QuickAccessBadge* FindQuickAccessBadge(const std::wstring& path) const;
+    // Empty text with the default color removes the badge.
+    bool SetQuickAccessBadge(const std::wstring& path, const std::wstring& text, uint32_t rgb);
     bool ReorderStarredFolder(const std::wstring& path, size_t folder_position);
     std::vector<std::wstring> StarredPaths() const;
     std::vector<std::wstring> StarredFolderPaths() const;
@@ -173,6 +187,7 @@ private:
         std::vector<NetworkPlace> networks;
         std::vector<std::wstring> quick_access_paths;
         std::vector<StarredItem> starred_items;
+        std::vector<QuickAccessBadge> quick_access_badges;
         std::vector<RecentItem> recent_items;
         int active_workspace = -1;
         bool persist = true;

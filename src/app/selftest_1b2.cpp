@@ -3766,6 +3766,33 @@ void TestQuickAccess() {
         }
         Check(desktop_default_present,
               L"sidebar sections: built-in links stay visible by default");
+
+        // A quick-access badge survives the sidebar model rebuild (#41). Use
+        // whichever quick-access row this machine shows, not a fixed built-in.
+        std::wstring badge_path;
+        for (const auto& section : with_desktop.sidebar) {
+            if (section.header != L"\u5FEB\u901F\u8BBF\u95EE") continue; // 快速访问
+            for (const auto& item : section.items)
+                if (badge_path.empty() && !item.path.empty()) badge_path = item.path;
+        }
+        Check(!badge_path.empty(), L"quick access: fixture shows a quick-access row");
+        if (!badge_path.empty()) {
+            state.places.SetQuickAccessBadge(badge_path, L"  工作  ", 0x2E7D32);
+            const auto badged = BuildWindowViewModel(pane, BuildSidebarModel(), true, false, false,
+                &state.places, 0);
+            bool badge_shown = false;
+            for (const auto& section : badged.sidebar) {
+                for (const auto& item : section.items) {
+                    if (_wcsicmp(item.path.c_str(), badge_path.c_str()) == 0 &&
+                        item.badge == L"工作")
+                        badge_shown = true;
+                }
+            }
+            Check(badge_shown, L"quick access: badge survives a sidebar model rebuild");
+            state.places.SetQuickAccessBadge(badge_path, L"", kDefaultBadgeRgb);
+            Check(state.places.FindQuickAccessBadge(badge_path) == nullptr,
+                  L"quick access: clearing a badge removes it");
+        }
     }
 
     wchar_t previous[32768]{};
@@ -3775,10 +3802,14 @@ void TestQuickAccess() {
     SetEnvironmentVariableW(L"PULSE_TEST_DATA_DIR", test_dir.c_str());
     {
         cat.persist = true;
-        Check(cat.Save(), L"quick access: save profile");
+        Check(cat.SetQuickAccessBadge(L"C:\\badge dir", L"盘 \"A\"", 0x123456) &&
+              cat.Save(), L"quick access: save profile");
         PlacesCatalog loaded;
         Check(loaded.Load() && loaded.quick_access_paths == cat.quick_access_paths,
               L"quick access: disk roundtrip retains order and offline paths");
+        const QuickAccessBadge* loaded_badge = loaded.FindQuickAccessBadge(L"c:\\BADGE DIR\\");
+        Check(loaded_badge && loaded_badge->badge == L"盘 \"A\"" && loaded_badge->badge_rgb == 0x123456,
+              L"quick access: badge text and color survive a restart");
         WriteUtf8FileAtomic(test_dir + L"\\places.json", L"{\"starred_items\":[]}");
         Check(loaded.Load() && loaded.quick_access_paths.empty(), L"quick access: old profile defaults empty");
     }

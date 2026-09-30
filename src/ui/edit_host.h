@@ -6,6 +6,11 @@ namespace pulse::ui {
 bool HandleChildEditMessage(Compositor& compositor, IDWriteTextFormat* format,
     D2D1_COLOR_F foreground, D2D1_COLOR_F background, HBRUSH background_brush,
     HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, LRESULT& result);
+// Presents a child editor's LumaText bitmap (e.g. right after showing it).
+// When the layered present fails, the EDIT switches to native painting so it
+// stays visible and clickable. Returns true when the LumaText bitmap is shown.
+bool PresentChildEdit(Compositor& compositor, IDWriteTextFormat* format,
+    D2D1_COLOR_F foreground, D2D1_COLOR_F background, HWND hwnd);
 LRESULT DefPresentedChildEditProc(Compositor& compositor, IDWriteTextFormat* format,
     D2D1_COLOR_F foreground, D2D1_COLOR_F background,
     HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);

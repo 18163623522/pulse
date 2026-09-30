@@ -677,6 +677,22 @@ int wmain() {
               L"nested conflict keep-both apply-all creates incremented copies");
     }
 
+    // --- Open: a batch file runs in its own folder (#49) --------------------
+    {
+        // The script writes a relative file, so it lands in whatever working
+        // directory ShellExecuteEx gave it; only the item's folder is correct.
+        const std::wstring run_dir = root + L"\\run dir";
+        MakeDir(run_dir);
+        const char script[] = "@echo off\r\ncd> cwd.txt\r\n";
+        MakeFile(run_dir + L"\\where.bat", script, sizeof(script) - 1);
+        const std::wstring marker = run_dir + L"\\cwd.txt";
+        g_ops.OpenWith(run_dir + L"\\where.bat");
+        for (int i = 0; i < 200 && (FileSize(marker) == ~0ull || FileSize(marker) == 0); ++i)
+            Sleep(50);
+        Check(FileSize(marker) != ~0ull && FileSize(marker) > 0,
+              L"double-click open runs a batch file in its own folder");
+    }
+
     g_ops.Stop();
 
     wprintf(L"\n== ops self test: %d passed, %d failed ==\n", g_pass, g_fail);

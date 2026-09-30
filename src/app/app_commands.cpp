@@ -1385,21 +1385,21 @@ app::SidebarEntry* QuickAccessEntryForPath(AppState& s,
 void ShowStarredBadgeEditor(AppState& s, const std::wstring& path,
                                     POINT screen_pt) {
     const app::StarredItem* initial = s.places.FindStarred(path);
-    app::SidebarEntry* quick_access = QuickAccessEntryForPath(s, path);
+    // Quick-access badges are stored in the places catalog: the sidebar model
+    // is rebuilt on restart, language and volume changes (#41).
+    const bool quick_access = !initial && QuickAccessEntryForPath(s, path);
     if ((!initial && !quick_access) || !EnsureMenu(s)) return;
     constexpr int kCustomColor = 30100;
-    uint32_t color = initial ? initial->badge_rgb : quick_access->badge_rgb;
-    std::wstring current_text = initial ? initial->badge : quick_access->badge;
+    const app::QuickAccessBadge* saved = quick_access ? s.places.FindQuickAccessBadge(path) : nullptr;
+    uint32_t color = initial ? initial->badge_rgb : saved ? saved->badge_rgb : app::kDefaultBadgeRgb;
+    std::wstring current_text = initial ? initial->badge : saved ? saved->badge : std::wstring();
     s.menu->SetFilterPlaceholder(l10n::Get(l10n::StringId::BadgeTextHint));
-    s.menu->SetInitialFilterText(initial ? initial->badge : quick_access->badge);
+    s.menu->SetInitialFilterText(current_text);
     s.menu->SetFilterMinWidth(260.0f);
     auto build = [&](const std::wstring& query) {
         current_text = query.substr(0, 12);
         if (initial) s.places.SetStarredBadge(path, query, color);
-        else {
-            quick_access->badge = query.substr(0, 12);
-            quick_access->badge_rgb = color;
-        }
+        else s.places.SetQuickAccessBadge(path, query, color);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         std::vector<ui::FluentMenuItem> items;
         ui::FluentMenuItem strip;
@@ -1424,14 +1424,11 @@ void ShowStarredBadgeEditor(AppState& s, const std::wstring& path,
     auto apply_color = [&](uint32_t next) {
         color = next;
         if (initial) s.places.SetStarredBadge(path, current_text, color);
-        else {
-            quick_access->badge = current_text;
-            quick_access->badge_rgb = color;
-        }
+        else s.places.SetQuickAccessBadge(path, current_text, color);
     };
     for (;;) {
         const int cmd = s.menu->TrackPopup(screen_pt,
-            build(initial ? initial->badge : quick_access->badge),
+            build(initial ? initial->badge : current_text),
             [&](const std::wstring& query) { return build(query); });
         const auto& palette = TagColorPalette(s);
         if (cmd >= app::CmdTabColorBase &&
@@ -1478,9 +1475,9 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
         badge.glyph = L"\xE8D2";
         items.push_back(std::move(badge));
         const app::StarredItem* starred = s.places.FindStarred(path);
-        const app::SidebarEntry* quick_access = QuickAccessEntryForPath(s, path);
+        const app::QuickAccessBadge* quick_badge = s.places.FindQuickAccessBadge(path);
         const uint32_t badge_rgb = starred ? starred->badge_rgb
-            : quick_access ? quick_access->badge_rgb : 0x0078D4;
+            : quick_badge ? quick_badge->badge_rgb : app::kDefaultBadgeRgb;
         const auto& palette = TagColorPalette(s);
         ui::FluentMenuItem colors;
         colors.command = app::CmdNone;
@@ -1536,22 +1533,24 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
         if (auto* starred = s.places.FindStarred(path)) {
             s.places.SetStarredBadge(path, starred->badge, color);
             RefreshStarredViews(s);
-        } else if (auto* quick_access = QuickAccessEntryForPath(s, path)) {
-            quick_access->badge_rgb = color;
+        } else if (QuickAccessEntryForPath(s, path)) {
+            const app::QuickAccessBadge* quick_badge = s.places.FindQuickAccessBadge(path);
+            s.places.SetQuickAccessBadge(path, quick_badge ? quick_badge->badge : std::wstring(), color);
         }
     } else if (cmd == kCustomColor) {
         const app::StarredItem* starred = s.places.FindStarred(path);
-        const app::SidebarEntry* quick_access = QuickAccessEntryForPath(s, path);
+        const app::QuickAccessBadge* quick_badge = s.places.FindQuickAccessBadge(path);
+        const std::wstring quick_text = quick_badge ? quick_badge->badge : std::wstring();
         uint32_t picked = starred ? starred->badge_rgb
-            : quick_access ? quick_access->badge_rgb : 0x0078D4;
+            : quick_badge ? quick_badge->badge_rgb : app::kDefaultBadgeRgb;
         if (ui::ColorPickerPopup::Pick(s.hwnd, &s.compositor, s.menu.get(),
                                        s.scale, screen_pt, picked, s.darkMode, picked)) {
             AppendCustomTagColor(s, picked);
             if (starred) {
                 s.places.SetStarredBadge(path, starred->badge, picked);
                 RefreshStarredViews(s);
-            } else if (auto* quick = QuickAccessEntryForPath(s, path)) {
-                quick->badge_rgb = picked;
+            } else if (QuickAccessEntryForPath(s, path)) {
+                s.places.SetQuickAccessBadge(path, quick_text, picked);
             }
         }
     }

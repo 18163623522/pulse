@@ -264,11 +264,28 @@ std::wstring ResolveOpenFolderPath(std::wstring path) {
     return fs::NormalizePath(path);
 }
 
+void SelectLaunchedFile(AppState& s, const std::wstring& raw) {
+    std::wstring path = raw;
+    while (!path.empty() && (path.front() == L'"' || path.back() == L'"')) {
+        if (path.front() == L'"') path.erase(path.begin());
+        if (!path.empty() && path.back() == L'"') path.pop_back();
+    }
+    const DWORD attrs = path.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) return;
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring leaf = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    if (leaf.empty()) return;
+    if (app::Tab* tab = ActiveTab(s)) SelectNameInTab(s, *tab, leaf);
+}
+
 void OpenFolderInNewTab(AppState& s, const std::wstring& raw) {
     s.tray_controller.RestoreWindow();
     const std::wstring path = ResolveOpenFolderPath(raw);
     if (!path.empty() && !ActivateExistingFolderTab(s, path)) NewTab(s, path);
     else InvalidateRect(s.hwnd, nullptr, FALSE);
+    // A file (Pulse as a file's default app, a launcher's "open containing
+    // folder") shows up selected instead of silently opening its folder (#40).
+    if (!path.empty()) SelectLaunchedFile(s, raw);
 }
 
 void PostWorkerResult(AppState& s, app::WorkResult res) {
@@ -2396,6 +2413,10 @@ std::wstring TooltipForHover(AppState& s) {
         if (const app::StarredItem* starred = s.places.FindStarred(s.hoverPath);
             starred && !starred->badge.empty()) {
             return starred->badge;
+        }
+        if (const app::QuickAccessBadge* badge = s.places.FindQuickAccessBadge(s.hoverPath);
+            badge && !badge->badge.empty()) {
+            return badge->badge;
         }
         return L"";
     }
