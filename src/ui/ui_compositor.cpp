@@ -13,6 +13,35 @@
 
 namespace pulse::ui {
 
+namespace {
+
+// One D3D11 + D2D device per UI thread, shared by every Compositor on it.
+// Each hardware device costs the process driver worker threads (9 per device
+// on current NVIDIA drivers) and ~15 MB of driver heaps, and Pulse keeps
+// several composited windows alive at once: the main window plus the hidden,
+// reusable quick preview and file operation windows, and any open dialog.
+// Every window still owns its device context, swap chain and
+// DirectComposition device. The D2D factory is single-threaded, hence the
+// per-thread scope. A plain pointer (not a thread_local object) stays valid
+// for compositors that are destroyed during static teardown.
+struct SharedGraphics {
+    ComPtr<ID3D11Device> d3d;
+    ComPtr<IDXGIDevice1> dxgi;
+    ComPtr<ID2D1Factory1> factory;
+    ComPtr<ID2D1Device> d2d;
+    unsigned users = 0;
+};
+thread_local SharedGraphics* t_shared_graphics = nullptr;
+
+template <typename T>
+void AssignRef(ComPtr<T>& target, T* value) {
+    target.reset();
+    if (value) value->AddRef();
+    target.p = value;
+}
+
+} // namespace
+
 Compositor::Compositor() = default;
 Compositor::~Compositor() { Shutdown(); }
 
@@ -56,6 +85,13 @@ bool Compositor::Init(HWND hwnd) {
 
 void Compositor::Shutdown() {
     if (!dc_.get() && !d3dDevice_.get()) return; // already shut down
+    SharedGraphics* shared = t_shared_graphics;
+    if (shared && d3dDevice_.get() && d3dDevice_.get() == shared->d3d.get() &&
+        --shared->users == 0) {
+        // Last window on this thread: the device goes away with it.
+        t_shared_graphics = nullptr;
+        delete shared;
+    }
     if (lumaText_) lumaText_->Shutdown();
     targetBitmap_.reset();
     if (dc_.get()) dc_->SetTarget(nullptr);
@@ -87,34 +123,54 @@ void Compositor::Shutdown() {
 }
 
 bool Compositor::InitD3D() {
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-#ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-    D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1 };
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-        levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-        &d3dDevice_, nullptr, nullptr);
-    if (FAILED(hr)) {
-        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags,
-            levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
-            &d3dDevice_, nullptr, nullptr);
+    SharedGraphics* shared = t_shared_graphics;
+    if (shared && shared->d3d->GetDeviceRemovedReason() != S_OK) {
+        // A removed device is never handed out again. Windows still using it
+        // hold their own references until they recover onto the new device.
+        t_shared_graphics = nullptr;
+        delete shared;
+        shared = nullptr;
     }
-    if (!CheckGraphics(hr, L"D3D11CreateDevice (hardware/WARP)")) return false;
-
-    hr = d3dDevice_->QueryInterface(&dxgiDevice_);
-    if (!CheckGraphics(hr, L"IDXGIDevice1")) return false;
-
-    D2D1_FACTORY_OPTIONS opts{};
+    HRESULT hr = S_OK;
+    if (!shared) {
+        auto created = std::make_unique<SharedGraphics>();
+        UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #ifdef _DEBUG
-    opts.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
+        flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
-    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
-        &opts, reinterpret_cast<void**>(&d2dFactory_));
-    if (!CheckGraphics(hr, L"D2D1CreateFactory")) return false;
+        D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1 };
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+            levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+            &created->d3d, nullptr, nullptr);
+        if (FAILED(hr)) {
+            hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags,
+                levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
+                &created->d3d, nullptr, nullptr);
+        }
+        if (!CheckGraphics(hr, L"D3D11CreateDevice (hardware/WARP)")) return false;
 
-    hr = d2dFactory_->CreateDevice(dxgiDevice_.get(), &d2dDevice_);
-    if (!CheckGraphics(hr, L"D2D CreateDevice")) return false;
+        hr = created->d3d->QueryInterface(&created->dxgi);
+        if (!CheckGraphics(hr, L"IDXGIDevice1")) return false;
+
+        D2D1_FACTORY_OPTIONS opts{};
+#ifdef _DEBUG
+        opts.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
+#endif
+        hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1),
+            &opts, reinterpret_cast<void**>(&created->factory));
+        if (!CheckGraphics(hr, L"D2D1CreateFactory")) return false;
+
+        hr = created->factory->CreateDevice(created->dxgi.get(), &created->d2d);
+        if (!CheckGraphics(hr, L"D2D CreateDevice")) return false;
+        shared = created.release();
+        t_shared_graphics = shared;
+    }
+    // Init without Shutdown keeps its existing share of the device.
+    if (d3dDevice_.get() != shared->d3d.get()) ++shared->users;
+    AssignRef(d3dDevice_, shared->d3d.get());
+    AssignRef(dxgiDevice_, shared->dxgi.get());
+    AssignRef(d2dFactory_, shared->factory.get());
+    AssignRef(d2dDevice_, shared->d2d.get());
 
     hr = d2dDevice_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc_);
     if (!CheckGraphics(hr, L"D2D CreateDeviceContext")) return false;

@@ -1,5 +1,6 @@
 // frame_pump_test.cpp - app::FramePump paces to the display, coalesces, idles.
 #include "../app/frame_pump.h"
+#include "../app/ui_timer_pacer.h"
 #include "../ui/ui_motion.h"
 #include "../ui/ui_view_morph.h"
 #include <cmath>
@@ -47,9 +48,32 @@ int CountQueued(HWND hwnd) {
     while (PeekMessageW(&msg, hwnd, kFrame, kFrame, PM_REMOVE)) ++n;
     return n;
 }
+// kTimerUi period policy: fast while active, slow once quiet, slower hidden.
+void TestUiTimerPacer() {
+    using pulse::app::UiTimerPacer;
+    UiTimerPacer pacer;
+    UINT period = 0;
+    Check(pacer.Current() == UiTimerPacer::kActiveMs, L"pacer starts at the display-rate period");
+    pacer.NoteActivity(1000);
+    Check(!pacer.Update(true, 1500, period), L"activity keeps the fast period without re-arming the timer");
+    Check(pacer.Update(true, 1000 + UiTimerPacer::kLingerMs, period) && period == UiTimerPacer::kIdleMs,
+          L"quiet window relaxes to the idle poll");
+    Check(!pacer.Update(true, 9000, period), L"idle period is set once, not every tick");
+    pacer.NoteActivity(9000);
+    Check(pacer.Update(true, 9000, period) && period == UiTimerPacer::kActiveMs,
+          L"input or paint restores the fast period at once");
+    Check(pacer.Update(false, 9001, period) && period == UiTimerPacer::kHiddenMs,
+          L"hidden window polls at the hidden period even while active");
+    Check(pacer.Update(true, 9002, period) && period == UiTimerPacer::kActiveMs,
+          L"showing an active window returns to the fast period");
+    Check(UiTimerPacer::kActiveMs < UiTimerPacer::kIdleMs && UiTimerPacer::kIdleMs < UiTimerPacer::kHiddenMs,
+          L"period ordering: active < idle < hidden");
+}
+
 } // namespace
 
 int wmain() {
+    TestUiTimerPacer();
     HWND hwnd = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     Check(hwnd != nullptr, L"message window");
 

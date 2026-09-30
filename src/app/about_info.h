@@ -13,6 +13,9 @@ using AboutRow = std::pair<std::wstring, std::wstring>;  // label, value
 
 inline constexpr const wchar_t* kPulseHomepage = L"https://github.com/jimmgreen/pulse";
 inline constexpr const wchar_t* kPulseReleasesPage = L"https://github.com/jimmgreen/pulse/releases";
+// Other free, open-source apps by the same author, recommended on the About page.
+inline constexpr const wchar_t* kLumenPdfHomepage = L"https://github.com/jimmgreen/LumenPDF";
+inline constexpr const wchar_t* kLumaShotHomepage = L"https://github.com/jimmgreen/LumaShot";
 
 // Release notes embedded at build time (newest first), in the effective UI
 // language (English uses <version>.en.md when present); parsed once per language.
