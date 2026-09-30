@@ -2,11 +2,11 @@
 #include "../common/json_utils.h"
 #include "../common/path_utils.h"
 #include <algorithm>
+#include <string>
 
 namespace pulse::app {
-namespace {
 
-std::wstring FolderKey(const std::wstring& path) {
+std::wstring FolderPrefKey(const std::wstring& path) {
     if (path.empty() || path.starts_with(L"pulse:")) return {};
     std::wstring key = path::StripExtendedPathPrefix(path);
     std::replace(key.begin(), key.end(), L'/', L'\\');
@@ -16,6 +16,8 @@ std::wstring FolderKey(const std::wstring& path) {
     while (key.size() > 3 && key.back() == L'\\') key.pop_back();
     return key;
 }
+
+namespace {
 
 std::wstring JsonKey(ui::ViewMode mode) {
     return std::wstring(L"folder_view_") + ui::ViewModeName(mode);
@@ -29,12 +31,12 @@ bool FolderViewPrefs::PathLess::operator()(const std::wstring& a, const std::wst
 }
 
 std::optional<ui::ViewMode> FolderViewPrefs::Find(const std::wstring& path) const {
-    const auto it = views_.find(FolderKey(path));
+    const auto it = views_.find(FolderPrefKey(path));
     return it == views_.end() ? std::nullopt : std::optional(it->second);
 }
 
 bool FolderViewPrefs::Set(const std::wstring& path, ui::ViewMode mode) {
-    const auto key = FolderKey(path);
+    const auto key = FolderPrefKey(path);
     if (key.empty() || static_cast<unsigned>(mode) >= 8) return false;
     const auto [it, inserted] = views_.try_emplace(key, mode);
     if (!inserted && it->second == mode) return false;
@@ -42,7 +44,13 @@ bool FolderViewPrefs::Set(const std::wstring& path, ui::ViewMode mode) {
     return true;
 }
 
+void FolderViewPrefs::ApplyToAll(ui::ViewMode mode) {
+    views_.clear();
+    default_ = ui::ViewModeFromIndex(ui::ViewModeIndex(mode));
+}
+
 void FolderViewPrefs::AppendJson(std::wstring& out) const {
+    out += L",\n  \"folder_view_default\":" + std::to_wstring(ui::ViewModeIndex(default_));
     // Group paths by stable view names, using the existing string-array codec.
     for (int i = 0; i < 8; ++i) {
         const auto mode = ui::ViewModeFromIndex(i);
@@ -62,6 +70,8 @@ void FolderViewPrefs::AppendJson(std::wstring& out) const {
 
 void FolderViewPrefs::ReadJson(const std::wstring& input) {
     Clear();
+    default_ = ui::ViewModeFromIndex(json::ExtractInt(
+        input, L"folder_view_default", ui::ViewModeIndex(ui::ViewMode::Details)));
     for (int i = 0; i < 8; ++i) {
         const auto mode = ui::ViewModeFromIndex(i);
         for (const auto& path : json::ExtractStringArray(input, JsonKey(mode)))

@@ -1,6 +1,7 @@
 // app_prefs.h — General app settings (startup, close-to-tray).
 #pragma once
 #include "folder_view_prefs.h"
+#include "folder_sort_prefs.h"
 #include "entry_group.h"
 #include <cstdint>
 #include <string>
@@ -30,6 +31,7 @@ struct AppPrefs {
     // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
     int text_render = 0;
     FolderViewPrefs folder_views;
+    FolderSortPrefs folder_sorts;
     FolderGroupPrefs folder_groups;
     bool search_pinyin = true;
     bool global_search_enabled = false;

@@ -107,6 +107,7 @@ enum MenuCmd : int {
     CmdGroupTag = 191,          // = CmdGroupNone + GroupBy::Tag
     CmdGroupLocation = 192,     // = CmdGroupNone + GroupBy::Location
     CmdRestoreAllRecycle = 193, // recycle background: restore every listed item
+    CmdApplyViewToAllFolders = 194, // view menu: this view + sort become every folder's default
     CmdRecentBase = 200,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
@@ -192,8 +193,10 @@ std::vector<ui::FluentMenuItem> BuildBreadcrumbMenu(bool filesystem);
 
 // Split-button layout presets.
 std::vector<ui::FluentMenuItem> BuildSplitMenu(int current_preset);
+// can_apply_all: real folder, offer "apply view and sort to all folders".
 std::vector<ui::FluentMenuItem> BuildViewMenu(ui::ViewMode current_mode,
-                                              bool details_panel = false);
+                                              bool details_panel = false,
+                                              bool can_apply_all = false);
 
 // Ctrl+K / address omnibar: verbs + index hits + recent folders at the end.
 struct OmnibarQuery {

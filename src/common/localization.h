@@ -98,6 +98,10 @@ enum class StringId : UINT {
     AboutMoreAppsDesc = IDS_ABOUT_MORE_APPS_DESC,
     AboutLumenPdfDesc = IDS_ABOUT_LUMENPDF_DESC,
     AboutLumaShotDesc = IDS_ABOUT_LUMASHOT_DESC,
+    ApplyViewAllFolders = IDS_APPLY_VIEW_ALL_FOLDERS,
+    ApplyViewAllTitle = IDS_APPLY_VIEW_ALL_TITLE,
+    ApplyViewAllMessage = IDS_APPLY_VIEW_ALL_MESSAGE,
+    ApplyViewAllConfirm = IDS_APPLY_VIEW_ALL_CONFIRM,
 
     GlobalSearchSaveFailed = IDS_GLOBAL_SEARCH_SAVE_FAILED,
     GlobalSearchOpenFailed = IDS_GLOBAL_SEARCH_OPEN_FAILED,
