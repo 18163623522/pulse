@@ -690,6 +690,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             !s->shot.active && !s->session_path.empty()
                 ? PathLoadReason::RestoreSession : PathLoadReason::Navigate);
         RememberPath(*s, startPath);
+        if (!s->shot.active && s->session_path.empty() && !s->open_path.empty())
+            SelectLaunchedFile(*s, s->open_path);
         }
 
         if (!s->shot.active && !s->open_path.empty() &&
@@ -697,6 +699,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             const std::wstring open_path = ResolveOpenFolderPath(s->open_path);
             if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
                 NewTab(*s, open_path);
+            if (!open_path.empty()) SelectLaunchedFile(*s, s->open_path);
         }
 
         s->lastFrameTime = std::chrono::steady_clock::now();

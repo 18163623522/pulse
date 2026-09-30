@@ -1927,6 +1927,17 @@ ui::WindowViewModel BuildWindowViewModel(const Pane& pane,
     // The title is only used by the section menus: the pane itself shows the
     // account rows without a header (see IsHeaderlessSection).
     cloud = ConvertGroup(L"OneDrive", sidebar.cloud, false);
+    if (places) {
+        // Persisted badges win over the freshly rebuilt sidebar model (#41).
+        for (auto* group : { &access, &cloud }) {
+            for (auto& item : group->items) {
+                if (const QuickAccessBadge* badge = places->FindQuickAccessBadge(item.path)) {
+                    item.badge = badge->badge;
+                    item.badge_color = ui::HexColor(badge->badge_rgb);
+                }
+            }
+        }
+    }
     drives = ConvertGroup(l10n::Get(l10n::StringId::SidebarDrives),
                           sidebar.drives, false);
     // Section icons: every header section names itself with a glyph, so the wide

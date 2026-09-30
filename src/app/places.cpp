@@ -256,6 +256,7 @@ bool PlacesCatalog::Load() {
     networks.clear();
     quick_access_paths.clear();
     starred_items.clear();
+    quick_access_badges.clear();
     recent_items.clear();
     starred_index_.clear();
     active_workspace = -1;
@@ -378,6 +379,14 @@ bool PlacesCatalog::Load() {
                 starred_items.push_back({ normalized });
         }
     }
+    for (const auto& block : ExtractObjectArray(json, L"quick_access_badges")) {
+        QuickAccessBadge item;
+        item.path = Norm(pulse::json::ExtractString(block, L"path"));
+        item.badge = TrimBadge(pulse::json::ExtractString(block, L"badge"));
+        item.badge_rgb = ExtractRgb(block) & 0xFFFFFFu;
+        if (!item.path.empty() && !FindQuickAccessBadge(item.path))
+            quick_access_badges.push_back(std::move(item));
+    }
     for (const auto& block : ExtractObjectArray(json, L"recent_items")) {
         RecentItem item;
         item.path = Norm(pulse::json::ExtractString(block, L"path"));
@@ -455,6 +464,7 @@ PlacesCatalog::SaveSnapshot PlacesCatalog::CaptureSaveSnapshot() const {
     snapshot.networks = networks;
     snapshot.quick_access_paths = quick_access_paths;
     snapshot.starred_items = starred_items;
+    snapshot.quick_access_badges = quick_access_badges;
     snapshot.recent_items = recent_items;
     snapshot.active_workspace = active_workspace;
     snapshot.persist = persist;
@@ -617,6 +627,19 @@ bool PlacesCatalog::SaveSnapshotFile(const SaveSnapshot& snapshot) {
           << KindName(item.kind) << L"\",\"badge\":\"" << badge
           << L"\",\"rgb\":" << rgb << L"}";
         if (i + 1 < snapshot.starred_items.size()) f << L",";
+        f << L"\n";
+    }
+    f << L"  ],\n  \"quick_access_badges\":[\n";
+    for (size_t i = 0; i < snapshot.quick_access_badges.size(); ++i) {
+        const auto& item = snapshot.quick_access_badges[i];
+        std::wstring path, badge;
+        pulse::json::Escape(item.path, path);
+        pulse::json::Escape(item.badge, badge);
+        wchar_t rgb[16]{};
+        swprintf_s(rgb, L"0x%06X", item.badge_rgb & 0xFFFFFFu);
+        f << L"    {\"path\":\"" << path << L"\",\"badge\":\"" << badge
+          << L"\",\"rgb\":" << rgb << L"}";
+        if (i + 1 < snapshot.quick_access_badges.size()) f << L",";
         f << L"\n";
     }
     f << L"  ],\n  \"recent_items\":[\n";
@@ -943,6 +966,37 @@ bool PlacesCatalog::SetStarredBadge(const std::wstring& path, const std::wstring
     return true;
 }
 
+const QuickAccessBadge* PlacesCatalog::FindQuickAccessBadge(const std::wstring& path) const {
+    if (path.empty()) return nullptr;
+    const std::wstring key = Norm(path);
+    const auto it = std::find_if(quick_access_badges.begin(), quick_access_badges.end(),
+        [&](const QuickAccessBadge& item) { return EqualI(item.path, key); });
+    return it == quick_access_badges.end() ? nullptr : &*it;
+}
+
+bool PlacesCatalog::SetQuickAccessBadge(const std::wstring& path, const std::wstring& text,
+                                        uint32_t rgb) {
+    const std::wstring key = Norm(path);
+    if (key.empty()) return false;
+    const std::wstring badge = TrimBadge(text);
+    rgb &= 0xFFFFFFu;
+    const bool clear = badge.empty() && rgb == kDefaultBadgeRgb;
+    const auto it = std::find_if(quick_access_badges.begin(), quick_access_badges.end(),
+        [&](const QuickAccessBadge& item) { return EqualI(item.path, key); });
+    if (it == quick_access_badges.end()) {
+        if (clear) return false;
+        quick_access_badges.push_back({ key, badge, rgb });
+    } else if (clear) {
+        quick_access_badges.erase(it);
+    } else {
+        if (it->badge == badge && it->badge_rgb == rgb) return false;
+        it->badge = badge;
+        it->badge_rgb = rgb;
+    }
+    Save();
+    return true;
+}
+
 bool PlacesCatalog::SetStarredKind(const std::wstring& path, PlaceItemKind kind) {
     StarredItem* item = FindStarred(path);
     if (!item || kind == PlaceItemKind::Unknown || item->kind == kind) return false;
@@ -1239,6 +1293,15 @@ void PlacesCatalog::RemapPaths(const std::wstring& old_path, const std::wstring&
         item.path = new_norm + item.path.substr(old_norm.size());
         changed = true;
     }
+    std::unordered_set<std::wstring> badge_seen;
+    for (auto& item : quick_access_badges) {
+        if (!PathIsOrDescendant(item.path, old_norm)) continue;
+        item.path = new_norm + item.path.substr(old_norm.size());
+        changed = true;
+    }
+    std::erase_if(quick_access_badges, [&](const QuickAccessBadge& item) {
+        return !badge_seen.insert(TagKey(item.path)).second;
+    });
     for (auto& item : recent_items) {
         if (!PathIsOrDescendant(item.path, old_norm)) continue;
         item.path = new_norm + item.path.substr(old_norm.size());
