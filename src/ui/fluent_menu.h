@@ -76,6 +76,8 @@ public:
     float RowHeightPx() const { return row_h_; }
     int Count() const { return (int)items_.size(); }
     const FluentMenuItem* At(int i) const;
+    // True when row i's label is wider than the menu and gets ellipsized.
+    bool Truncated(int i) const;
     // Copy command ids from src when display text/structure matches. No layout.
     bool PatchCommands(const std::vector<FluentMenuItem>& src);
     // Content y (px) of row i's top edge.
@@ -92,6 +94,7 @@ private:
     float sep_h_ = 5.0f;      // separator slot height (line + gaps)
     float inline_label_width_ = 0.0f;
     int width_ = 0;
+    std::vector<unsigned char> truncated_;
     int height_ = 0;
 };
 

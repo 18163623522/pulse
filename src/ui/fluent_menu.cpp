@@ -133,6 +133,8 @@ void FluentMenuModel::Layout(IDWriteFactory2* dwrite, float scale, float min_wid
     const float shortcut_gap = 24.0f * scale_;
 
     inline_label_width_ = 0.0f;
+    std::vector<float> row_w;
+    row_w.reserve(items_.size());
     float content_w = 160.0f * scale_;
     for (const auto& it : items_) {
         const float radio_col = it.radio_group ? 12.0f * scale_ : 0.0f;
@@ -152,12 +154,16 @@ void FluentMenuModel::Layout(IDWriteFactory2* dwrite, float scale, float min_wid
         if (!it.quick_swatches.empty())
             w = (std::max)(w, (32.0f + SwatchSpacingDip(it) *
                                static_cast<float>(it.quick_swatches.size())) * scale_);
+        row_w.push_back(it.quick_swatches.empty() ? w : 0.0f);
         content_w = (std::max)(content_w, w);
     }
     // Context menus stay compact; a long undo/file name ellipsizes instead of
     // stretching the flyout. Command palette passes a larger min_width_px.
     const float max_w = (std::max)(min_width_px, 320.0f * scale_);
     width_ = (int)std::ceil((std::max)(min_width_px, (std::min)(content_w, max_w)));
+    truncated_.assign(items_.size(), 0);
+    for (size_t i = 0; i < row_w.size(); ++i)
+        truncated_[i] = row_w[i] > static_cast<float>(width_) + 0.5f ? 1 : 0;
 
     const float inline_space = std::max(0.0f, static_cast<float>(width_) -
         left_chrome - right_chrome - shortcut_gap);
@@ -173,6 +179,10 @@ void FluentMenuModel::Layout(IDWriteFactory2* dwrite, float scale, float min_wid
 
 const FluentMenuItem* FluentMenuModel::At(int i) const {
     return (i >= 0 && i < (int)items_.size()) ? &items_[i] : nullptr;
+}
+
+bool FluentMenuModel::Truncated(int i) const {
+    return i >= 0 && i < (int)truncated_.size() && truncated_[static_cast<size_t>(i)] != 0;
 }
 
 float FluentMenuModel::RowTopPx(int i) const {
@@ -786,7 +796,10 @@ void FluentMenu::UpdateTooltip(int row) {
     // Drawn like the main window's tooltip (flyout fill, card stroke, 4 dip
     // radius, small text) instead of the system tooltip control.
     const auto* item = model_.At(row);
-    const std::wstring text = item ? item->tooltip : std::wstring{};
+    // Ellipsized labels (long Explorer verbs) show their full text.
+    const std::wstring text = !item ? std::wstring{}
+        : !item->tooltip.empty() ? item->tooltip
+        : model_.Truncated(row) ? item->text : std::wstring{};
     if (text == tooltip_text_) return;
     tooltip_text_ = text;
     if (text.empty()) {

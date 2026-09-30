@@ -2302,8 +2302,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             group.text = L"Bandizip";
             group.children = { { app::CmdShellComBase + 1, L"压缩为 zip", true },
                                { app::CmdShellComBase + 2, L"用 Bandizip 打开", true } };
-            app::AppendShellSection(debug_items,
-                { { app::CmdShellStaticBase + 0, L"打印", true }, group });
+            std::vector<app::ShellMenuEntry> shell_rows = {
+                { app::CmdShellStaticBase + 0, L"打印", true }, group };
+            // Long third-party verbs must ellipsize inside the menu width.
+            wchar_t long_verb[256]{};
+            const DWORD verb_len = GetEnvironmentVariableW(L"PULSE_TEST_MENU_VERB", long_verb,
+                                                           ARRAYSIZE(long_verb));
+            if (verb_len > 0 && verb_len < ARRAYSIZE(long_verb))
+                shell_rows.push_back({ app::CmdShellStaticBase + 1, long_verb, true });
+            app::AppendShellSection(debug_items, shell_rows);
             ok = m.SaveDebugSnapshot(state.menushot_out.c_str(), std::move(debug_items));
         }
         DestroyWindow(hwnd);

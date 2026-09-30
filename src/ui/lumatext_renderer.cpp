@@ -582,6 +582,10 @@ struct LumaTextRenderer::Impl {
             layout = GetLayout(key, font_size, *cascade);
             if (!layout || !*layout) return false;
             if (lt_text_layout_get_metrics(layout->get(), &metrics) != LT_OK) return false;
+            // An ellipsized layout that still overflows would be clipped
+            // mid-glyph with no "..." (long Explorer verbs in the fixed-width
+            // context menu). DirectWrite trims correctly; let it draw.
+            if (metrics.line_count > 1 || metrics.width + ink > width + 0.5f) return false;
         }
         const float floor_x = std::floor(bounds.left);
         const float floor_y = std::floor(bounds.top);

@@ -1866,6 +1866,18 @@ void TestMenuModel() {
     wide.SetItems(std::move(long_undo));
     wide.Layout(dwrite.get(), 1.0f);
     Check(wide.WidthPx() <= 320, L"menu: long undo label does not stretch the flyout");
+    {
+        bool long_row_truncated = false;
+        for (int i = 0; i < wide.Count(); ++i) {
+            const auto* it = wide.At(i);
+            if (it && it->text.find(L"万锦学校") != std::wstring::npos)
+                long_row_truncated = wide.Truncated(i);
+        }
+        Check(long_row_truncated, L"menu: clamped long label is flagged for the full-text tooltip");
+        bool any_short_truncated = false;
+        for (int i = 0; i < model.Count(); ++i) any_short_truncated |= model.Truncated(i);
+        Check(!any_short_truncated, L"menu: labels that fit are not flagged as truncated");
+    }
 
     std::vector<index::Hit> path_hits{
         {L"C:\\Users\\TestUser\\.codex", L".codex", true},
