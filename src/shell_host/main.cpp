@@ -12,6 +12,7 @@
 #include "../ipc/protocol.h"
 #include "../ipc/ctx_menu_util.h"
 #include "ctx_handlers.h"
+#include "packaged_ctx_handlers.h"
 #include "../common/current_user_security.h"
 #include "../common/path_utils.h"
 #include "../common/crash_reporter.h"
@@ -1070,10 +1071,23 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
             if (w && !worker_done(*w)) return false;
         return true;
     };
+    auto invokable_texts = [](const std::vector<CtxItemOut>& items, std::vector<std::wstring>& out) {
+        for (const auto& item : items)
+            if (!item.has_children && !item.text.empty()) out.push_back(item.text);
+    };
     auto collect_items = [&] {
+        std::vector<std::wstring> classic_rows;
+        for (const auto& w : workers)
+            if (w && worker_done(*w) && !w->desc.explorer_command)
+                invokable_texts(w->items, classic_rows);
         std::vector<CtxItemOut> out;
         for (const auto& w : workers) {
             if (!w || !worker_done(*w)) continue;
+            if (w->desc.explorer_command) {
+                std::vector<std::wstring> rows;
+                invokable_texts(w->items, rows);
+                if (pulse::shell::PackagedRowsDuplicate(rows, classic_rows)) continue;
+            }
             out.insert(out.end(), w->items.begin(), w->items.end());
         }
         return out;
@@ -1319,6 +1333,21 @@ DWORD WINAPI ParentWatchdog(LPVOID param) {
     return 0;
 }
 
+// Scans packaged (MSIX) context-menu manifests once at startup so the first
+// right-click does not pay for it on its session thread. The result is
+// cached in PackagedContextMenuVerbs() behind its own lock.
+DWORD WINAPI PackagedVerbsPrewarm(LPVOID) {
+    const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const ULONGLONG start = GetTickCount64();
+    const size_t count = pulse::shell::PackagedContextMenuVerbs().size();
+    wchar_t buf[96];
+    swprintf_s(buf, L"Packaged verbs prewarmed %llums count=%zu",
+               GetTickCount64() - start, count);
+    HostLog(buf);
+    if (SUCCEEDED(hr)) CoUninitialize();
+    return 0;
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_EXEC_REQUEST) {
         ExecuteRequest(reinterpret_cast<Request*>(lParam));
@@ -1382,6 +1411,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     HANDLE reader = CreateThread(nullptr, 0, ReaderThread, nullptr, 0, nullptr);
+    HANDLE prewarm = CreateThread(nullptr, 0, PackagedVerbsPrewarm, nullptr, 0, nullptr);
     if (ui_pid != GetCurrentProcessId()) {
         HANDLE wd = CreateThread(nullptr, 0, ParentWatchdog,
             reinterpret_cast<LPVOID>((uintptr_t)ui_pid), 0, nullptr);
@@ -1399,6 +1429,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     if (reader) {
         WaitForSingleObject(reader, 2000);
         CloseHandle(reader);
+    }
+    if (prewarm) {
+        WaitForSingleObject(prewarm, 2000);
+        CloseHandle(prewarm);
     }
     DestroyWindow(g.hwnd_msg);
     CloseHandle(g.pipe);

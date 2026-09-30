@@ -1,4 +1,5 @@
 #include "ctx_handlers.h"
+#include "packaged_ctx_handlers.h"
 
 #include "../common/path_utils.h"
 #include "../ipc/ctx_menu_util.h"
@@ -112,6 +113,25 @@ void AddHandlersFromKey(HKEY root, const wchar_t* relative,
         out.push_back(std::move(desc));
     }
     RegCloseKey(key);
+}
+
+// Packaged (MSIX / sparse) verbs whose manifest item types match the target.
+void AddPackagedHandlers(bool background, const std::wstring& path,
+                         std::vector<CtxHandlerDesc>& out,
+                         std::unordered_set<std::wstring>& seen,
+                         const std::vector<std::wstring>& disabled) {
+    const std::vector<std::wstring> types = PackagedItemTypesFor(background, path);
+    for (const auto& verb : PackagedContextMenuVerbs()) {
+        if (!PackagedVerbMatches(verb, types)) continue;
+        if (!seen.insert(verb.clsid_text).second) continue;
+        if (IsDisabledHandler(verb.clsid_text, disabled)) continue;
+        CtxHandlerDesc desc;
+        desc.clsid = verb.clsid;
+        desc.clsid_text = verb.clsid_text;
+        desc.name = verb.name;
+        desc.explorer_command = true;
+        out.push_back(std::move(desc));
+    }
 }
 
 std::wstring ExtensionOf(const std::wstring& path) {
@@ -261,6 +281,7 @@ std::vector<CtxHandlerDesc> EnumerateCtxHandlers(
         add(L"LibraryFolder\\Background\\shellex\\ContextMenuHandlers");
         add(L"Drive\\shellex\\ContextMenuHandlers");
         add(L"*\\shellex\\ContextMenuHandlers");
+        AddPackagedHandlers(true, path, out, seen, disabled_clsids);
         return out;
     }
     add(L"*\\shellex\\ContextMenuHandlers");
@@ -285,6 +306,7 @@ std::vector<CtxHandlerDesc> EnumerateCtxHandlers(
             add(key.c_str());
         }
     }
+    AddPackagedHandlers(false, path, out, seen, disabled_clsids);
     return out;
 }
 
@@ -351,18 +373,35 @@ HRESULT QueryOneHandler(const CtxHandlerDesc& handler, const CtxBind& bind,
     slot.clsid = handler.clsid_text;
     slot.name = handler.name;
 
-    IUnknown* unk = nullptr;
-    HRESULT hr = CoCreateInstance(handler.clsid, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_IUnknown, reinterpret_cast<void**>(&unk));
-    if (FAILED(hr) || !unk) return FAILED(hr) ? hr : E_FAIL;
+    HRESULT hr = E_FAIL;
+    if (handler.explorer_command) {
+        // Packaged verbs are IExplorerCommand servers, usually out of process
+        // (dllhost surrogate); the selection is the bound data object, which is
+        // the folder itself for a background click.
+        IExplorerCommand* command = nullptr;
+        hr = CoCreateInstance(handler.clsid, nullptr, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER,
+                              IID_PPV_ARGS(&command));
+        if (FAILED(hr) || !command) return FAILED(hr) ? hr : E_FAIL;
+        IShellItemArray* items = nullptr;
+        if (bind.data)
+            SHCreateShellItemArrayFromDataObject(bind.data, IID_PPV_ARGS(&items));
+        hr = items ? CreateExplorerCommandMenu(command, items, &slot.menu) : E_FAIL;
+        if (items) items->Release();
+        command->Release();
+    } else {
+        IUnknown* unk = nullptr;
+        hr = CoCreateInstance(handler.clsid, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_IUnknown, reinterpret_cast<void**>(&unk));
+        if (FAILED(hr) || !unk) return FAILED(hr) ? hr : E_FAIL;
 
-    IShellExtInit* init = nullptr;
-    if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&init))) && init) {
-        init->Initialize(bind.folder, bind.data, bind.assoc);
-        init->Release();
+        IShellExtInit* init = nullptr;
+        if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&init))) && init) {
+            init->Initialize(bind.folder, bind.data, bind.assoc);
+            init->Release();
+        }
+        hr = unk->QueryInterface(IID_PPV_ARGS(&slot.menu));
+        unk->Release();
     }
-    hr = unk->QueryInterface(IID_PPV_ARGS(&slot.menu));
-    unk->Release();
     if (FAILED(hr) || !slot.menu) {
         slot.menu = nullptr;
         return FAILED(hr) ? hr : E_FAIL;

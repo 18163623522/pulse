@@ -405,6 +405,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s->isolatedTest) {
             s->places.persist = false;
             s->appPrefs.persist = s->isolatedTestPersist; // only into PULSE_TEST_DATA_DIR
+            s->ctxMenuPrefs.persist = s->isolatedTestPersist;
         }
         s->savedSearches.Load();
         SyncSavedSearchSidebar(*s);

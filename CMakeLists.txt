@@ -440,6 +440,11 @@ add_dependencies(pulse_preview_test pulse_preview)
 add_executable(pulse_shell_icons_test src/bench/shell_icons_test.cpp src/ui/shell_icons.cpp)
 target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid)
 
+# Packaged (MSIX / sparse) File Explorer context-menu verbs (#48).
+add_executable(pulse_packaged_ctx_test src/bench/packaged_ctx_test.cpp
+    src/shell_host/packaged_ctx_handlers.cpp src/ipc/shell_client.cpp)
+target_link_libraries(pulse_packaged_ctx_test PRIVATE ole32 shell32 uuid shlwapi bcrypt)
+
 add_executable(pulse_preview_handler_probe
     src/bench/preview_handler_probe.cpp
     src/ui/preview_handler_host.cpp)
@@ -502,6 +507,7 @@ endif()
 if(TARGET pulse_ops_test AND TARGET pulse_shell)
     add_dependencies(pulse_ops_test pulse_shell)
     add_dependencies(pulse_rename_ops_test pulse_shell)
+    add_dependencies(pulse_packaged_ctx_test pulse_shell)
 endif()
 
 # Headless modal lifecycle checks: no screenshots and no foreground activation.
