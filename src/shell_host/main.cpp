@@ -12,6 +12,7 @@
 #include "../ipc/protocol.h"
 #include "../ipc/ctx_menu_util.h"
 #include "ctx_handlers.h"
+#include "packaged_ctx_handlers.h"
 #include "../common/current_user_security.h"
 #include "../common/path_utils.h"
 #include "../common/crash_reporter.h"
@@ -1070,10 +1071,23 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
             if (w && !worker_done(*w)) return false;
         return true;
     };
+    auto invokable_texts = [](const std::vector<CtxItemOut>& items, std::vector<std::wstring>& out) {
+        for (const auto& item : items)
+            if (!item.has_children && !item.text.empty()) out.push_back(item.text);
+    };
     auto collect_items = [&] {
+        std::vector<std::wstring> classic_rows;
+        for (const auto& w : workers)
+            if (w && worker_done(*w) && !w->desc.explorer_command)
+                invokable_texts(w->items, classic_rows);
         std::vector<CtxItemOut> out;
         for (const auto& w : workers) {
             if (!w || !worker_done(*w)) continue;
+            if (w->desc.explorer_command) {
+                std::vector<std::wstring> rows;
+                invokable_texts(w->items, rows);
+                if (pulse::shell::PackagedRowsDuplicate(rows, classic_rows)) continue;
+            }
             out.insert(out.end(), w->items.begin(), w->items.end());
         }
         return out;

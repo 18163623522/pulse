@@ -14,6 +14,7 @@ struct CtxHandlerDesc {
     CLSID clsid{};
     std::wstring clsid_text;
     std::wstring name;
+    bool explorer_command = false; // packaged IExplorerCommand verb (#48)
 };
 
 struct CtxItemOut {
