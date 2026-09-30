@@ -4775,16 +4775,23 @@ void TestTrayStack() {
               L"tray stack: a short drag springs back without reordering");
         TrayStackSettle(*state, 500);
 
-        // Fling to the right: the top card goes to the back.
+        // Fling to the right: the top card goes to the back. The pointer stays
+        // inside the sidebar: leaving it turns the gesture into a real OLE
+        // drag-out, whose modal loop never ends under synthetic input.
         const std::wstring thrown = deck.cards[0].path;
+        RECT fling_client{};
+        GetClientRect(hwnd, &fling_client);
+        const int sidebar_right = static_cast<int>(state->renderer.SidebarRect(
+            static_cast<float>(fling_client.right), static_cast<float>(fling_client.bottom)).right);
+        const int fling_step = std::clamp((sidebar_right - 4 - mx) / 6, 8, 25);
         SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(mx, my));
         SetKeyboardState(drag_keys);
         for (int step = 1; step <= 6; ++step) {
             Sleep(10);
-            SendMessageW(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(mx + step * 25, my + step * 2));
+            SendMessageW(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(mx + step * fling_step, my + step * 2));
         }
         SetKeyboardState(saved_keys);
-        SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(mx + 150, my + 12));
+        SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(mx + 6 * fling_step, my + 12));
         Check(TrayStackTop(*state) == 1 &&
               state->trayCards[thrown].motion == AppState::TrayMotion::ThrowOut,
               L"tray stack: fling sends the top card to the back");
