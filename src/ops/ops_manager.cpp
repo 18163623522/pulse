@@ -724,6 +724,21 @@ void ReconcileTemporaryFiles(const std::wstring& root) {
     }
 }
 
+// Folder that contains `path`, for ShellExecuteEx's lpDirectory. Empty for
+// shell namespace paths or when the parent is not an existing directory.
+// Runs on the open thread (the parent may be on a slow network share).
+std::wstring OpenItemWorkingDirectory(const std::wstring& path) {
+    const std::wstring plain = pulse::path::StripExtendedPathPrefix(path);
+    if (plain.size() < 3 || plain.rfind(L"::", 0) == 0) return {};
+    const size_t slash = plain.find_last_of(L"\\/");
+    if (slash == std::wstring::npos || slash == 0) return {};
+    std::wstring dir = plain.substr(0, slash);
+    if (dir.size() == 2 && dir[1] == L':') dir += L'\\'; // drive root: "C:" must become "C:\\"
+    const DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return {};
+    return dir;
+}
+
 } // namespace
 
 OpsManager::~OpsManager() {
@@ -1311,7 +1326,13 @@ void OpsManager::OpenThread() {
         sei.lpFile = item.open_file.empty() ? item.open_path.c_str()
                                             : item.open_file.c_str();
         sei.lpParameters = item.open_args.empty() ? nullptr : item.open_args.c_str();
-        sei.lpDirectory = item.open_file.empty() ? nullptr : item.open_path.c_str();
+        // Like Explorer, start an opened item in its own folder: batch files
+        // and many tools resolve relative paths against the working directory.
+        const std::wstring item_dir =
+            item.open_file.empty() ? OpenItemWorkingDirectory(item.open_path) : std::wstring();
+        sei.lpDirectory = !item.open_file.empty() ? item.open_path.c_str()
+                          : item_dir.empty()      ? nullptr
+                                                  : item_dir.c_str();
         sei.nShow = SW_SHOWNORMAL;
         sei.fMask = SEE_MASK_FLAG_NO_UI;
         ShellExecuteExW(&sei); // best effort; errors surface via the OS association UI
