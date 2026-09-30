@@ -1005,9 +1005,14 @@ struct LumaTextRenderer::Impl {
             (blink == INFINITE || ((GetTickCount() / std::max(1u, blink)) % 2u) == 0u);
         if (caret_on && brush) {
             brush->SetColor(foreground);
-            const float x = std::floor(pad + caret_x - scroll) + 0.5f;
+            // Fill whole pixels: a half-pixel origin splits the caret into two
+            // half-intensity columns that blend into the first placeholder glyph.
+            DWORD caret_width = 1;
+            SystemParametersInfoW(SPI_GETCARETWIDTH, 0, &caret_width, 0);
+            const float x = std::floor(pad + caret_x - scroll);
             blit_dc->FillRectangle(
-                D2D1::RectF(x, 2.0f, x + 1.0f, static_cast<float>(h) - 2.0f),
+                D2D1::RectF(x, 2.0f, x + static_cast<float>(std::max<DWORD>(1, caret_width)),
+                            static_cast<float>(h) - 2.0f),
                 brush.Get());
         }
         const HRESULT end = blit_dc->EndDraw();

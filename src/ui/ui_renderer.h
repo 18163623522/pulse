@@ -16,6 +16,7 @@
 #include "preview_handler_host.h"
 #include "ui_motion.h"
 #include "ui_view_morph.h"
+#include "group_wheel.h"
 #include "../fs/fs_enum.h"
 #include "../fs/fs_snapshot.h"
 #include <algorithm>
@@ -53,6 +54,7 @@ struct TabView {
     int group = -1;         // index into WindowViewModel::tab_groups
     bool hidden = false;    // member of a collapsed group: zero width, not drawn
     bool pinned = false;    // narrow icon-only slot, left cluster, no close
+    float flash = 0.0f;     // 0..1 attention pulse: reopened folder already had this tab
 };
 
 // A named, colored tab group shown as a chip at the start of its run.
@@ -139,6 +141,9 @@ struct ColumnStripView {
     bool Active() const { return enabled && eligible; }
 };
 
+// Folder compare (two panes): per-entry status relative to the other pane.
+enum class CompareMark : uint8_t { Same = 0, OnlyHere = 1, Newer = 2, Older = 3, Differs = 4 };
+
 struct PaneViewModel {
     using FilterMap = std::vector<int>;
     using TagDots = std::unordered_map<int, std::vector<D2D1_COLOR_F>>;
@@ -171,6 +176,11 @@ struct PaneViewModel {
     mutable std::shared_ptr<RowPresentationCache> row_cache;
     const app::PlacesCatalog* tag_catalog = nullptr;
     std::unordered_set<std::wstring> cut_names;
+    // Folder compare: CompareMark per source index (null = compare off).
+    std::shared_ptr<const std::vector<uint8_t>> compare_marks;
+    bool compare_active = false;
+    bool compare_diff_only = false;
+    std::array<int, 5> compare_counts{};   // indexed by CompareMark
     std::shared_ptr<const TagDots> tag_dots;
     bool loading = false;
     bool search_retaining_results = false;
@@ -187,6 +197,10 @@ struct PaneViewModel {
     bool is_query_search = false;
     bool is_content_search = false;
     std::wstring search_query;
+    // Query search breadcrumb: origin segments followed by one search segment.
+    bool has_search_origin = false;
+    std::wstring search_origin;
+    std::wstring search_crumb;
     std::shared_ptr<const std::vector<std::wstring>> search_snippets;
     int recent_filter = 0;
     size_t recent_total = 0;
@@ -209,6 +223,9 @@ struct PaneViewModel {
     // the usable header width. All zeroes select the responsive defaults.
     std::array<float, 3> details_column_dividers{};
     std::array<float, 4> search_column_dividers{};
+    // "Group by" (app::GroupBy value) and its spans over view rows.
+    int group_by = 0;
+    std::shared_ptr<const ListGroups> groups;
     bool focused = true;
     bool marquee_active = false;
     D2D1_RECT_F marquee_rect{};
@@ -236,6 +253,15 @@ struct PaneViewModel {
             return (*filter_map)[static_cast<size_t>(view_row)];
         }
         return view_row;
+    }
+
+    // Spans for layout, or null when this view is not drawn grouped. Spans
+    // must cover exactly EntryCount() rows or the layout would drift.
+    const ListGroups* Groups() const {
+        if (!groups || groups->empty() ||
+            (view_mode != ViewMode::Details && view_mode != ViewMode::Content)) return nullptr;
+        const ListGroup& last = groups->back();
+        return static_cast<size_t>(last.first + last.count) == EntryCount() ? groups.get() : nullptr;
     }
 
     int ViewIndex(int source_index) const {
@@ -285,6 +311,7 @@ struct SidebarItem {
     bool tab_row = false;          // vertical tabs: row stands for a window tab
     int tab_number = 0;            // 1-based position, badged on the icon rail
     bool tab_active = false;
+    float flash = 0.0f;            // tab rows: attention pulse, see TabView::flash
 };
 
 enum class SidebarAddAction { None, CreateTag, AddNetwork, AddQuickAccess, NewTab };
@@ -347,6 +374,22 @@ struct TrayPuffView {
     float size = 1.0f;         // final scale
 };
 
+// Staging tray recent drop destination (chip row under the deck).
+struct TrayDestView {
+    std::wstring path;
+    std::wstring label;              // folder name (drive root: the path)
+    bool missing = false;            // folder gone: chip greyed, click ignored
+};
+
+// Two staged files side by side (column 0 = first staged).
+struct TrayCompareView {
+    std::wstring name[2], where[2], time[2], size[2];
+    int newer = -1;            // column with the later mtime (2 s tolerance), -1 same
+    bool size_differs = false;
+    int content = 0;           // 0 not compared, 1 running, 2 identical, 3 different, 4 unreadable
+    int text = -1;             // both files text: 1, binary: 0, not probed yet: -1
+};
+
 struct TrayDeckView {
     std::vector<TrayCardView> cards; // live window (top first) + ghosts
     std::vector<TrayPuffView> puffs;
@@ -355,10 +398,16 @@ struct TrayDeckView {
     int offset = 0;                  // cyclic index of the top card (newest-first order)
     uint64_t total_size = 0;         // sum over all batches (footer text)
     int batch_count = 0;
+    bool release_move = false;       // intent of the batch the header button releases
     float open = 0.0f;               // 0..1 drag-over highlight
     float spread = 0.0f;             // 0..1 peeking layers fan out (stack hovered)
     float thumb_dip = 48.0f;         // thumbnail edge (settings: staging tray icon size)
     int hovered = -1;                // live display index under the cursor (0 = top)
+    std::vector<TrayDestView> dests; // recent drop folders, newest first (max 3)
+    int stale_count = 0;             // staged items moved/deleted outside Pulse
+    bool can_compare = false;        // exactly two existing files staged
+    bool comparing = false;          // compare table replaces the card stack
+    TrayCompareView compare;
 };
 
 // Right-side details panel for the current selection (ui.md §7.2 视图簇).
@@ -416,6 +465,10 @@ struct StatusBarView {
     std::wstring status_text;
     std::wstring selection_text;
     std::wstring hint_text;        // contextual shortcut / hover prompt
+    // Clickable action at the right end of the hint ("Compare →"); hint_action is
+    // the app's StatusHintAction value, 0 = none.
+    std::wstring hint_action_text;
+    int hint_action = 0;
     std::wstring task_text;        // active/completed op summary; empty = idle
     float task_progress = -1.0f;   // 0..100; negative: hidden for ops, indeterminate for updates.
     bool task_is_update = false;   // Noninteractive, centered progress; never opens file operations.
@@ -498,6 +551,7 @@ struct WindowViewModel {
     float sidebar_scroll = 0.0f;
     TrayDeckView tray_deck;
     bool details_visible = false;   // right details panel toggle (view menu)
+    int layout_preset = 0;          // app::LayoutPreset of the active tab (toolbar split icon)
     DetailsPanelView details;
     StatusBarView status;
 
@@ -527,10 +581,16 @@ struct WindowViewModel {
     std::wstring drag_badge;      // action badge text near the cursor
     float drag_badge_x = 0.0f;
     float drag_badge_y = 0.0f;
+    bool drag_badge_move = false; // the drop will move: badge gets an amber edge
     int hover_region = 0;         // numeric HitTestResult::Region
     int hover_control_index = -1;
     int hover_sub_index = -1;
     std::wstring tooltip_text;
+    // One-time teaching bubble (bottom right, above the status bar).
+    struct TeachBubbleView {
+        bool visible = false;
+        std::wstring title, body, primary, never;
+    } teach;
     ChangePopover change_popover;
     float tooltip_x = 0.0f;
     float tooltip_y = 0.0f;
@@ -557,6 +617,7 @@ struct WindowViewModel {
     bool address_search_has_text = false;
     std::wstring address_search_text;
     std::wstring address_search_placeholder;
+    std::wstring address_search_scope_label;
     float address_search_animation = 0.0f;
     float address_scope_animation = 0.0f;
     bool filter_editing = false;
@@ -570,6 +631,7 @@ struct WindowViewModel {
     bool settings_content_paused = false;
     bool settings_content_instant = false;
     unsigned settings_expanded = kSettingsDefaultExpandedMask;
+    unsigned settings_preview_codecs = 0;  // DetectPreviewCodecs() mask, General page only
     int settings_theme = 0; // system, light, dark
     bool settings_open = false;
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates
@@ -584,7 +646,10 @@ struct WindowViewModel {
     bool settings_list_size_bar = false;
     bool settings_list_tag_names = false;
     bool settings_vertical_tabs = false;
+    bool settings_show_hints = true;
+    bool settings_tips_seen = false;   // any teaching bubble already shown
     int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
+    int settings_text_render = 0; // 0 auto, 1 sharp, 2 smooth
     bool settings_open_folders = false;
     bool settings_win_e = false;
     bool settings_shell_tags = false;
@@ -706,6 +771,9 @@ struct HitTestResult {
         TrayClose,
         TrayItemRemove,
         TrayCard,
+        TrayIntent,               // copy/move chip on the top tray card
+        CompareDiffToggle,        // folder compare banner: differences only / show all
+        CompareExit,              // folder compare banner: exit compare
         TrayClear,
         RowStar,
         RowFolderSize,
@@ -742,6 +810,7 @@ struct HitTestResult {
         SettingsWallpaper,
         SettingsDensity,
         SettingsFolderSort,
+        SettingsTextRender,
         SettingsTrayIcon,
         SettingsLanguage,
         SettingsIndexVolume,
@@ -775,6 +844,21 @@ struct HitTestResult {
         SettingsWallpaperLook,
         SettingsWallpaperBlur,
         SidebarToggle,       // title-bar sidebar collapse button
+        StatusHintAction,    // clickable action at the end of the status-bar hint
+        SearchEmptyAction,   // suggestion button on an empty search result page; path = new query
+        TeachPrimary,        // teaching bubble: Got it / Try it
+        TeachDismiss,        // teaching bubble: close (x)
+        TeachNever,          // teaching bubble: don't show tips
+        TeachBubble,         // teaching bubble body (swallows clicks)
+        FilterEmptyAction,   // pane filter with no matches: 0 search subfolders, 1 clear filter
+        TrayDest,            // staging tray recent destination chip: index, path
+        TrayStale,           // staging tray stale-items row: 0 find, 1 remove
+        TrayCompare,         // staging tray compare: 0 footer toggle, 1 content check, 2 view diff
+        GroupHeader,         // "group by" header (index = group): toggle collapse
+        GroupSelect,         // header hover action (index = group): select the group
+        ToolbarGroup,        // toolbar "Group" button / active chip: open the group menu
+        ToolbarGroupClear,   // "x" on the active group chip: stop grouping
+        SettingsPreviewStore,  // Settings > Quick Look formats: get a missing system extension (index = row)
     } region = None;
     SidebarAddAction sidebar_action = SidebarAddAction::None;
     int index = -1;          // tab/row/sidebar item/tray batch/tray item.
@@ -839,6 +923,15 @@ public:
     float SidebarFullWidth(float window_width) const;
     // Toolbar geometry honoring the vertical-tabs split (row 1 in the title bar).
     ToolbarLayout ToolbarLayoutAt(float w, float create_width, float filter_expand = 0.0f) const;
+    // 0 = default width; otherwise the minimum search field width in DIP.
+    void SetSearchBarMinWidth(float dip) { search_min_dip_ = dip; }
+    // Toolbar "Group" button: -1 hidden, 0 not grouped, 1..4 app::GroupBy value.
+    void SetToolbarGroup(int group_by) { toolbar_group_ = group_by; }
+    int ToolbarGroup() const { return toolbar_group_; }
+    // Drum "Group by" picker drawn over everything (app/group_wheel_ui.cpp).
+    GroupWheel& GroupWheelPicker() { return group_wheel_; }
+    float ToolbarGroupWidth(float w) const;
+    float SearchBarMinWidth() const { return search_min_dip_; }
     D2D1_RECT_F SidebarToggleRect(float w) const;
     float PaneHeaderHeight() const { return pane_header_height_; }
     float ColumnHeaderHeight() const { return column_header_height_; }
@@ -941,6 +1034,7 @@ public:
         active = active || task_pill_spinning_ ||
                  (task_pill_done_at_ != 0 && now - task_pill_done_at_ < kTaskPillDoneMs + 400);
         if (copy_feedback_.Tick(now)) active = true;
+        if (group_wheel_.Tick(motion_now)) active = true;
         return active;
     }
     // region = HitTestResult region of the button that copied, index its index.
@@ -1149,6 +1243,7 @@ private:
     bool HitTestColumnStrip(const PaneViewModel& vm, const D2D1_RECT_F& pane_bounds,
                             float x, float y, HitTestResult& out) const;
     void DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
+    void DrawTeachBubble(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     // File-operation capsule in the status bar: ring progress while running,
     // accent check on success, then settles back to plain summary text.
     void DrawTaskPill(const WindowViewModel& vm, const D2D1_RECT_F& area, const Theme& theme);
@@ -1162,6 +1257,12 @@ private:
     // Placeholder rows with a soft shimmer for slow (network) folders.
     void DrawListSkeleton(const D2D1_RECT_F& viewport, const Theme& theme, int pane_index);
     void DrawScrollbar(const PaneViewModel& vm, float x, float y, float w, float h, const Theme& theme);
+    // "Group by" headers over a grouped details/content list (sticky top one).
+    void DrawGroupHeaders(const PaneViewModel& vm, const ViewLayout& layout,
+                          const D2D1_RECT_F& viewport, const Theme& theme,
+                          int hover_region, int hover_control_index, int pane_index);
+    static std::wstring GroupLabel(const PaneViewModel& vm, const ListGroup& g);
+    int group_hover_pane_ = -1;   // pane under the mouse for header hover
     // Scatter deck of staged files inside the tray panel (draw + hit-test
     // share the geometry helpers in ui_renderer.cpp).
     void DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& panel_rc,
@@ -1231,9 +1332,12 @@ private:
     float sidebar_width_ = 224.0f;
     float sidebar_width_dip_ = 224.0f;
     bool vertical_tabs_ = false;
+    float search_min_dip_ = 0.0f;
+    int toolbar_group_ = -1;
     bool sidebar_collapsed_ = false;
     bool sidebar_peek_ = false;
     bool collapse_anim_ = false;
+    GroupWheel group_wheel_;
     float collapse_value_ = 0.0f;  // 0 expanded .. 1 rail (frame-stable)
     float collapse_from_ = 0.0f;
     uint64_t collapse_start_ = 0;  // motion::NowMs()

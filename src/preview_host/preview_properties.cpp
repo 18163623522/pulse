@@ -76,10 +76,14 @@ std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
         }
         AddProperty(store.Get(), PKEY_Video_FrameRate, L"帧率", out);
         AddProperty(store.Get(), PKEY_Video_Compression, L"编码格式", out);
-    } else if (IsOneOf(extension, {L".mp3", L".wav", L".flac", L".m4a", L".aac"})) {
-        AddProperty(store.Get(), PKEY_Media_Duration, L"时长", out);
+    } else if (IsOneOf(extension, {L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma",
+                                   L".ogg", L".oga", L".opus", L".aif", L".aiff"})) {
+        AddProperty(store.Get(), PKEY_Title, L"标题", out);
         AddProperty(store.Get(), PKEY_Music_Artist, L"艺术家", out);
         AddProperty(store.Get(), PKEY_Music_AlbumTitle, L"专辑", out);
+        AddProperty(store.Get(), PKEY_Media_Duration, L"时长", out);
+        AddProperty(store.Get(), PKEY_Audio_EncodingBitrate, L"比特率", out);
+        AddProperty(store.Get(), PKEY_Audio_SampleRate, L"采样率", out);
     } else if (IsOneOf(extension, {L".pdf", L".doc", L".docx", L".xls", L".xlsx", L".ppt", L".pptx", L".odt", L".ods", L".odp"})) {
         AddProperty(store.Get(), PKEY_Title, L"标题", out);
         AddProperty(store.Get(), PKEY_Author, L"作者", out);

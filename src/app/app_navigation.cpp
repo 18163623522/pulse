@@ -7,6 +7,7 @@
 #include "../ui/drag_drop.h"
 #include "../ui/file_operation_dialog.h"
 #include "../ui/batch_rename_dialog.h"
+#include "../ui/advanced_search_dialog.h"
 #include "../ui/quick_preview_window.h"
 #include "../ui/typography.h"
 #include "../ui/color_picker.h"
@@ -15,6 +16,7 @@
 #include "../common/path_utils.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
+#include "entry_group.h"
 #include "session.h"
 #include "../fs/fs_net_cache.h"
 #include "context_menu.h"
@@ -327,6 +329,11 @@ void ApplySearchHits(app::Tab& tab, const std::wstring& rest,
     tab.search_next_offset = entries.size();
     if (tab.search_snippets && tab.search_snippets->size() < entries.size())
         tab.search_snippets->resize(entries.size());
+    // Index pages arrive in relevance/sort order; grouping regroups them
+    // stably so that order survives inside each group.
+    if (const int group = tab.EffectiveGroup(); group != 0)
+        app::StableGroupOrder(entries, tab.search_snippets ? tab.search_snippets.get() : nullptr,
+                              app::GroupByFromInt(group), tab.sort_column, tab.sort_direction);
     if (tab.search_total > entries.size())
         SetQuerySearchTitle(tab, rest, tab.search_total, entries.size());
     else
@@ -592,6 +599,13 @@ void ApplyContentSearchUpdate(AppState& s, index::ContentSearchUpdate update) {
 
 void DeliverIndexSearchResult(AppState& s, uint32_t id,
                                      index::SearchResult&& result) {
+    if (id != 0 && id == s.advancedCountId) {
+        s.advancedCountId = 0;
+        if (IsWindow(s.advancedCountHwnd))
+            PostMessageW(s.advancedCountHwnd, ui::kAdvancedSearchCountMessage,
+                         static_cast<WPARAM>(result.total), 0);
+        return;
+    }
     if (id == s.paletteSearchId) {
         s.paletteHits = std::move(result.hits);
         s.paletteTotal = result.total;
@@ -702,7 +716,7 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
             tab.loading = true;
             tab.SetSnapshot(nullptr);
             tab.pending_generation = s.worker.LoadPaths(
-                path, tag.paths, tab.sort_column, tab.sort_direction);
+                path, tag.paths, tab.sort_column, tab.sort_direction, false, {}, tab.EffectiveGroup());
             return;
         }
     } else if (kind == L"search") {
@@ -776,7 +790,7 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
         tab.banner_title = l10n::Get(l10n::StringId::RecycleBin);
         tab.banner_message = RecycleOccupancyText(s.recycle_info);
         tab.pending_generation = s.worker.Refresh(
-            path, tab.sort_column, tab.sort_direction);
+            path, tab.sort_column, tab.sort_direction, tab.EffectiveGroup());
         return;
     } else if (kind == L"settings") {
         tab.virtual_title = l10n::Get(l10n::StringId::Settings);
@@ -790,13 +804,20 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
     if (tab.snapshot && tab.EntryCount() != 0) tab.SelectOnly(0);
 }
 
+int FolderGroupFor(const AppState& s, const std::wstring& path) {
+    const auto saved = s.appPrefs.folder_groups.Find(path);
+    return static_cast<int>(saved.value_or(app::DefaultGroupFor(path)));
+}
+
 void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
+    SyncTagGroups(s);
     s.index.CancelSession(tab.search_session_id);
     std::erase_if(s.pendingIndexSearches,[&](const auto& item){return item.second.query.session_id==tab.search_session_id;});
     tab.filename_live_generation=0;
     tab.search_retaining_results = false;
     std::wstring normalized = fs::NormalizePath(path);
     tab.current_path = normalized;
+    tab.group_by = FolderGroupFor(s, normalized);
     if (const auto git = s.gitRoots.find(normalized); git != s.gitRoots.end())
         tab.git_root = git->second;
     else
@@ -873,7 +894,8 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
         if (!other || other == &tab || other->current_path != normalized ||
             other->pending_generation == 0 ||
             other->sort_column != tab.sort_column ||
-            other->sort_direction != tab.sort_direction) {
+            other->sort_direction != tab.sort_direction ||
+            other->EffectiveGroup() != tab.EffectiveGroup()) {
             return;
         }
         shared_generation = other->pending_generation;
@@ -909,7 +931,7 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     }
     tab.pending_generation = shared_generation != 0
         ? shared_generation
-        : s.worker.Refresh(normalized, tab.sort_column, tab.sort_direction);
+        : s.worker.Refresh(normalized, tab.sort_column, tab.sort_direction, tab.EffectiveGroup());
 
     SyncVisibleWatches(s);
     if (fs::IsUncPath(normalized)) RequestUncProbe(s, normalized);
@@ -1117,14 +1139,15 @@ void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
         for (app::Tab* other : tabs) {
             if (other == tab || other->pending_generation == 0) continue;
             if (other->sort_column == tab->sort_column &&
-                other->sort_direction == tab->sort_direction) {
+                other->sort_direction == tab->sort_direction &&
+                other->EffectiveGroup() == tab->EffectiveGroup()) {
                 tab->pending_generation = other->pending_generation;
                 break;
             }
         }
         if (tab->pending_generation == 0) {
             tab->pending_generation = s.worker.Refresh(
-                normalized, tab->sort_column, tab->sort_direction);
+                normalized, tab->sort_column, tab->sort_direction, tab->EffectiveGroup());
         }
     }
 }
@@ -1182,6 +1205,7 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
         app::Tab* tab = pane.ActiveTab();
         if (!tab || tab->current_path != path || !tab->snapshot) return;
         auto copy = std::make_shared<std::vector<fs::DirEntry>>(*tab->snapshot);
+        const app::ScopedEntryGrouping grouping(tab->EffectiveGroup(), tab->current_path);
         if (app::ApplyDirNotifyBatch(*copy, path, events, tab->sort_column, tab->sort_direction) ==
             app::NotifyPatch::NeedFullEnum) {
             need_full = true;
@@ -1474,6 +1498,12 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
     for (size_t i = 0; i < n; ++i) used.push_back(Panes(s)[i].get());
     Root(s) = app::MakePresetTree(preset, used);
     LayoutOf(s) = preset;
+    if (n != 2) {
+        if (app::LayoutTab* lt = s.window_tabs.Active()) {
+            lt->compare = false;
+            lt->compare_diff_only = false;
+        }
+    }
     bool focusOk = false;
     for (app::Pane* p : used) if (p == s.pane) focusOk = true;
     if (!focusOk && !used.empty()) FocusPane(s, used[0]);
@@ -1486,6 +1516,144 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
         }
     }
     SyncVisibleWatches(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+// ---------------------------------------------------------------------------
+// Two-pane folder compare
+// ---------------------------------------------------------------------------
+namespace {
+bool CompareFolderPath(const app::Tab* tab) {
+    return tab && tab->snapshot && !tab->content_results && !tab->current_path.empty() &&
+           !fs::IsVirtualPath(tab->current_path);
+}
+
+std::vector<app::Pane*> VisiblePanes(AppState& s) {
+    std::vector<app::Pane*> visible;
+    if (Root(s)) Root(s)->CollectPanes(visible);
+    return visible;
+}
+
+void ClearCompare(app::Tab& tab) {
+    if (!tab.compare_marks && !tab.compare_diff_only) return;
+    tab.compare_marks.reset();
+    tab.compare_counts = {};
+    tab.compare_diff_only = false;
+    tab.view_compare_map.reset();
+    tab.view_compare_base.reset();
+    tab.view_compare_marks.reset();
+}
+} // namespace
+
+bool FolderCompareAvailable(AppState& s) {
+    const auto visible = VisiblePanes(s);
+    return visible.size() == 2 && visible[0] && visible[1];
+}
+
+// Called at the start of every view-model build: cheap unless one of the two
+// listings (or the hidden-file visibility) changed since the last pass.
+void UpdateFolderCompare(AppState& s) {
+    app::LayoutTab* lt = s.window_tabs.Active();
+    if (!lt) return;
+    const auto visible = VisiblePanes(s);
+    app::Tab* a = nullptr;
+    app::Tab* b = nullptr;
+    bool active = lt->compare && visible.size() == 2 && visible[0] && visible[1];
+    if (active) {
+        a = visible[0]->ActiveTab();
+        b = visible[1]->ActiveTab();
+        active = CompareFolderPath(a) && CompareFolderPath(b);
+    }
+    for (auto& pane : lt->panes) {
+        app::Tab* tab = pane ? pane->ActiveTab() : nullptr;
+        if (tab && (!active || (tab != a && tab != b))) ClearCompare(*tab);
+    }
+    if (!active) {
+        lt->compare_snap_a.reset();
+        lt->compare_snap_b.reset();
+        lt->compare_visibility = -1;
+        return;
+    }
+    a->compare_diff_only = lt->compare_diff_only;
+    b->compare_diff_only = lt->compare_diff_only;
+    const int visibility = (a->show_hidden_files ? 1 : 0) | (a->show_protected_os_files ? 2 : 0) |
+                           (b->show_hidden_files ? 4 : 0) | (b->show_protected_os_files ? 8 : 0);
+    if (a->compare_marks && b->compare_marks && lt->compare_snap_a == a->snapshot &&
+        lt->compare_snap_b == b->snapshot && lt->compare_visibility == visibility)
+        return;
+    app::FolderCompareResult result = app::CompareFolderTabs(*a, *b);
+    a->compare_marks = std::move(result.marks_a);
+    b->compare_marks = std::move(result.marks_b);
+    a->compare_counts = result.counts_a;
+    b->compare_counts = result.counts_b;
+    lt->compare_snap_a = a->snapshot;
+    lt->compare_snap_b = b->snapshot;
+    lt->compare_visibility = visibility;
+}
+
+static void ResetCompareScroll(AppState& s) {
+    for (app::Pane* pane : VisiblePanes(s)) {
+        if (app::Tab* tab = pane ? pane->ActiveTab() : nullptr) tab->scroll_y = 0.0f;
+    }
+    s.scrollTargetY = 0.0f;
+    s.scrollAnimating = false;
+}
+
+void SetFolderCompare(AppState& s, bool on) {
+    app::LayoutTab* lt = s.window_tabs.Active();
+    if (!lt) return;
+    if (on && !FolderCompareAvailable(s)) return;
+    if (lt->compare_diff_only) ResetCompareScroll(s);
+    lt->compare = on;
+    lt->compare_diff_only = false;
+    lt->compare_visibility = -1;
+    UpdateFolderCompare(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void ToggleCompareDiffOnly(AppState& s) {
+    app::LayoutTab* lt = s.window_tabs.Active();
+    if (!lt || !lt->compare) return;
+    lt->compare_diff_only = !lt->compare_diff_only;
+    ResetCompareScroll(s);
+    UpdateFolderCompare(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+// Exactly two selected real folders -> their paths (else empty).
+std::vector<std::wstring> SideBySideFolders(const app::Tab& tab) {
+    std::vector<std::wstring> out;
+    if (!tab.snapshot || tab.SelectedCount() != 2) return out;
+    for (int index : tab.SelectedIndices()) {
+        if (index < 0 || index >= static_cast<int>(tab.EntryCount())) return {};
+        const fs::DirEntry& entry = tab.EntryAt(static_cast<size_t>(index));
+        if (!entry.is_dir || entry.change_record_only || !entry.recycle_path.empty()) return {};
+        std::wstring path = EntryFullPath(tab, index);
+        if (path.empty() || fs::IsVirtualPath(path)) return {};
+        out.push_back(std::move(path));
+    }
+    if (out.size() != 2) out.clear();
+    return out;
+}
+
+// 并排对比: split left | right, A on the left, B on the right, compare on.
+void OpenFoldersSideBySide(AppState& s) {
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || IsSettingsTab(tab)) return;
+    const std::vector<std::wstring> folders = SideBySideFolders(*tab);
+    if (folders.size() != 2) return;
+    ApplyLayoutPreset(s, app::LayoutPreset::TwoVertical);
+    const auto visible = VisiblePanes(s);
+    if (visible.size() != 2 || !visible[0] || !visible[1]) return;
+    FocusPane(s, visible[1]);
+    NavigateTo(s, folders[1]);
+    FocusPane(s, visible[0]);
+    NavigateTo(s, folders[0]);
+    if (app::LayoutTab* lt = s.window_tabs.Active()) {
+        lt->compare = true;
+        lt->compare_diff_only = false;
+        lt->compare_visibility = -1;
+    }
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
@@ -1556,6 +1724,42 @@ void SetSort(AppState& s, ui::SortColumn col, ui::SortDirection direction) {
     } else RefreshActiveTab(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
+void SetGroupBy(AppState& s, int group_by) {
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || tab->content_results) return;
+    std::wstring kind;
+    const bool pulse_view = app::ParsePulsePath(tab->current_path, &kind, nullptr);
+    const bool recent = pulse_view && kind == L"recent";
+    // Search results and tag views span folders: they group by Location.
+    // The recycle bin groups by deleted date (mtime) or original folder.
+    const bool multi = pulse_view && (kind == L"search" || kind == L"saved-search" || kind == L"tag" ||
+                                      kind == L"recycle");
+    if (!recent && !multi && (tab->current_path.empty() || fs::IsVirtualPath(tab->current_path))) return;
+    const app::GroupBy by = app::GroupByFromInt(group_by);
+    // Tag groups need one parent folder; Recent keeps its opened-time order.
+    if ((recent || multi) && by == app::GroupBy::Tag) return;
+    if (!multi && by == app::GroupBy::Location) return;
+    SyncTagGroups(s);
+    if (s.appPrefs.folder_groups.Set(tab->current_path, by)) s.appPrefs.Save();
+    group_by = static_cast<int>(by);
+    // Groups are drawn in list-like views; bring an icon view to Details.
+    if (group_by != 0 && tab->view_mode != ui::ViewMode::Details &&
+        tab->view_mode != ui::ViewMode::Content)
+        SetViewMode(s, ui::ViewMode::Details);
+    const int old_group = tab->EffectiveGroup();
+    tab->group_by = group_by;
+    if (tab->EffectiveGroup() == old_group) {
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return;
+    }
+    tab->scroll_y = 0.0f;
+    s.scrollTargetY = 0.0f;
+    s.scrollAnimating = false;
+    // Recent keeps its opened-time order (already date-contiguous); folders re-sort.
+    if (!recent) RefreshActiveTab(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
 void OpenSelected(AppState& s) {
     if(DeferContentSelection(s,[=](AppState& v){OpenSelected(v);})) return;
     app::Tab* tab = ActiveTab(s);
@@ -1601,6 +1805,17 @@ void OpenSelected(AppState& s) {
             s.ops.OpenWith(full);
             RecordRecentOpen(s, full, app::PlaceItemKind::File);
         }
+    }
+}
+
+void OpenPath(AppState& s, const std::wstring& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) return;
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        NavigateTo(s, path);
+    } else {
+        s.ops.OpenWith(path);
+        RecordRecentOpen(s, path, app::PlaceItemKind::File);
     }
 }
 
@@ -1677,6 +1892,123 @@ void NewTab(AppState& s, const std::wstring& path) {
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
+namespace {
+constexpr ULONGLONG kTabFlashMs = 900;
+
+// Window-tab index whose pane currently shows `path`, or -1.
+int FindFolderTab(AppState& s, const std::wstring& path, app::Pane** pane_out) {
+    if (s.window_tabs.items.empty() || path.empty() || fs::IsVirtualPath(path)) return -1;
+    const std::wstring normalized = fs::NormalizePath(path);
+    for (size_t i = 0; i < s.window_tabs.items.size(); ++i) {
+        app::LayoutTab& layout = *s.window_tabs.items[i];
+        for (auto& pane : layout.panes) {
+            const app::Tab* tab = pane ? pane->ActiveTab() : nullptr;
+            if (!tab || tab->current_path.empty()) continue;
+            const std::wstring tab_path = fs::NormalizePath(tab->current_path);
+            if (_wcsicmp(tab_path.c_str(), normalized.c_str()) != 0) continue;
+            if (pane_out) *pane_out = pane.get();
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void FlashTab(AppState& s, size_t index) {
+    if (index >= s.window_tabs.items.size()) return;
+    s.tabFlashKey = s.window_tabs.items[index].get();
+    s.tabFlashAt = GetTickCount64();
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+} // namespace
+
+bool SyncTagGroups(AppState& s) {
+    const uint64_t revision = s.places.TagRevision();
+    if (s.tagGroupsRevision == revision && app::CurrentTagCatalog()) return false;
+    s.tagGroupsRevision = revision;
+    auto snapshot = std::make_shared<app::TagCatalogSnapshot>();
+    snapshot->revision = revision;
+    std::unordered_map<std::wstring, int> primary;
+    for (size_t i = 0; i < s.places.tags.size(); ++i) {
+        const app::ColorTag& tag = s.places.tags[i];
+        snapshot->tags.push_back({tag.name, tag.rgb});
+        for (const auto& path : tag.paths) {
+            if (path.empty() || fs::IsVirtualPath(path)) continue;
+            std::wstring key = fs::NormalizePath(path);
+            for (auto& ch : key) ch = static_cast<wchar_t>(std::towlower(ch));
+            primary.try_emplace(std::move(key), static_cast<int>(i));  // first tag wins
+        }
+    }
+    snapshot->paths.assign(primary.begin(), primary.end());
+    app::PublishTagCatalog(std::move(snapshot));
+    return true;
+}
+
+float TabFlashAmount(const AppState& s, const app::LayoutTab* key) {
+    if (!key || key != s.tabFlashKey) return 0.0f;
+    const ULONGLONG elapsed = GetTickCount64() - s.tabFlashAt;
+    if (elapsed >= kTabFlashMs) return 0.0f;
+    // Two soft pulses.
+    const float x = std::sin(3.14159265f * static_cast<float>(elapsed) / (kTabFlashMs / 2.0f));
+    return x * x;
+}
+
+bool TickTabFlash(AppState& s) {
+    if (!s.tabFlashKey) return false;
+    if (GetTickCount64() - s.tabFlashAt >= kTabFlashMs) s.tabFlashKey = nullptr;
+    return true;  // one more frame clears the overlay
+}
+
+void OpenFolderTab(AppState& s, const std::wstring& path) {
+    if (!ActivateExistingFolderTab(s, path)) NewTab(s, path);
+}
+
+void SelectNameInTab(AppState& s, app::Tab& tab, const std::wstring& name) {
+    tab.pending_selected_names = {name};
+    tab.pending_selected_name = name;
+    tab.pending_ensure_selection_visible = true;
+    if (!tab.snapshot) return;
+    const auto& entries = *tab.snapshot;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (_wcsicmp(entries[i].name.c_str(), name.c_str()) != 0 ||
+            !tab.EntryVisible(static_cast<int>(i))) continue;
+        tab.SelectOnly(static_cast<int>(i));
+        EnsureRowVisible(s, tab, static_cast<int>(i));
+        break;
+    }
+}
+
+void NewBackgroundTab(AppState& s, const std::wstring& path) {
+    const app::LayoutTab* opener = s.window_tabs.Active();
+    if (path.empty() || !opener) {
+        NewTab(s, path);
+        return;
+    }
+    // Already open: point at it without stealing focus.
+    if (const int existing = FindFolderTab(s, path, nullptr); existing >= 0) {
+        FlashTab(s, static_cast<size_t>(existing));
+        return;
+    }
+    if (s.backgroundTabOpener != opener) {
+        s.backgroundTabOpener = opener;
+        s.backgroundTabRun = 0;
+    }
+    RememberLayoutFocus(s);
+    app::LayoutTab& added = s.window_tabs.NewTabAt(s.window_tabs.active + 1 + s.backgroundTabRun, path);
+    ++s.backgroundTabRun;
+    // Stay on the opener; NewTabAt activated the new tab.
+    for (size_t i = 0; i < s.window_tabs.items.size(); ++i) {
+        if (s.window_tabs.items[i].get() == opener) {
+            s.window_tabs.active = i;
+            break;
+        }
+    }
+    if (app::Tab* tab = added.ActiveFolder()) {
+        StartLoadingPath(s, *tab, tab->current_path);
+        RecordRecentOpen(s, tab->current_path, app::PlaceItemKind::Folder);
+    }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
 void OpenSettingsTab(AppState& s, int page) {
     s.settings.SelectPage(page);
     const std::wstring path = app::MakeSettingsPath(
@@ -1729,22 +2061,14 @@ void SwitchTab(AppState& s, size_t idx) {
 }
 
 bool ActivateExistingFolderTab(AppState& s, const std::wstring& path) {
-    if (s.window_tabs.items.empty() || path.empty()) return false;
-    const std::wstring normalized = fs::NormalizePath(path);
-    for (size_t i = 0; i < s.window_tabs.items.size(); ++i) {
-        app::LayoutTab& layout = *s.window_tabs.items[i];
-        for (auto& pane : layout.panes) {
-            const app::Tab* tab = pane ? pane->ActiveTab() : nullptr;
-            if (!tab || tab->current_path.empty()) continue;
-            const std::wstring tab_path = fs::NormalizePath(tab->current_path);
-            if (_wcsicmp(tab_path.c_str(), normalized.c_str()) != 0) continue;
-            SwitchTab(s, i);
-            FocusPane(s, pane.get());
-            RecordRecentOpen(s, normalized, app::PlaceItemKind::Folder);
-            return true;
-        }
-    }
-    return false;
+    app::Pane* pane = nullptr;
+    const int index = FindFolderTab(s, path, &pane);
+    if (index < 0) return false;
+    SwitchTab(s, static_cast<size_t>(index));
+    FocusPane(s, pane);
+    RecordRecentOpen(s, fs::NormalizePath(path), app::PlaceItemKind::Folder);
+    FlashTab(s, static_cast<size_t>(index));
+    return true;
 }
 
 } // namespace pulse

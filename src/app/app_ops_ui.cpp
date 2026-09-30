@@ -45,6 +45,15 @@ bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request) {
     return true;
 }
 
+// Tell the user that staged items which vanished were left out.
+static void NotifyTraySkipped(AppState& s, size_t n) {
+    if (n == 0) return;
+    std::wstring msg = l10n::Get(l10n::StringId::TraySkippedFormat);
+    const size_t at = msg.find(L"{n}");
+    if (at != std::wstring::npos) msg.replace(at, 3, std::to_wstring(n));
+    s.notification_toast.Show(s.hwnd, l10n::Get(l10n::StringId::StagingTray), std::move(msg), false);
+}
+
 // Release one tray batch into the current folder through the ops layer.
 void ReleaseTrayBatch(AppState& s, size_t idx) {
     app::Tab* tab = ActiveTab(s);
@@ -54,13 +63,69 @@ void ReleaseTrayBatch(AppState& s, size_t idx) {
     ops::OpRequest req;
     req.type = b.move_intent ? ops::OpType::Move : ops::OpType::Copy;
     req.dest_dir = tab->current_path;
+    size_t skipped = 0;
     for (const auto& it : b.items) {
         if (it.exists) req.sources.push_back(it.path);
+        else ++skipped;
     }
+    NotifyTraySkipped(s, skipped);
     if (req.sources.empty()) return;
     if (!SubmitWithConflictResolution(s, std::move(req))) return;
-    // Cut batches are consumed by release; copy batches too (default per ui.md §7.4).
-    s.tray.RemoveBatch(idx);
+    RememberTrayDest(s, tab->current_path);
+    // Move batches are consumed by release; copy batches stay staged so the
+    // same set can be dropped into several folders (like a clipboard copy).
+    if (b.move_intent) s.tray.RemoveBatch(idx);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+std::vector<std::wstring> TrayDestList(const AppState& s) {
+    std::vector<std::wstring> out;
+    const std::wstring& all = s.appPrefs.tray_dests;
+    size_t start = 0;
+    while (start < all.size() && out.size() < 3) {
+        size_t bar = all.find(L'|', start);
+        if (bar == std::wstring::npos) bar = all.size();
+        if (bar > start) out.push_back(all.substr(start, bar - start));
+        start = bar + 1;
+    }
+    return out;
+}
+
+void RememberTrayDest(AppState& s, const std::wstring& dir) {
+    if (dir.empty() || fs::IsVirtualPath(dir)) return;
+    // Stored for display: no \\?\ long-path prefix.
+    const std::wstring norm = ClipboardPath(fs::NormalizePath(dir));
+    std::vector<std::wstring> list{ norm };
+    for (const auto& old : TrayDestList(s)) {
+        if (_wcsicmp(old.c_str(), norm.c_str()) != 0 && list.size() < 3) list.push_back(old);
+    }
+    std::wstring joined;
+    for (const auto& d : list) {
+        if (!joined.empty()) joined += L'|';
+        joined += d;
+    }
+    if (joined == s.appPrefs.tray_dests) return;
+    s.appPrefs.tray_dests = std::move(joined);
+    s.appPrefs.Save();
+}
+
+void SendTrayToDest(AppState& s, const std::wstring& dir, bool move) {
+    if (dir.empty() || GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    ops::OpRequest req;
+    req.type = move ? ops::OpType::Move : ops::OpType::Copy;
+    req.dest_dir = fs::NormalizePath(dir);
+    size_t skipped = 0;
+    for (const auto& batch : s.tray.batches())
+        for (const auto& item : batch.items)
+            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
+                req.sources.push_back(item.path);
+            else
+                ++skipped;
+    NotifyTraySkipped(s, skipped);
+    if (req.sources.empty()) return;
+    if (!SubmitWithConflictResolution(s, std::move(req))) return;
+    RememberTrayDest(s, dir);
+    if (move) s.tray.Clear(); // moved items leave their old paths behind
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
@@ -153,6 +218,23 @@ void RestoreSelected(AppState& s) {
     s.ops.Submit(std::move(req));
 }
 
+void RestoreAllRecycle(AppState& s) {
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || !tab->snapshot || !IsRecycleTab(tab)) return;
+    std::vector<std::wstring> paths;
+    const size_t count = tab->EntryCount();
+    paths.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        std::wstring full = EntryFullPath(*tab, static_cast<int>(i));
+        if (!full.empty()) paths.push_back(std::move(full));
+    }
+    if (paths.empty()) return;
+    ops::OpRequest req;
+    req.type = ops::OpType::RestoreRecycle;
+    req.sources = std::move(paths);
+    s.ops.Submit(std::move(req));
+}
+
 void EmptyRecycleBin(AppState& s) {
     ui::ConfirmDialogSpec confirm;
     confirm.title = l10n::Get(l10n::StringId::EmptyRecycleConfirmTitle);
@@ -213,6 +295,25 @@ void ShowBatchRename(AppState& s) {
     if (!req.new_names.empty()) tab->pending_selected_name = req.new_names.front();
     s.ops.Submit(std::move(req));
 }
+void ShowBatchRenamePaths(AppState& s, const std::vector<std::wstring>& paths) {
+    if (paths.size() < 2) return;
+    const auto result = ui::ShowBatchRenameDialog(s.hwnd, paths, s.darkMode, s.accentColor);
+    if (!result.accepted) return;
+    ops::OpRequest req;
+    req.type = ops::OpType::BatchRename;
+    for (const auto& item : result.items) {
+        if (item.status != app::BatchRenameStatus::Ok) continue;
+        req.sources.push_back(item.source_path);
+        req.new_names.push_back(item.new_name);
+        std::wstring parent = fs::ParentPath(item.source_path);
+        if (!parent.empty() && parent.back() != L'\\') parent += L'\\';
+        s.tray.ReplacePath(item.source_path, parent + item.new_name);
+    }
+    if (req.sources.empty()) return;
+    s.ops.Submit(std::move(req));
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
 void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
     if (!s.operationWindow) return;
     const auto now = std::chrono::steady_clock::now();

@@ -2,6 +2,7 @@
 #include "app_worker.h"
 #include "app_model.h"
 #include "entry_sort.h"
+#include "entry_group.h"
 #include "link_resolve.h"
 #include "../fs/fs_enum.h"
 #include "../fs/fs_recycle.h"
@@ -15,12 +16,16 @@ namespace pulse::app {
 namespace {
 
 std::wstring WorkKey(const std::wstring& path, ui::SortColumn col,
-                     ui::SortDirection dir) {
+                     ui::SortDirection dir, int group_by = 0) {
     std::wstring key = path;
     key.push_back(L'\x1f');
     key += std::to_wstring(static_cast<int>(col));
     key.push_back(L':');
     key += std::to_wstring(static_cast<int>(dir));
+    if (group_by) {
+        key.push_back(L'g');
+        key += std::to_wstring(group_by);
+    }
     return key;
 }
 
@@ -56,10 +61,10 @@ void WorkerPool::Stop() {
 }
 
 uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
-                             ui::SortDirection dir) {
+                             ui::SortDirection dir, int group_by) {
     std::lock_guard<std::mutex> lock(mutex_);
     uint64_t gen = ++global_gen_;
-    const std::wstring key = WorkKey(path, col, dir);
+    const std::wstring key = WorkKey(path, col, dir, group_by);
     current_gen_[key] = gen;
     // Only supersede the same path+sort request. Separate panes may show the
     // same directory with different sort orders.
@@ -69,7 +74,9 @@ uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
         queue_.pop();
     }
     queue_ = std::move(filtered);
-    queue_.push(WorkItem{ path, key, gen, col, dir });
+    WorkItem work{ path, key, gen, col, dir };
+    work.group_by = group_by;
+    queue_.push(std::move(work));
     cv_.notify_one();
     return gen;
 }
@@ -78,10 +85,11 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
                                std::vector<std::wstring> paths,
                                ui::SortColumn col, ui::SortDirection dir,
                                bool preserve_order,
-                               std::vector<uint64_t> display_times) {
+                               std::vector<uint64_t> display_times,
+                               int group_by) {
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t gen = ++global_gen_;
-    const std::wstring key = WorkKey(view_path, col, dir);
+    const std::wstring key = WorkKey(view_path, col, dir, group_by);
     current_gen_[key] = gen;
     std::queue<WorkItem> filtered;
     while (!queue_.empty()) {
@@ -92,6 +100,7 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
     WorkItem item{ view_path, key, gen, col, dir };
     item.load_paths = true;
     item.preserve_order = preserve_order;
+    item.group_by = group_by;
     item.paths = std::move(paths);
     item.display_times = std::move(display_times);
     queue_.push(std::move(item));
@@ -202,6 +211,7 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
     size_t comparisons = 0;
     struct SortCancelled {};
     if (!item.preserve_order) {
+        const ScopedEntryGrouping grouping(item.group_by, item.path);
         try {
             std::sort(entries->begin(), entries->end(),
                 [&](const fs::DirEntry& a, const fs::DirEntry& b) {

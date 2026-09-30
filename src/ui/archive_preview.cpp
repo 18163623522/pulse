@@ -78,6 +78,10 @@ void ArchivePreview::Clear() {
     mix_.clear();
     biggest_.clear();
     filter_.clear();
+    file_count_ = dir_count_ = 0;
+    unpacked_ = 0;
+    any_encrypted_ = false;
+    folder_ = counting_ = false;
     scroll_ = 0.0f;
     hover_ = selected_ = -1;
 }
@@ -115,6 +119,10 @@ bool ArchivePreview::SetPayload(const std::wstring& payload, const std::wstring&
     std::wstring_view all(payload_);
     size_t pos = 0;
     bool header = true;
+    // Folder listings: whole-folder totals (#S row), as rows may be left out.
+    bool summary = false;
+    uint64_t summary_files = 0, summary_dirs = 0, summary_total = 0;
+    std::vector<std::pair<std::wstring, uint64_t>> summary_types;
     std::vector<int> stack;
     while (pos < all.size()) {
         size_t end = all.find(L'\n', pos);
@@ -131,6 +139,24 @@ bool ArchivePreview::SetPayload(const std::wstring& payload, const std::wstring&
             has_packed_ = fields[3] != L"-";
             packed_total_ = to_u64(fields[3]);
             incomplete_ = fields[4] == L"1";
+            counting_ = fields[4] == L"2";
+            folder_ = format_ == L"DIR";
+            continue;
+        }
+        if (fields.size() >= 6 && fields[0] == L"#S") {
+            summary = true;
+            summary_files = to_u64(fields[1]);
+            summary_dirs = to_u64(fields[2]);
+            summary_total = to_u64(fields[3]);
+            std::wstring_view types = fields[5];
+            while (!types.empty()) {
+                const size_t bar = types.find(L'|');
+                const std::wstring_view item = types.substr(0, bar);
+                types = bar == std::wstring_view::npos ? std::wstring_view() : types.substr(bar + 1);
+                const size_t colon = item.find(L':');
+                if (colon == std::wstring_view::npos) continue;
+                summary_types.push_back({std::wstring(item.substr(0, colon)), to_u64(item.substr(colon + 1))});
+            }
             continue;
         }
         if (fields.size() < 6) continue;
@@ -184,6 +210,18 @@ bool ArchivePreview::SetPayload(const std::wstring& payload, const std::wstring&
     }
     for (int r : roots_) unpacked_ += nodes_[r].size;
     std::sort(fam.begin(), fam.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    if (summary) {
+        file_count_ = static_cast<uint32_t>((std::min<uint64_t>)(summary_files, UINT32_MAX));
+        dir_count_ = static_cast<uint32_t>((std::min<uint64_t>)(summary_dirs, UINT32_MAX));
+        unpacked_ = summary_total;
+        fam.clear();
+        for (const auto& [ext, bytes] : summary_types) {
+            const uint32_t f = FamilyColor(ext.empty() ? 0x64748B : TypeChipRgb(ext));
+            auto it = std::find_if(fam.begin(), fam.end(), [&](auto& p) { return p.second == f; });
+            if (it == fam.end()) fam.push_back({bytes, f}); else it->first += bytes;
+        }
+        std::sort(fam.begin(), fam.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    }
     for (auto& [bytes, rgb] : fam)
         mix_.push_back({rgb, bytes, static_cast<int>(FamilyLabel(rgb))});
 
@@ -195,13 +233,34 @@ bool ArchivePreview::SetPayload(const std::wstring& payload, const std::wstring&
     biggest_.assign(files.begin(), files.begin() + top);
 
     // Open the top level; a lone wrapper folder opens one level further.
-    for (int r : roots_) nodes_[r].open = nodes_[r].dir;
-    if (roots_.size() == 1 && nodes_[roots_[0]].dir)
-        for (int k : nodes_[roots_[0]].kids) if (nodes_[k].dir && nodes_[k].kids.size() <= 24) nodes_[k].open = true;
+    // A folder listing starts with its top level collapsed, like the mockup.
+    if (!folder_) {
+        for (int r : roots_) nodes_[r].open = nodes_[r].dir;
+        if (roots_.size() == 1 && nodes_[roots_[0]].dir)
+            for (int k : nodes_[roots_[0]].kids) if (nodes_[k].dir && nodes_[k].kids.size() <= 24) nodes_[k].open = true;
+    }
 
     parsed_ = true;
     RebuildVisible();
     return true;
+}
+
+std::wstring ArchivePreview::SelectedPath() const {
+    if (selected_ < 0 || selected_ >= static_cast<int>(visible_.size())) return {};
+    std::wstring path;
+    for (int i = visible_[selected_]; i >= 0; i = nodes_[i].parent)
+        path = path.empty() ? nodes_[i].name : nodes_[i].name + L"\\" + path;
+    return path;
+}
+
+std::wstring ArchivePreview::StateNote() const {
+    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    if (counting_) return zh ? L"\x7EDF\x8BA1\x4E2D\x2026" : L"Counting\x2026";
+    if (!incomplete_) return {};
+    if (folder_)
+        return zh ? L"\x5DF2\x8FBE\x7EDF\x8BA1\x4E0A\x9650\xFF0C\x6570\x503C\x4E3A\x4E0B\x9650"
+                  : L"Scan limit reached; totals are minimums";
+    return pulse::l10n::Get(StringId::ArcIncomplete);
 }
 
 void ArchivePreview::AppendVisible(int index) {
@@ -445,11 +504,25 @@ float ArchivePreview::DrawHeader(ID2D1DeviceContext* dc, const D2D1_RECT_F& rect
     const float s = scale_;
     const float tile = (large ? 44.0f : 38.0f) * s;
     const D2D1_RECT_F t = R(rect.left, rect.top, rect.left + tile, rect.top + tile);
-    Fill(dc, t, 9.0f * s, HexColor(kArchiveAmber, 0.15f));
-    DrawText(dc, chip_.Get(), format_, t, HexColor(kArchiveAmber), DWRITE_TEXT_ALIGNMENT_CENTER);
-
     const float tx = t.right + 10.0f * s;
     std::wstring title, sub;
+    if (folder_) {
+        // Folder tile: the tree's folder glyph, enlarged.
+        Fill(dc, t, 9.0f * s, HexColor(kFolderGold, 0.15f));
+        const float cx = (t.left + t.right) * 0.5f, cy = (t.top + t.bottom) * 0.5f;
+        const float u = tile / 44.0f;
+        Fill(dc, R(cx - 12.0f * u, cy - 10.0f * u, cx - 1.0f * u, cy - 4.0f * u), 2.0f * u, HexColor(kFolderGold));
+        Fill(dc, R(cx - 12.0f * u, cy - 7.0f * u, cx + 12.0f * u, cy + 9.0f * u), 3.0f * u, HexColor(kFolderGold));
+        Fill(dc, R(cx - 12.0f * u, cy - 3.5f * u, cx + 12.0f * u, cy + 9.0f * u), 3.0f * u, HexColor(0xF5C542));
+        const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+        title = file_name_;
+        sub = std::to_wstring(dir_count_) + L" " + pulse::l10n::Get(StringId::ArcFolders) + L" · " +
+              std::to_wstring(file_count_) + L" " + pulse::l10n::Get(StringId::ArcFiles) + L" · " +
+              (incomplete_ || counting_ ? L"\x2265 " : L"") + pulse::format::ByteSize(unpacked_);
+        if (counting_) sub += zh ? L" \xFF08\x7EDF\x8BA1\x4E2D\x2026\xFF09" : L" (counting\x2026)";
+    } else {
+    Fill(dc, t, 9.0f * s, HexColor(kArchiveAmber, 0.15f));
+    DrawText(dc, chip_.Get(), format_, t, HexColor(kArchiveAmber), DWRITE_TEXT_ALIGNMENT_CENTER);
     if (large) {
         title = file_name_;
         sub = format_ + L" " + pulse::l10n::Get(StringId::ArcArchive) + L" · " +
@@ -460,6 +533,7 @@ float ArchivePreview::DrawHeader(ID2D1DeviceContext* dc, const D2D1_RECT_F& rect
         sub = std::to_wstring(file_count_) + L" " + pulse::l10n::Get(StringId::ArcFiles) + L" · " +
               std::to_wstring(dir_count_) + L" " + pulse::l10n::Get(StringId::ArcFolders) + L" · " +
               pulse::l10n::Get(StringId::ArcUnpacked) + L" " + pulse::format::ByteSize(unpacked_);
+    }
     }
     DrawText(dc, title_.Get(), title, R(tx, t.top, rect.right, t.top + tile * 0.55f), theme.text);
     float sx = tx;
@@ -622,7 +696,10 @@ void ArchivePreview::DrawTree(ID2D1DeviceContext* dc, const D2D1_RECT_F& rect, c
 
         float nameRight = colRight - sizeW - dateW - packedW - 10.0f * s;
         std::wstring suffix;
-        if (n.dir) suffix = Fmt(StringId::ArcItems, static_cast<int>(n.kids.size()));
+        // Folder listings may leave a folder's rows out; its packed column
+        // then carries the item count (folder_listing.h).
+        if (n.dir) suffix = Fmt(StringId::ArcItems, static_cast<int>(folder_ && n.kids.empty()
+                                                                      ? n.packed : n.kids.size()));
         const float suffixW = suffix.empty() ? 0.0f : Measure(small_.Get(), suffix) + 8.0f * s;
         const float nameW = Measure(body_.Get(), n.name);
         const float nameEnd = (std::min)(x + nameW + 2.0f * s, nameRight - suffixW);
@@ -698,10 +775,10 @@ void ArchivePreview::Draw(ID2D1DeviceContext* dc, Compositor* compositor, const 
         Fill(dc, R(r.left, y, r.right, y + 1.0f), 0.0f, theme.stroke_divider);
         y += 4.0f * s;
         float bottom = r.bottom;
-        if (incomplete_ || !filter_.empty()) {
+        if (incomplete_ || counting_ || !filter_.empty()) {
             const std::wstring note = !filter_.empty()
                 ? Fmt2(StringId::ArcMatches, static_cast<int>(filter_hits_), static_cast<int>(file_count_))
-                : std::wstring(pulse::l10n::Get(StringId::ArcIncomplete));
+                : StateNote();
             DrawText(dc, small_.Get(), note, R(r.left, bottom - 18.0f * s, r.right, bottom), theme.text_disabled);
             bottom -= 22.0f * s;
         }
@@ -723,7 +800,11 @@ void ArchivePreview::Draw(ID2D1DeviceContext* dc, Compositor* compositor, const 
     const Card cards[3] = {
         {std::to_wstring(file_count_), pulse::l10n::Get(StringId::ArcFiles), false},
         {std::to_wstring(dir_count_), pulse::l10n::Get(StringId::ArcFolders), false},
-        {pulse::format::ByteSize(unpacked_), pulse::l10n::Get(StringId::ArcUnpacked), true},
+        {(folder_ && (incomplete_ || counting_) ? L"\x2265" : L"") + pulse::format::ByteSize(unpacked_),
+         folder_ ? std::wstring(pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN
+                                    ? L"\x603B\x5927\x5C0F" : L"Total size")
+                 : std::wstring(pulse::l10n::Get(StringId::ArcUnpacked)),
+         !folder_},
     };
     for (int i = 0; i < 3; ++i) {
         const float cx = left.left + i * (cardW + gap);
@@ -741,7 +822,7 @@ void ArchivePreview::Draw(ID2D1DeviceContext* dc, Compositor* compositor, const 
         }
     }
     y += cardH + 6.0f * s;
-    if (unpacked_ > 0) {
+    if (unpacked_ > 0 && !folder_) {
         const uint64_t packed = has_packed_ ? packed_total_ : file_size_;
         const int pct = static_cast<int>(std::lround(100.0 * (std::min)(1.0, static_cast<double>(packed) / unpacked_)));
         DrawText(dc, small_.Get(), Fmt(StringId::ArcRatio, pct), R(left.left, y, left.right, y + 18.0f * s), theme.text_disabled,
@@ -782,8 +863,8 @@ void ArchivePreview::Draw(ID2D1DeviceContext* dc, Compositor* compositor, const 
     std::wstring left_note;
     if (!filter_.empty())
         left_note = Fmt2(StringId::ArcMatches, static_cast<int>(filter_hits_), static_cast<int>(file_count_));
-    else if (incomplete_)
-        left_note = pulse::l10n::Get(StringId::ArcIncomplete);
+    else if (incomplete_ || counting_)
+        left_note = StateNote();
     else
         left_note = std::to_wstring(file_count_) + L" " + pulse::l10n::Get(StringId::ArcFiles) + L" · " +
                     std::to_wstring(dir_count_) + L" " + pulse::l10n::Get(StringId::ArcFolders);

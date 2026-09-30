@@ -1,6 +1,7 @@
 // app_prefs.h — General app settings (startup, close-to-tray).
 #pragma once
 #include "folder_view_prefs.h"
+#include "entry_group.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -26,7 +27,10 @@ struct AppPrefs {
     bool sidebar_collapsed = false;   // sidebar folded to its icon rail (Ctrl+B)
     // 0 folders first, 1 follow the sort direction, 2 mixed with files
     int folder_sort_mode = 0;
+    // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
+    int text_render = 0;
     FolderViewPrefs folder_views;
+    FolderGroupPrefs folder_groups;
     bool search_pinyin = true;
     bool global_search_enabled = false;
     uint32_t global_search_modifiers = 1; // MOD_ALT
@@ -52,6 +56,9 @@ struct AppPrefs {
     bool address_search_current = false;
     bool address_search_content = false;
     int tray_icon_size = 48; // staging-tray deck icon edge in DIPs (32..64)
+    // Interaction hints: status-bar context hints + one-time teaching tips.
+    bool show_hints = true;
+    uint32_t tips_seen = 0; // bit per app::TeachTip already shown or dismissed
     // Empty = theme default, or Windows when explicitly selected.
     std::wstring accent_rgb;
     bool accent_follow_system = false;
@@ -63,6 +70,7 @@ struct AppPrefs {
     std::wstring duplicate_scan_drive;
     // Version that last ran with these prefs; drives the one-time "updated" toast.
     std::wstring last_seen_version;
+    std::wstring tray_dests; // staging tray: recent drop folders, newest first, '|'-joined (max 3)
     bool had_file = false; // runtime only: app.json existed when Load() ran
 
     void ResetToDefaults();

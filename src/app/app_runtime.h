@@ -47,6 +47,17 @@ inline app::Tab* ActiveTab(AppState& s) {
 
 void PrefetchDetailsMeta(HWND hwnd, const std::wstring& path);
 void RememberLayoutFocus(AppState& s);
+
+// Clickable follow-up shown at the end of the status-bar context hint.
+enum class StatusHintAction : int { None = 0, Tray, Compare, DiffOnly, ShowAll, Advanced, Shortcuts,
+                                    OpenPath, SearchSubfolders };
+// Re-runs the active tab's pane filter as a search of the folder and its subfolders.
+void SearchFilterInSubfolders(AppState& s);
+StatusHintAction CurrentStatusHintAction(AppState& s);
+// Teaching bubbles: evaluate triggers (UI timer); returns true when a repaint is needed.
+bool UpdateTeachTip(AppState& s);
+// Bubble buttons: 0 = Got it / Try it, 1 = close, 2 = don't show tips.
+void HandleTeachButton(AppState& s, int button);
 std::vector<std::wstring> VisibleFolderPaths(const AppState& s);
 void SyncVisibleWatches(AppState& s);
 void BindCurrentLayout(AppState& s);

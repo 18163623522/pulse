@@ -140,6 +140,8 @@ std::vector<ui::FluentMenuItem> BuildRecycleBackgroundMenu(bool can_undo,
     std::vector<ui::FluentMenuItem> items;
     items.push_back(Item(CmdEmptyRecycle, l10n::Get(l10n::StringId::EmptyRecycleBin).c_str(),
                          kGlyphRecycle, nullptr, can_empty));
+    items.push_back(Item(CmdRestoreAllRecycle, l10n::Get(l10n::StringId::RestoreAll).c_str(),
+                         kGlyphUndo, nullptr, can_empty));
     items.back().separator_after = true;
     items.push_back(UndoItem(can_undo, undo_label));
     return items;
@@ -242,6 +244,33 @@ ui::FluentMenuItem BuildShortcutHints() {
     return Item(CmdShortcutHelp, l10n::Get(l10n::StringId::ShortcutHints).c_str(), L"\xE946");
 }
 
+ui::FluentMenuItem BuildGroupMenu(const BackgroundViewOptions& options) {
+    auto group = Item(CmdNone, l10n::Get(l10n::StringId::GroupBy).c_str(), L"\xF168",
+                      nullptr, options.can_group);
+    struct GroupRow { int command; int value; l10n::StringId label; };
+    constexpr GroupRow rows[] = {
+        { CmdGroupName, 1, l10n::StringId::GroupByName },
+        { CmdGroupDate, 2, l10n::StringId::GroupByDate },
+        { CmdGroupType, 3, l10n::StringId::GroupByType },
+        { CmdGroupSize, 4, l10n::StringId::GroupBySize },
+        { CmdGroupTag, 5, l10n::StringId::GroupByTag },
+        { CmdGroupLocation, 6, l10n::StringId::Location },
+        { CmdGroupNone, 0, l10n::StringId::GroupNone },
+    };
+    // Tags need one parent folder; Location only makes sense across folders.
+    const int hidden = options.group_virtual ? 5 : 6;
+    const int last = options.group_virtual ? 6 : 5;
+    for (const auto& row : rows) {
+        if (row.value == hidden) continue;
+        auto child = Item(row.command, l10n::Get(row.label).c_str(), L"", nullptr, options.can_group);
+        child.radio_group = true;
+        child.radio = options.can_group && options.group_by == row.value;
+        if (row.value == last) child.separator_after = true;
+        group.children.push_back(std::move(child));
+    }
+    return group;
+}
+
 void AppendBackgroundViewCommands(std::vector<ui::FluentMenuItem>& items,
                                   const BackgroundViewOptions& options) {
     auto view = Item(CmdNone, l10n::Get(l10n::StringId::View).c_str(), L"\xE8A9");
@@ -250,7 +279,11 @@ void AppendBackgroundViewCommands(std::vector<ui::FluentMenuItem>& items,
     sort.children = BuildSortMenu(options);
     auto refresh = Item(CmdRefresh, l10n::Get(l10n::StringId::Refresh).c_str(), L"\xE72C", L"F5");
     refresh.separator_after = true;
-    items.insert(items.begin(), { std::move(view), std::move(sort), std::move(refresh) });
+    if (options.can_group)
+        items.insert(items.begin(), { std::move(view), std::move(sort), BuildGroupMenu(options),
+                                      std::move(refresh) });
+    else
+        items.insert(items.begin(), { std::move(view), std::move(sort), std::move(refresh) });
     if (options.filesystem) {
         if (!items.empty()) items.back().separator_after = true;
         items.push_back(Item(CmdFolderProperties,

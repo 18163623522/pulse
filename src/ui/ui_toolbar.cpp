@@ -48,6 +48,16 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                     DrawIconText(chX, addrRc.top, 14.0f * scale_, addrRc.bottom - addrRc.top,
                         kIconChevronRight, L">", theme.text_secondary, 0.55f);
                 }
+                const bool search_crumb = vm.pane.is_query_search && vm.pane.has_search_origin &&
+                    i + 1 == placed.size();
+                if (search_crumb && (int)i != vm.breadcrumb_hover && (int)i != vm.breadcrumb_drop) {
+                    auto tint = theme.accent;
+                    tint.a *= 0.16f;
+                    ComPtr<ID2D1SolidColorBrush> tint_brush;
+                    dc->CreateSolidColorBrush(tint, &tint_brush);
+                    if (tint_brush.get()) FillRoundedRect(dc, tint_brush.get(), seg.rc.left, seg.rc.top,
+                        seg.rc.right - seg.rc.left, seg.rc.bottom - seg.rc.top, theme.radius_control * scale_);
+                }
                 MakeBrush(dc, theme.text, brText_);
                 // Width measured exactly; let the ink use the right padding as slack
                 // so the trailing glyph is not shaved by the clip rect.
@@ -87,7 +97,22 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
         DrawButton(layout.commands[i],theme,enabled && IsHovered(vm,hits[i]) ? theme.fill_hover :
             selected ? theme.fill_selected : kTransparent,
             i==5 ? L"" : glyphs[i],L"",!enabled ? theme.text_disabled : selected ? theme.accent : theme.text_secondary,true,true);
-        if (i==5) DrawPaneHeaderIcon(layout.commands[i],PaneHeaderIcon::Split,selected ? theme.accent : theme.text_secondary);
+        if (i==5) {
+            // The split button shows the current layout (1 / 2 side by side /
+            // 2 stacked / 3 / 4). A pane count that does not match the preset
+            // (a custom split) is described from the pane rectangles instead.
+            constexpr int kPaneCount[]={1,2,2,3,4};
+            int preset=std::clamp(vm.layout_preset,0,4);
+            const int panes=static_cast<int>(vm.pane_slots.size());
+            if (panes>0 && kPaneCount[preset]!=panes) {
+                if (panes==1) preset=0;
+                else if (panes==2) preset=vm.pane_slots[1].rect.top>=vm.pane_slots[0].rect.bottom-1.0f ? 2 : 1;
+                else preset=panes==3 ? 3 : 4;
+            }
+            constexpr PaneHeaderIcon kIcons[]={PaneHeaderIcon::SplitSingle,PaneHeaderIcon::Split,
+                PaneHeaderIcon::SplitStacked,PaneHeaderIcon::SplitThree,PaneHeaderIcon::SplitFour};
+            DrawPaneHeaderIcon(layout.commands[i],kIcons[preset],selected ? theme.accent : theme.text_secondary);
+        }
         if (i==7) DrawPaneHeaderIcon(layout.commands[i],PaneHeaderIcon::Columns,selected ? theme.accent : theme.text_secondary);
     }
     if (layout.overflow.right > layout.overflow.left) {
@@ -128,6 +153,44 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
             DrawButton(FilterClearRect(rect,vm.pane.filter_expand),theme,
                 IsHovered(vm,HitTestResult::FilterClear) ? theme.fill_hover : kTransparent,
                 L"\xE711",L"",theme.text_secondary,true,true,0.65f);
+        }
+    }
+    // "Group" sits with Sort and Filter so grouping is findable and, once on,
+    // always visible: the chip names the grouping and its x switches it off.
+    if (layout.group.right > layout.group.left) {
+        const D2D1_RECT_F g=layout.group;
+        const bool icon_only=g.right-g.left < 60*scale_;
+        if (toolbar_group_ <= 0) {
+            command(g,L"\xF168",l10n::StringId::ToolbarGroup,HitTestResult::ToolbarGroup,true);
+        } else if (icon_only) {
+            DrawButton(g,theme,IsHovered(vm,HitTestResult::ToolbarGroup) ? theme.fill_hover : theme.fill_selected,
+                L"\xF168",L"",theme.accent,true,true);
+        } else {
+            const float radius=(g.bottom-g.top)*0.5f;
+            D2D1_COLOR_F fill=theme.accent;
+            fill.a*=IsHovered(vm,HitTestResult::ToolbarGroup) ? 0.26f : 0.16f;
+            painter_.FillRoundedRect(g,radius,fill);
+            DrawIconText(g.left+6*scale_,g.top,24*scale_,g.bottom-g.top,L"\xF168",L"",theme.accent,0.8f);
+            const D2D1_RECT_F x=ToolbarGroupClearRect(g,scale_);
+            if (IsHovered(vm,HitTestResult::ToolbarGroupClear)) {
+                D2D1_COLOR_F xf=theme.accent;
+                xf.a*=0.28f;
+                painter_.FillRoundedRect(x,(x.bottom-x.top)*0.5f,xf);
+            }
+            DrawIconText(x.left,x.top,x.right-x.left,x.bottom-x.top,kIconCloseSmall,L"x",theme.accent,0.5f);
+            constexpr l10n::StringId names[]={l10n::StringId::GroupByName,l10n::StringId::GroupByDate,
+                l10n::StringId::GroupByType,l10n::StringId::GroupBySize,l10n::StringId::GroupByTag,
+                l10n::StringId::Location};
+            std::wstring group_label=l10n::Get(l10n::StringId::ToolbarGroupActive);
+            const size_t at=group_label.find(L"{g}");
+            if (at!=std::wstring::npos)
+                group_label.replace(at,3,l10n::Get(names[std::clamp(toolbar_group_,1,6)-1]));
+            const D2D1_RECT_F text_rc=D2D1::RectF(g.left+30*scale_,g.top,x.left-2*scale_,g.bottom);
+            if (IDWriteFactory2* f=compositor_->DwriteFactory()) {
+                group_label=FitEndEllipsis(group_label,std::max(0.0f,text_rc.right-text_rc.left),
+                    [&](const std::wstring& t){ return MeasureTextWidth(f,compositor_->TextFormat(),t); });
+            }
+            painter_.DrawText(group_label,text_rc,compositor_->TextFormat(),theme.accent);
         }
     }
 }

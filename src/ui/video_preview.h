@@ -24,18 +24,34 @@ public:
         uint32_t stepped_frames = 0; // successful steps since the last seek/play
         HRESULT error = S_OK;
         HRESULT control_error = S_OK;
+        float volume = 1.0f;  // requested (applied once the item is ready)
+        bool muted = false;
+        float rate = 1.0f;    // actual rate after the last SetRate
+        // The video track's format has no installed decoder (e.g. HEVC without
+        // the Store extension): MFPlay would only play the sound.
+        bool missing_decoder = false;
+        std::wstring codec;       // short name ("HEVC"), set with missing_decoder
+        std::wstring codec_name;  // display name ("HEVC (H.265)")
+        const wchar_t* store_id = nullptr;  // Microsoft Store extension, if any
     };
     VideoPreview() = default;
     ~VideoPreview();
     VideoPreview(const VideoPreview&) = delete;
     VideoPreview& operator=(const VideoPreview&) = delete;
+    // Video and audio files MFPlay can open; audio-only files never show the
+    // video child window (the Quick Look draws cover art and a waveform).
     static bool Supports(const std::wstring& path);
+    static bool IsAudio(const std::wstring& path);
     void Open(HWND owner, const std::wstring& path);
     void Reset();
-    void Layout(const RECT& bounds, bool visible);
+    // corner_radius > 0 clips the video window to a rounded rectangle.
+    void Layout(const RECT& bounds, bool visible, int corner_radius = 0);
     void Play(bool playing);
     void Seek(double fraction);
     void Step();
+    void SetVolume(float volume);  // 0..1
+    void SetMuted(bool muted);
+    void SetRate(float rate);
     State Snapshot() const;
     bool active() const noexcept { return state_ != nullptr; }
 private:
@@ -44,6 +60,8 @@ private:
     static LRESULT CALLBACK VideoProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
     std::shared_ptr<Shared> state_;
     HWND child_ = nullptr;
+    SIZE region_size_{};
+    int region_radius_ = 0;
 };
 
 } // namespace pulse::ui

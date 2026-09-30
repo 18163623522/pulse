@@ -8,9 +8,11 @@
 #include "../ops/clipboard.h"
 #include "fluent_components.h"
 #include "lumatext_renderer.h"
+#include "syntax_highlight.h"
 #include "typography.h"
 #include "ui_motion.h"
 #include <dwmapi.h>
+#include <shellapi.h>
 
 #include <commctrl.h>
 #include <d2d1helper.h>
@@ -33,6 +35,21 @@ constexpr float kCloseButtonWidth = 46.0f;
 constexpr float kChromeButtonWidth = 40.0f;   // prev / next / more, left of close
 constexpr float kCloseGlyphSize = 16.0f * 0.66f;
 constexpr float kFindBarHeight = 44.0f;
+// Rollback switch: false shows Markdown as highlighted source only (no host
+// rich-text request, no Rendered | Source pill).
+constexpr bool kMarkdownRender = true;
+// Rollback switch: false shows CSV as text and XLSX through the system preview
+// handler instead of the table grid.
+constexpr bool kTableView = true;
+// Rollback switch: false shows JSON/XML as highlighted source (no tree view).
+constexpr bool kTreeView = true;
+// Rollback switch: false leaves DOCX to the system preview handler and EPUB
+// unpreviewed (no host document conversion).
+constexpr bool kDocView = true;
+// Rollback switch: false keeps animated WebP / APNG still, .ico/.cur without
+// size pills and HEIF / AVIF without the codec card.
+constexpr bool kImageExtras = true;
+constexpr UINT_PTR kTableTipTimer = 73;
 constexpr float kHudHeight = 28.0f;
 constexpr UINT_PTR kAnimationTimer = 7;
 constexpr UINT_PTR kFindEditCaretTimer = 71;
@@ -60,6 +77,7 @@ enum {
     kTextCmdCopy = 1,
     kTextCmdSelectAll,
     kTextCmdFind,
+    kTextCmdLineNumbers,
     kFileCmdBase = 100,  // + static_cast<int>(QuickPreviewAction)
 };
 
@@ -70,6 +88,32 @@ std::wstring ExtensionLabel(const std::wstring& path) {
     std::wstring ext = path.substr(dot + 1);
     for (wchar_t& c : ext) c = static_cast<wchar_t>(std::towupper(c));
     return ext;
+}
+
+// 1: CSV family drawn as a grid; 2: workbook (grid or system preview handler).
+int TableFileKind(const std::wstring& path) {
+    const std::wstring ext = ExtensionLabel(path);
+    if (ext == L"CSV" || ext == L"TSV" || ext == L"TAB" || ext == L"PSV") return 1;
+    if (ext == L"XLSX" || ext == L"XLSM") return 2;
+    return 0;
+}
+
+bool IsIconFile(const std::wstring& path) {
+    const std::wstring ext = ExtensionLabel(path);
+    return ext == L"ICO" || ext == L"CUR";
+}
+
+// Word documents the host converts to the block payload ("Document | System").
+bool IsDocxFile(const std::wstring& path) {
+    const std::wstring ext = ExtensionLabel(path);
+    return ext == L"DOCX" || ext == L"DOCM" || ext == L"DOTX";
+}
+
+// 12,480: digits grouped for the status pill.
+std::wstring GroupedNumber(uint32_t value) {
+    std::wstring digits = std::to_wstring(value);
+    for (int at = static_cast<int>(digits.size()) - 3; at > 0; at -= 3) digits.insert(static_cast<size_t>(at), 1, L',');
+    return digits;
 }
 
 COLORREF FindEditBgColor(bool dark) noexcept {
@@ -119,6 +163,7 @@ bool QuickPreviewWindow::Initialize(HWND owner, UINT navigate_message, UINT open
     navigate_message_ = navigate_message;
     open_message_ = open_message;
     command_message_ = command_message;
+    thumbnails_.SetQuickLookContent(kMarkdownRender || kTableView || kTreeView || kDocView);
     WNDCLASSEXW window_class{sizeof(window_class)};
     window_class.hInstance = GetModuleHandleW(nullptr);
     window_class.style = CS_DBLCLKS;
@@ -157,7 +202,13 @@ void QuickPreviewWindow::ResetView() {
     source_w_ = source_h_ = 0;
     native_kind_ = NativeKind::None;
     archive_.Clear();
+    markdown_.Clear();
+    table_.Clear();
+    tree_.Clear();
     panning_ = false;
+    waveform_.Reset();
+    audio_wave_rect_ = {};
+    ResetPages();
     ResetTextState();
 }
 
@@ -186,6 +237,14 @@ void QuickPreviewWindow::RecreateFormats() {
         preview_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         preview_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
         preview_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    }
+    gutter_format_.reset();
+    typography::CreateTextFormat(compositor_.DwriteFactory(),
+        {typography::FontRole::Monospace, 13.0f * scale_}, &gutter_format_);
+    if (gutter_format_.get()) {
+        gutter_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+        gutter_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        gutter_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
     find_painter_.SetCompositor(&compositor_);
     find_painter_.SetScale(scale_);
@@ -227,6 +286,7 @@ void QuickPreviewWindow::Show(const QuickPreviewItem& item, bool dark, WindowEff
     ++generation_;
     ResetView();
     ResetAnimation();
+    icon_request_ = 0; icon_sizes_.clear(); icon_selected_ = -1; icon_pill_rects_.clear();
     BeginVideo();
     RECT owner_rect{};
     GetWindowRect(owner_, &owner_rect);
@@ -269,6 +329,7 @@ void QuickPreviewWindow::Update(const QuickPreviewItem& item) {
     handler_immediate_ = false;
     ResetView();
     ResetAnimation();
+    icon_request_ = 0; icon_sizes_.clear(); icon_selected_ = -1; icon_pill_rects_.clear();
     handler_.Reset();
     BeginVideo();
     SetWindowTextW(hwnd_, item_.name.empty()
@@ -334,7 +395,7 @@ void QuickPreviewWindow::Resize() {
 
 float QuickPreviewWindow::FindBarHeight() const noexcept {
     return find_open_ && (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
-                          native_kind_ == NativeKind::Archive)
+                          native_kind_ == NativeKind::Archive || native_kind_ == NativeKind::Markdown)
         ? kFindBarHeight * scale_ : 0.0f;
 }
 
@@ -381,6 +442,95 @@ D2D1_RECT_F QuickPreviewWindow::ChromeButtonRect(ChromeButton button) const {
     default: return D2D1::RectF(0, 0, 0, 0);
     }
     return D2D1::RectF(right - slot, 0, right, header);
+}
+
+D2D1_RECT_F QuickPreviewWindow::MarkdownToggleRect(int segment) const {
+    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    const float inner = 2.0f * scale_;
+    float w0 = zh ? 46.0f : 52.0f;  // "表格" / "Table"
+    if (toggle_kind_ == ToggleKind::Markdown) w0 = zh ? 46.0f : 68.0f;
+    else if (toggle_kind_ == ToggleKind::TreeSource) w0 = zh ? 40.0f : 48.0f;
+    else if (toggle_kind_ == ToggleKind::NotebookSource) w0 = zh ? 58.0f : 72.0f;
+    else if (toggle_kind_ == ToggleKind::DocHandler) w0 = zh ? 46.0f : 76.0f;
+    w0 *= scale_;
+    const bool handler_pill = toggle_kind_ == ToggleKind::TableHandler || toggle_kind_ == ToggleKind::DocHandler;
+    const float w1 = (handler_pill ? (zh ? 70.0f : 64.0f)
+                                                               : (zh ? 46.0f : 58.0f)) * scale_;
+    const float height = 24.0f * scale_;
+    const float top = (kTitleBarHeight * scale_ - height) * 0.5f;
+    const float right = ChromeButtonRect(ChromeButton::Prev).left - 6.0f * scale_;
+    const float left = right - w0 - w1 - inner * 2.0f;
+    if (segment == 0)
+        return D2D1::RectF(left + inner, top + inner, left + inner + w0, top + height - inner);
+    if (segment == 1)
+        return D2D1::RectF(left + inner + w0, top + inner, right - inner, top + height - inner);
+    return D2D1::RectF(left, top, right, top + height);
+}
+
+bool& QuickPreviewWindow::ToggleSecond() noexcept {
+    switch (toggle_kind_) {
+    case ToggleKind::TableSource: return table_source_;
+    case ToggleKind::TableHandler: return table_handler_;
+    case ToggleKind::TreeSource: return tree_source_;
+    case ToggleKind::NotebookSource: return notebook_source_;
+    case ToggleKind::DocHandler: return doc_handler_;
+    default: return markdown_source_;
+    }
+}
+
+int QuickPreviewWindow::HitMarkdownToggle(POINT client) const {
+    if (!markdown_shown_) return -1;
+    const D2D1_RECT_F pill = MarkdownToggleRect(-1);
+    const float x = static_cast<float>(client.x), y = static_cast<float>(client.y);
+    if (x < pill.left || x >= pill.right || y < pill.top || y >= pill.bottom) return -1;
+    return x < MarkdownToggleRect(0).right ? 0 : 1;
+}
+
+void QuickPreviewWindow::DrawMarkdownToggle(ID2D1DeviceContext* dc,
+                                            ID2D1SolidColorBrush* text_brush) {
+    IDWriteTextFormat* format = compositor_.SmallFormat();
+    if (!dc || !text_brush || !format) return;
+    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    const wchar_t* labels[2] = {zh ? L"\x6E32\x67D3" : L"Rendered", zh ? L"\x6E90\x7801" : L"Source"};
+    if (toggle_kind_ == ToggleKind::TableSource || toggle_kind_ == ToggleKind::TableHandler)
+        labels[0] = zh ? L"\x8868\x683C" : L"Table";
+    else if (toggle_kind_ == ToggleKind::TreeSource)
+        labels[0] = zh ? L"\x6811" : L"Tree";
+    else if (toggle_kind_ == ToggleKind::NotebookSource)
+        labels[0] = zh ? L"\x7B14\x8BB0\x672C" : L"Notebook";
+    else if (toggle_kind_ == ToggleKind::DocHandler)
+        labels[0] = zh ? L"\x6B63\x6587" : L"Document";
+    if (toggle_kind_ == ToggleKind::TableHandler || toggle_kind_ == ToggleKind::DocHandler)
+        labels[1] = zh ? L"\x7CFB\x7EDF\x9884\x89C8" : L"System";
+    D2D1_COLOR_F color = text_brush->GetColor();
+    ComPtr<ID2D1SolidColorBrush> track, thumb, dim;
+    color.a = dark_ ? 0.08f : 0.06f;
+    dc->CreateSolidColorBrush(color, &track);
+    color.a = 0.62f;
+    dc->CreateSolidColorBrush(color, &dim);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0xFFFFFF, 0.14f) : D2D1::ColorF(0xFFFFFF, 1.0f),
+                              &thumb);
+    const D2D1_RECT_F pill = MarkdownToggleRect(-1);
+    const float radius = (pill.bottom - pill.top) * 0.5f;
+    if (track.get()) dc->FillRoundedRectangle(D2D1::RoundedRect(pill, radius, radius), track.get());
+    const int active = ToggleSecond() ? 1 : 0;
+    const D2D1_RECT_F knob = MarkdownToggleRect(active);
+    const float knob_radius = (knob.bottom - knob.top) * 0.5f;
+    if (thumb.get()) dc->FillRoundedRectangle(D2D1::RoundedRect(knob, knob_radius, knob_radius), thumb.get());
+    if (!dark_ && track.get())
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(knob, knob_radius, knob_radius), track.get(), 1.0f);
+    const auto text_alignment = format->GetTextAlignment();
+    const auto paragraph_alignment = format->GetParagraphAlignment();
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    for (int i = 0; i < 2; ++i) {
+        ID2D1SolidColorBrush* brush = i == active || !dim.get() ? text_brush : dim.get();
+        dc->DrawTextW(labels[i], static_cast<UINT32>(wcslen(labels[i])), format,
+                      MarkdownToggleRect(i), brush, D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                      DWRITE_MEASURING_MODE_NATURAL);
+    }
+    format->SetTextAlignment(text_alignment);
+    format->SetParagraphAlignment(paragraph_alignment);
 }
 
 QuickPreviewWindow::ChromeButton QuickPreviewWindow::HitChromeButton(POINT client) const {
@@ -514,6 +664,98 @@ uint32_t QuickPreviewWindow::RequestedPixelSize(const D2D1_RECT_F& content) cons
     return ipc::BucketPreviewPixelSize(static_cast<uint32_t>((std::max)(1.0f, longest)));
 }
 
+// PULSEICO payload from the host (preview_host/image_frames.h).
+void QuickPreviewWindow::ParseIconSizes(const std::wstring& payload) {
+    if (payload.rfind(L"PULSEICO\t1\n", 0) != 0) return;
+    std::vector<IconSize> sizes;
+    int selected = -1;
+    size_t pos = payload.find(L'\n') + 1;
+    while (pos < payload.size()) {
+        size_t end = payload.find(L'\n', pos);
+        if (end == std::wstring::npos) end = payload.size();
+        const std::wstring line = payload.substr(pos, end - pos);
+        pos = end + 1;
+        if (line.rfind(L"S\t", 0) == 0) {
+            selected = _wtoi(line.c_str() + 2);
+        } else if (line.rfind(L"E\t", 0) == 0 && sizes.size() < 64) {
+            IconSize size;
+            const wchar_t* p = line.c_str() + 2;
+            wchar_t* next = nullptr;
+            size.width = static_cast<uint32_t>(wcstoul(p, &next, 10));
+            if (next && *next == L'\t') size.height = static_cast<uint32_t>(wcstoul(next + 1, &next, 10));
+            if (next && *next == L'\t') size.bits = static_cast<uint32_t>(wcstoul(next + 1, &next, 10));
+            if (next && *next == L'\t') size.png = next[1] == L'1';
+            sizes.push_back(size);
+        }
+    }
+    icon_sizes_ = std::move(sizes);
+    icon_selected_ = selected >= 0 && selected < static_cast<int>(icon_sizes_.size()) ? selected : -1;
+}
+
+// Size pills centred above the HUD; the shown size is highlighted and names
+// its format ("256 · PNG"). Only clicks pick a size: ← / → still change files.
+void QuickPreviewWindow::DrawIconSizes(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
+                                       ID2D1SolidColorBrush* brush) {
+    icon_pill_rects_.clear();
+    IDWriteTextFormat* format = compositor_.SmallFormat();
+    auto* factory = compositor_.DwriteFactory();
+    if (!dc || !brush || !format || !factory || icon_sizes_.size() < 1) return;
+    const float s = scale_;
+    std::vector<std::wstring> labels;
+    float total = 0.0f;
+    std::vector<float> widths;
+    for (size_t i = 0; i < icon_sizes_.size(); ++i) {
+        const IconSize& size = icon_sizes_[i];
+        std::wstring label = size.width == size.height ? std::to_wstring(size.width)
+            : std::to_wstring(size.width) + L"\x00D7" + std::to_wstring(size.height);
+        if (static_cast<int>(i) == icon_selected_) {
+            if (size.png) label += L" \x00B7 PNG";
+            else if (size.bits) label += L" \x00B7 " + std::to_wstring(size.bits) + L"-bit";
+        }
+        const float w = typography::MeasureAdvance(factory, format, label) + 20.0f * s;
+        widths.push_back(w);
+        total += w;
+        labels.push_back(std::move(label));
+    }
+    const float gap = 6.0f * s, h = 22.0f * s;
+    total += gap * static_cast<float>(labels.size() - 1);
+    if (total > content.right - content.left - 24.0f * s) return;  // too narrow: the HUD still names the size
+    const float bottom = content.bottom - kHudHeight * s - 12.0f * s;
+    float x = std::round((content.left + content.right - total) * 0.5f);
+    const float y = std::round(bottom - h);
+    ComPtr<ID2D1SolidColorBrush> pill, accent, on_accent;
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x2B2B2B, 0.92f) : D2D1::ColorF(0xF3F3F3, 0.95f), &pill);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x60CDFF) : D2D1::ColorF(0x005FB8), &accent);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x062030) : D2D1::ColorF(0xFFFFFF), &on_accent);
+    const auto text_alignment = format->GetTextAlignment();
+    const auto paragraph_alignment = format->GetParagraphAlignment();
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    for (size_t i = 0; i < labels.size(); ++i) {
+        const D2D1_RECT_F r = D2D1::RectF(x, y, x + widths[i], y + h);
+        icon_pill_rects_.push_back(r);
+        const bool on = static_cast<int>(i) == icon_selected_;
+        ID2D1SolidColorBrush* fill = on ? accent.get() : pill.get();
+        if (fill) dc->FillRoundedRectangle(D2D1::RoundedRect(r, h * 0.5f, h * 0.5f), fill);
+        ID2D1SolidColorBrush* ink = on && on_accent.get() ? on_accent.get() : brush;
+        dc->DrawTextW(labels[i].data(), static_cast<UINT32>(labels[i].size()), format, r, ink,
+                      D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+        x += widths[i] + gap;
+    }
+    format->SetTextAlignment(text_alignment);
+    format->SetParagraphAlignment(paragraph_alignment);
+}
+
+int QuickPreviewWindow::HitIconSize(POINT client) const {
+    if (native_kind_ != NativeKind::Bitmap) return -1;
+    const float x = static_cast<float>(client.x), y = static_cast<float>(client.y);
+    for (size_t i = 0; i < icon_pill_rects_.size(); ++i) {
+        const D2D1_RECT_F& r = icon_pill_rects_[i];
+        if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 void QuickPreviewWindow::DrawHud(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
                                  ID2D1SolidColorBrush* text_brush) {
     if (!dc || native_kind_ != NativeKind::Bitmap || decoded_w_ == 0) return;
@@ -573,26 +815,66 @@ void QuickPreviewWindow::EnsureTextLayout(const std::wstring& text, bool hex, fl
         text_layout_.reset();
         return;
     }
+    const std::wstring extension = L"." + ExtensionLabel(item_.path);
+    const bool gutter = !hex && line_numbers_ && SyntaxWantsLineNumbers(extension);
     if (text_layout_.get() && text == preview_text_ && hex == text_layout_hex_ &&
         std::abs(width - text_layout_width_) < 0.5f &&
-        std::abs(scale_ - text_layout_scale_) < 0.001f) return;
+        std::abs(scale_ - text_layout_scale_) < 0.001f && dark_ == text_layout_dark_ &&
+        gutter == (text_gutter_ > 0.0f)) return;
     preview_text_ = text;
     text_layout_.reset();
     preview_text_format_->SetWordWrapping(
         hex ? DWRITE_WORD_WRAPPING_NO_WRAP : DWRITE_WORD_WRAPPING_WRAP);
+    text_line_count_ = 1;
+    for (const wchar_t c : text) if (c == L'\n') ++text_line_count_;
+    if (!text.empty() && text.back() == L'\n') --text_line_count_;
+    line_starts_.clear();
+    text_gutter_ = 0.0f;
+    if (gutter) {
+        line_starts_.reserve(text_line_count_);
+        line_starts_.push_back(0);
+        for (size_t i = 0; i + 1 < text.size(); ++i)
+            if (text[i] == L'\n') line_starts_.push_back(static_cast<uint32_t>(i + 1));
+        float digit = 8.0f * scale_;
+        ComPtr<IDWriteTextLayout> probe;
+        if (SUCCEEDED(compositor_.DwriteFactory()->CreateTextLayout(L"0000000000", 10,
+                preview_text_format_.get(), 1000.0f, 100.0f, &probe)) && probe.get()) {
+            DWRITE_TEXT_METRICS metrics{};
+            if (SUCCEEDED(probe->GetMetrics(&metrics))) digit = metrics.width / 10.0f;
+        }
+        const size_t digits = std::to_wstring(line_starts_.size()).size();
+        text_gutter_ = (static_cast<float>((std::max)(digits, size_t{2})) + 2.0f) * digit;
+    }
     compositor_.DwriteFactory()->CreateTextLayout(
         text.data(), static_cast<UINT32>(text.size()), preview_text_format_.get(),
-        (std::max)(1.0f, width), 100000.0f, &text_layout_);
+        (std::max)(1.0f, width - text_gutter_), 100000.0f, &text_layout_);
+    syntax_language_ = hex ? std::wstring() : std::wstring(SyntaxLanguageName(extension));
+    if (!hex && text_layout_.get() && compositor_.Dc()) {
+        for (auto& brush : syntax_brushes_) brush.reset();
+        const auto spans = HighlightSyntax(extension, text);
+        for (const SyntaxSpan& span : spans) {
+            const auto index = static_cast<size_t>(span.token);
+            if (index == 0 || index >= std::size(syntax_brushes_)) continue;
+            if (!syntax_brushes_[index].get())
+                compositor_.Dc()->CreateSolidColorBrush(
+                    D2D1::ColorF(SyntaxTokenRgb(span.token, dark_)), &syntax_brushes_[index]);
+            if (syntax_brushes_[index].get())
+                text_layout_->SetDrawingEffect(syntax_brushes_[index].get(),
+                                               DWRITE_TEXT_RANGE{span.start, span.length});
+        }
+    }
+    text_layout_dark_ = dark_;
     text_layout_width_ = width;
     text_layout_scale_ = scale_;
     text_layout_hex_ = hex;
 }
 
 bool QuickPreviewWindow::HitTestText(float x, float y, uint32_t& index) {
+    if (native_kind_ == NativeKind::Markdown) return markdown_.HitTest(x, y, index);
     if (!text_layout_.get()) return false;
     const D2D1_RECT_F content = ContentRect();
     const float pad = 20.0f * scale_;
-    const float origin_x = pad;
+    const float origin_x = TextOriginX();
     const float origin_y = content.top + pad - text_scroll_;
     BOOL trailing = FALSE;
     BOOL inside = FALSE;
@@ -605,10 +887,24 @@ bool QuickPreviewWindow::HitTestText(float x, float y, uint32_t& index) {
 }
 
 bool QuickPreviewWindow::HasTextSelection() const noexcept {
+    if (native_kind_ == NativeKind::Table) return table_.HasSelection();
+    if (native_kind_ == NativeKind::Tree) return tree_.HasCurrent();
     return sel_anchor_ != sel_focus_;
 }
 
 void QuickPreviewWindow::CopyTextSelection(bool require_selection) const {
+    if (native_kind_ == NativeKind::Table) {
+        // Cells as TSV (Excel pastes it back as a range).
+        if (require_selection && !table_.HasSelection()) return;
+        pulse::ops::WriteClipboardText(table_.SelectionText());
+        return;
+    }
+    if (native_kind_ == NativeKind::Tree) {
+        // The current node's value (a subtree as JSON/XML), else the source.
+        if (require_selection && !tree_.HasCurrent()) return;
+        pulse::ops::WriteClipboardText(tree_.CurrentValue());
+        return;
+    }
     if (preview_text_.empty()) return;
     uint32_t a = (std::min)(sel_anchor_, sel_focus_);
     uint32_t b = (std::max)(sel_anchor_, sel_focus_);
@@ -623,6 +919,12 @@ void QuickPreviewWindow::CopyTextSelection(bool require_selection) const {
 }
 
 void QuickPreviewWindow::SelectAllText() {
+    if (native_kind_ == NativeKind::Table) {
+        table_.SelectAll();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (native_kind_ == NativeKind::Tree) return;  // rows are picked one at a time
     sel_anchor_ = 0;
     sel_focus_ = static_cast<uint32_t>(preview_text_.size());
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -904,7 +1206,8 @@ void QuickPreviewWindow::ShowContextMenu(POINT screen) {
     // over the content area; a plain popup would open underneath it.
     text_menu_.SetTopmost(native_kind_ == NativeKind::None);
     using pulse::l10n::StringId;
-    const bool text_kind = native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex;
+    const bool text_kind = native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
+                           native_kind_ == NativeKind::Markdown || native_kind_ == NativeKind::Table;
     const bool file_verbs = owner_ && command_message_ != 0 && !item_.path.empty();
     std::vector<FluentMenuItem> items;
     const auto add = [&](int command, StringId label, const wchar_t* glyph,
@@ -926,7 +1229,21 @@ void QuickPreviewWindow::ShowContextMenu(POINT screen) {
         // Text verbs keep their ids and order; file verbs follow below them.
         add(kTextCmdCopy, StringId::Copy, kCopyGlyph, L"Ctrl+C", HasTextSelection());
         add(kTextCmdSelectAll, StringId::SelectAll, kSelectAllGlyph, L"Ctrl+A", true, !file_verbs);
-        add(kTextCmdFind, StringId::Search, kSearchGlyph, L"Ctrl+F", true, file_verbs);
+        const bool line_toggle = native_kind_ == NativeKind::Text &&
+            SyntaxWantsLineNumbers(L"." + ExtensionLabel(item_.path));
+        add(kTextCmdFind, StringId::Search, kSearchGlyph, L"Ctrl+F", true,
+            file_verbs && !line_toggle);
+        if (line_toggle) {
+            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+            FluentMenuItem item;
+            item.command = kTextCmdLineNumbers;
+            item.text = line_numbers_ ? (zh ? L"\x9690\x85CF\x884C\x53F7" : L"Hide line numbers")
+                                      : (zh ? L"\x663E\x793A\x884C\x53F7" : L"Show line numbers");
+            item.glyph = L"\xE8FD";
+            item.shortcut = L"";
+            item.separator_after = file_verbs;
+            items.push_back(std::move(item));
+        }
     }
     if (file_verbs) {
         const bool writable = !item_.read_only;
@@ -950,6 +1267,11 @@ void QuickPreviewWindow::ShowContextMenu(POINT screen) {
     if (cmd == kTextCmdCopy) CopyTextSelection(true);
     else if (cmd == kTextCmdSelectAll) SelectAllText();
     else if (cmd == kTextCmdFind) OpenFind();
+    else if (cmd == kTextCmdLineNumbers) {
+        line_numbers_ = !line_numbers_;
+        text_layout_.reset();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
     else if (cmd >= kFileCmdBase)
         PostAction(static_cast<QuickPreviewAction>(cmd - kFileCmdBase));
 }
@@ -974,6 +1296,18 @@ void QuickPreviewWindow::UpdateFindMatches() {
 }
 
 void QuickPreviewWindow::ScrollMatchIntoView(uint32_t start) {
+    if (native_kind_ == NativeKind::Markdown) {
+        markdown_.Reveal(start);
+        return;
+    }
+    if (native_kind_ == NativeKind::Table) {
+        table_.Reveal(start);
+        return;
+    }
+    if (native_kind_ == NativeKind::Tree) {
+        tree_.Reveal(start);
+        return;
+    }
     if (!text_layout_.get()) return;
     FLOAT x = 0, y = 0;
     DWRITE_HIT_TEST_METRICS metrics{};
@@ -1044,11 +1378,12 @@ void QuickPreviewWindow::DrawTextPreview(ID2D1DeviceContext* dc, const D2D1_RECT
                                           ID2D1SolidColorBrush* text_brush) {
     if (!text_layout_.get() || !dc) return;
     const float pad = 20.0f * scale_;
-    const float origin_x = pad;
+    const float origin_x = TextOriginX();
     const float origin_y = content.top + pad - text_scroll_;
     DWRITE_TEXT_METRICS metrics{};
     if (SUCCEEDED(text_layout_->GetMetrics(&metrics))) {
-        const float view = (std::max)(1.0f, content.bottom - content.top - pad);
+        // Leave room below the last line for the status pill (DrawTextStatus).
+        const float view = (std::max)(1.0f, content.bottom - content.top - pad - 40.0f * scale_);
         const float max_scroll = (std::max)(0.0f, metrics.height - view);
         text_scroll_ = std::clamp(text_scroll_, 0.0f, max_scroll);
     }
@@ -1070,8 +1405,154 @@ void QuickPreviewWindow::DrawTextPreview(ID2D1DeviceContext* dc, const D2D1_RECT
         dc->CreateSolidColorBrush(D2D1::ColorF(0x0078D4, 0.35f), &sel);
         FillHitRange(dc, text_layout_.get(), a, b - a, origin_x, origin_y, sel.get());
     }
+    DrawLineNumbers(dc, content, origin_y);
     dc->DrawTextLayout(D2D1::Point2F(origin_x, origin_y), text_layout_.get(), text_brush,
                        D2D1_DRAW_TEXT_OPTIONS_CLIP | D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+}
+
+// Status pill centred at the bottom of the text view, as in the preview mockup:
+//   C++  |  UTF-8  |  245 lines \x00B7 8.4 KB
+void QuickPreviewWindow::DrawTextStatus(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
+                                        bool hex, uint32_t bytes_read, bool truncated,
+                                        uint32_t encoding, ID2D1SolidColorBrush* text_brush) {
+    IDWriteTextFormat* format = compositor_.SmallFormat();
+    if (!dc || !format || !compositor_.DwriteFactory()) return;
+    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    std::vector<std::wstring> parts;
+    if (hex) {
+        parts.push_back(zh ? L"\x5341\x516D\x8FDB\x5236" : L"Hex");
+    } else {
+        parts.push_back(!syntax_language_.empty() ? syntax_language_
+                                                  : std::wstring(zh ? L"\x7EAF\x6587\x672C" : L"Plain text"));
+        std::wstring name;
+        switch (static_cast<ipc::PreviewTextEncoding>(encoding)) {
+        case ipc::PreviewTextEncoding::Utf8: name = L"UTF-8"; break;
+        case ipc::PreviewTextEncoding::Utf8Bom: name = L"UTF-8 BOM"; break;
+        case ipc::PreviewTextEncoding::Utf16Le: name = L"UTF-16 LE"; break;
+        case ipc::PreviewTextEncoding::Utf16Be: name = L"UTF-16 BE"; break;
+        case ipc::PreviewTextEncoding::Ansi:
+            switch (GetACP()) {
+            case 936: name = L"GBK"; break;
+            case 950: name = L"Big5"; break;
+            case 932: name = L"Shift-JIS"; break;
+            case 949: name = L"EUC-KR"; break;
+            case 1252: name = L"Windows-1252"; break;
+            default: name = L"ANSI " + std::to_wstring(GetACP()); break;
+            }
+            break;
+        default: break;
+        }
+        if (!name.empty()) parts.push_back(std::move(name));
+    }
+    std::wstring size = hex ? std::wstring() : std::to_wstring(text_line_count_) +
+        (zh ? L" \x884C \x00B7 " : L" lines \x00B7 ");
+    size += pulse::format::ByteSize(bytes_read, true);
+    if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+    parts.push_back(std::move(size));
+    DrawStatusPill(dc, content, parts, text_brush);
+}
+
+void QuickPreviewWindow::DrawStatusPill(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
+                                        const std::vector<std::wstring>& parts,
+                                        ID2D1SolidColorBrush* text_brush) {
+    IDWriteTextFormat* format = compositor_.SmallFormat();
+    if (!dc || !format || !compositor_.DwriteFactory() || parts.empty()) return;
+    std::wstring label;
+    std::vector<UINT32> separators;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i) { separators.push_back(static_cast<UINT32>(label.size() + 2)); label += L"   |   "; }
+        label += parts[i];
+    }
+    const auto text_alignment = format->GetTextAlignment();
+    const auto paragraph_alignment = format->GetParagraphAlignment();
+    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    ComPtr<IDWriteTextLayout> layout;
+    compositor_.DwriteFactory()->CreateTextLayout(label.data(), static_cast<UINT32>(label.size()),
+        format, 4000.0f, 100.0f, &layout);
+    format->SetTextAlignment(text_alignment);
+    format->SetParagraphAlignment(paragraph_alignment);
+    if (!layout.get()) return;
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    ComPtr<ID2D1SolidColorBrush> dim, fill, line;
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x777777) : D2D1::ColorF(0xA0A0A0), &dim);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x2B2B2B, 0.94f) : D2D1::ColorF(0xFFFFFF, 0.96f), &fill);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x454545) : D2D1::ColorF(0xD0D0D0), &line);
+    if (dim.get())
+        for (const UINT32 at : separators) layout->SetDrawingEffect(dim.get(), DWRITE_TEXT_RANGE{at + 1, 1});
+    DWRITE_TEXT_METRICS metrics{};
+    if (FAILED(layout->GetMetrics(&metrics))) return;
+    const float pill_h = 26.0f * scale_;
+    const float pill_w = (std::min)(metrics.width + 28.0f * scale_, content.right - content.left - 16.0f * scale_);
+    const float cx = (content.left + content.right) * 0.5f;
+    const D2D1_RECT_F pill = D2D1::RectF(cx - pill_w * 0.5f, content.bottom - pill_h - 10.0f * scale_,
+                                         cx + pill_w * 0.5f, content.bottom - 10.0f * scale_);
+    const auto rounded = D2D1::RoundedRect(pill, pill_h * 0.5f, pill_h * 0.5f);
+    if (fill.get()) dc->FillRoundedRectangle(rounded, fill.get());
+    if (line.get()) dc->DrawRoundedRectangle(rounded, line.get(), 1.0f);
+    dc->PushAxisAlignedClip(pill, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    dc->DrawTextLayout(D2D1::Point2F(cx - metrics.width * 0.5f,
+                                     (pill.top + pill.bottom) * 0.5f - metrics.height * 0.5f),
+                       layout.get(), text_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    dc->PopAxisAlignedClip();
+}
+
+// Enter / double-click on a row of a folder listing opens that item.
+bool QuickPreviewWindow::OpenListingSelection() {
+    if (!owner_ || !open_message_ || !archive_.IsFolderListing()) return false;
+    const std::wstring relative = archive_.SelectedPath();
+    if (relative.empty()) return false;
+    open_path_ = item_.path;
+    if (!open_path_.empty() && open_path_.back() != L'\\') open_path_ += L'\\';
+    open_path_ += relative;
+    PostMessageW(owner_, open_message_, 1, 0);
+    return true;
+}
+
+float QuickPreviewWindow::TextOriginX() const noexcept {
+    return 20.0f * scale_ + text_gutter_;
+}
+
+void QuickPreviewWindow::DrawLineNumbers(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
+                                         float origin_y) {
+    if (text_gutter_ <= 0.0f || line_starts_.empty() || !gutter_format_.get() ||
+        !text_layout_.get())
+        return;
+    const float pad = 20.0f * scale_;
+    const float right = pad + text_gutter_ - 12.0f * scale_;
+    ComPtr<ID2D1SolidColorBrush> number_brush, rule_brush;
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0x858585) : D2D1::ColorF(0x9A9A9A), &number_brush);
+    dc->CreateSolidColorBrush(dark_ ? D2D1::ColorF(0xFFFFFF, 0.08f) : D2D1::ColorF(0x000000, 0.08f),
+                              &rule_brush);
+    if (!number_brush.get()) return;
+    if (rule_brush.get()) {
+        const float x = right + 6.0f * scale_;
+        dc->FillRectangle(D2D1::RectF(x, content.top, x + 1.0f, content.bottom), rule_brush.get());
+    }
+    auto line_y = [&](size_t line) {
+        FLOAT x = 0, y = 0;
+        DWRITE_HIT_TEST_METRICS metrics{};
+        text_layout_->HitTestTextPosition(line_starts_[line], FALSE, &x, &y, &metrics);
+        return std::pair<float, float>{y, metrics.height};
+    };
+    // First line whose top is inside the view (layout coordinates grow monotonically).
+    const float view_top = content.top - origin_y;
+    size_t lo = 0, hi = line_starts_.size();
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        const auto [y, h] = line_y(mid);
+        if (y + h < view_top) lo = mid + 1;
+        else hi = mid;
+    }
+    for (size_t line = lo; line < line_starts_.size(); ++line) {
+        const auto [y, h] = line_y(line);
+        const float top = origin_y + y;
+        if (top > content.bottom) break;
+        const std::wstring label = std::to_wstring(line + 1);
+        dc->DrawTextW(label.data(), static_cast<UINT32>(label.size()), gutter_format_.get(),
+                      D2D1::RectF(pad * 0.25f, top, right, top + (std::max)(h, 1.0f)),
+                      number_brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
 }
 
 bool QuickPreviewWindow::ClientPoint(LPARAM lparam, POINT& out) const {
@@ -1080,6 +1561,7 @@ bool QuickPreviewWindow::ClientPoint(LPARAM lparam, POINT& out) const {
 }
 
 HCURSOR QuickPreviewWindow::ContentCursor(POINT client) const {
+    if (OverCodecButton(client)) return LoadCursorW(nullptr, IDC_HAND);
     if (HasPlayback() && client.y >= PlaybackRect().top)
         return LoadCursorW(nullptr, IDC_HAND);
     if (find_open_ && FindBarHeight() > 0.0f) {
@@ -1092,8 +1574,20 @@ HCURSOR QuickPreviewWindow::ContentCursor(POINT client) const {
     if (client.x < content.left || client.x >= content.right ||
         client.y < content.top || client.y >= content.bottom)
         return LoadCursorW(nullptr, IDC_ARROW);
+    if (native_kind_ == NativeKind::Markdown &&
+        markdown_.IsClickable(static_cast<float>(client.x), static_cast<float>(client.y)))
+        return LoadCursorW(nullptr, IDC_HAND);
+    if (native_kind_ == NativeKind::Markdown) {
+        // Links open with Ctrl+click; a plain click still selects text.
+        const bool link = (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+            !markdown_.LinkAt(static_cast<float>(client.x), static_cast<float>(client.y)).empty();
+        return LoadCursorW(nullptr, link ? IDC_HAND : IDC_IBEAM);
+    }
     if (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex)
         return LoadCursorW(nullptr, IDC_IBEAM);
+    if (native_kind_ == NativeKind::Table) return LoadCursorW(nullptr, IDC_ARROW);
+    if (native_kind_ == NativeKind::Pages)
+        return LoadCursorW(nullptr, panning_ ? IDC_SIZEALL : IDC_ARROW);
     if (panning_ || CanPanImage()) return LoadCursorW(nullptr, IDC_SIZEALL);
     return LoadCursorW(nullptr, IDC_ARROW);
 }
@@ -1169,7 +1663,9 @@ void QuickPreviewWindow::Render() {
     const float header = kTitleBarHeight * scale_;
     const D2D1_RECT_F title_rect = typography::SnapVerticalBounds(D2D1::RectF(
         pad, 8.0f * scale_,
-        width - (kCloseButtonWidth + kChromeButtonWidth * 3.0f + 8.0f) * scale_, header));
+        markdown_shown_ ? MarkdownToggleRect(-1).left - 8.0f * scale_
+                        : width - (kCloseButtonWidth + kChromeButtonWidth * 3.0f + 8.0f) * scale_,
+        header));
     dc->DrawTextW(item_.name.data(), static_cast<UINT32>(item_.name.size()),
                   compositor_.HeaderFormat(), title_rect, text_brush.get(),
                   D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
@@ -1193,11 +1689,26 @@ void QuickPreviewWindow::Render() {
     const D2D1_RECT_F full_content = D2D1::RectF(0, header, width, height);
     const bool offline = OfflinePlaceholder();
     const bool use_handler = !offline && !safe_mode_ && !video_.active() &&
-        PreviewHandlerHost::CanHost(item_.path);
+        !(item_.attrs & FILE_ATTRIBUTE_DIRECTORY) && PreviewHandlerHost::CanHost(item_.path) &&
+        !(kMarkdownRender && SyntaxLanguageName(L"." + ExtensionLabel(item_.path)) == L"Markdown") &&
+        !(kTableView && TableFileKind(item_.path) == 2 && !table_handler_) &&
+        !(kDocView && IsDocxFile(item_.path) && !doc_handler_) &&
+        !(kDocView && ExtensionLabel(item_.path) == L"EPUB");
     handler_.Sync(hwnd_, full_content, item_.path, item_.attrs, generation_, item_.modified,
                   item_.size, dark_, background, foreground, use_handler,
                   handler_immediate_);
     handler_immediate_ = false;
+    markdown_shown_ = false;
+    toggle_kind_ = ToggleKind::Markdown;
+    if (use_handler && kTableView && TableFileKind(item_.path) == 2) {
+        // "Table | System" stays available over the Office preview handler.
+        markdown_shown_ = true;
+        toggle_kind_ = ToggleKind::TableHandler;
+    } else if (use_handler && kDocView && IsDocxFile(item_.path)) {
+        markdown_shown_ = true;
+        toggle_kind_ = ToggleKind::DocHandler;
+    }
+    codec_store_rect_ = codec_open_rect_ = D2D1_RECT_F{};
     std::wstring status;
     if (offline) {
         native_kind_ = NativeKind::None;
@@ -1205,13 +1716,18 @@ void QuickPreviewWindow::Render() {
     } else if (video_.active()) {
         native_kind_ = NativeKind::None;
         const auto video = video_.Snapshot();
-        const auto content = ContentRect();
-        const RECT bounds{static_cast<LONG>(content.left), static_cast<LONG>(content.top),
-            static_cast<LONG>(content.right), static_cast<LONG>(content.bottom)};
-        video_.Layout(bounds, video.ready && SUCCEEDED(video.error) && visible());
-        if (FAILED(video.error))
+        const bool audio = VideoPreview::IsAudio(item_.path);
+        const bool codec_card = CodecCardVisible(video);
+        LayoutVideo(dc, video, !audio && !codec_card && video.ready && SUCCEEDED(video.error) &&
+                                   visible());
+        if (codec_card) DrawCodecCard(dc, ContentRect(), video, text_brush.get());
+        if (audio && SUCCEEDED(video.error))
+            DrawAudio(dc, video, text_brush.get(), secondary_brush.get());
+        if (codec_card) {
+            // The card explains the missing picture.
+        } else if (FAILED(video.error))
             status = pulse::l10n::Get(pulse::l10n::StringId::PreviewCannotRender);
-        else if (!video.ready)
+        else if (!video.ready && !audio)
             status = pulse::l10n::Get(pulse::l10n::StringId::PreviewLoading);
     } else if (use_handler) {
         native_kind_ = NativeKind::None;
@@ -1221,23 +1737,52 @@ void QuickPreviewWindow::Render() {
             status = pulse::l10n::Get(pulse::l10n::StringId::PreviewLoading);
         else if (state == PreviewHandlerHost::State::Failed)
             status = pulse::l10n::Get(pulse::l10n::StringId::PreviewHostUnavailable);
+        if (markdown_shown_) DrawMarkdownToggle(dc, text_brush.get());
+    } else if (pages_count_ > 1) {
+        native_kind_ = NativeKind::Pages;
+        DrawPages(dc, text_brush.get(), secondary_brush.get());
     } else {
         std::wstring text;
         std::wstring error;
         bool truncated = false;
         uint32_t bytes_read = 0;
         uint32_t reported_frame_count = 1, reported_delay_ms = 0, reported_loop_count = 0;
+        uint32_t text_encoding = 0;
         const D2D1_RECT_F content = ContentRect();
-        const uint32_t want = RequestedPixelSize(content);
-        const D2D1_RECT_F draw = ImageDest(content);
+        const bool folder = (item_.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        // A folder listing does not depend on the window size.
+        const uint32_t want = folder ? ipc::kPreviewDefaultPixelSize : RequestedPixelSize(content);
+        const bool icon = kImageExtras && IsIconFile(item_.path);
+        D2D1_RECT_F draw = ImageDest(content);
+        if (icon && image_fit_ && decoded_w_ && decoded_h_) {
+            // Icons show their real pixels (shrunk only when they do not fit).
+            const float dw = static_cast<float>(decoded_w_), dh = static_cast<float>(decoded_h_);
+            const float fit = (std::min)({(content.right - content.left) / dw, (content.bottom - content.top) / dh, 1.0f});
+            const float cx = std::round((content.left + content.right - dw * fit) * 0.5f);
+            const float cy = std::round((content.top + content.bottom - dh * fit) * 0.5f);
+            draw = D2D1::RectF(cx, cy, cx + std::round(dw * fit), cy + std::round(dh * fit));
+        }
+        const bool icon_unsized = icon && image_fit_ && (!decoded_w_ || !decoded_h_);
         dc->PushAxisAlignedClip(content, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        const uint32_t requested = waiting_for_frame_ ? requested_frame_ : frame_index_;
+        const uint32_t requested = icon ? icon_request_ : waiting_for_frame_ ? requested_frame_ : frame_index_;
+        if (icon && !icon_sizes_.empty() && draw.right - draw.left < 8192.0f && draw.bottom - draw.top < 8192.0f) {
+            // Transparent icon pixels sit on a checkerboard (mockup ⑥).
+            ComPtr<ID2D1SolidColorBrush> cell;
+            dc->CreateSolidColorBrush(D2D1::ColorF(0x808080, 0.18f), &cell);
+            const float step = 8.0f * scale_;
+            int row = 0;
+            if (cell.get())
+                for (float y = draw.top; y < draw.bottom; y += step, ++row)
+                    for (float x = draw.left + (row % 2 ? step : 0.0f); x < draw.right; x += step * 2.0f)
+                        dc->FillRectangle(D2D1::RectF(x, y, (std::min)(x + step, draw.right),
+                                                      (std::min)(y + step, draw.bottom)), cell.get());
+        }
         auto draw_at = [&](uint32_t pixels, uint32_t frame) {
             return thumbnails_.Draw(dc, draw, item_.path, item_.attrs, pixels,
                 generation_, item_.modified, item_.size, 1.0f, &text, &truncated,
                 &bytes_read, true, &error, nullptr, nullptr, nullptr, nullptr,
                 frame, &reported_frame_count, &reported_delay_ms, &reported_loop_count,
-                &decoded_w_, &decoded_h_, &source_w_, &source_h_);
+                &decoded_w_, &decoded_h_, &source_w_, &source_h_, nullptr, &text_encoding);
         };
         PreviewDrawResult result = draw_at(want, requested);
         if (result == PreviewDrawResult::Pending && preview_pixels_ != 0 &&
@@ -1246,8 +1791,29 @@ void QuickPreviewWindow::Render() {
         } else if (result != PreviewDrawResult::Pending) {
             preview_pixels_ = want;
         }
+        if (folder && result == PreviewDrawResult::Archive &&
+            text.rfind(L"PULSEARC\t1\tDIR\t-\t2", 0) == 0) {
+            // The quick pass ran out of time: the full count replaces it when ready.
+            std::wstring full_text, full_error;
+            bool full_truncated = false;
+            uint32_t full_bytes = 0;
+            if (thumbnails_.Draw(dc, draw, item_.path, item_.attrs, want, generation_,
+                    item_.modified, item_.size, 1.0f, &full_text, &full_truncated, &full_bytes,
+                    true, &full_error, nullptr, nullptr, nullptr, nullptr, 1) ==
+                PreviewDrawResult::Archive)
+                text = std::move(full_text);
+        }
         bool committed_frame = false;
-        if (result == PreviewDrawResult::Bitmap && reported_frame_count > 1) {
+        if (result == PreviewDrawResult::Bitmap && reported_frame_count > 1 &&
+            reported_delay_ms == 0) {
+            // Paged document (PDF): switch to the page reader from the next frame.
+            pages_count_ = reported_frame_count;
+            page_aspect_.assign(pages_count_, 0.0f);
+            if (source_w_ && source_h_)
+                page_aspect_[0] = static_cast<float>(source_h_) / static_cast<float>(source_w_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (result == PreviewDrawResult::Bitmap && reported_frame_count > 1 &&
+                   (kImageExtras || ExtensionLabel(item_.path) == L"GIF")) {
             if (frame_count_ <= 1) InvalidateRect(hwnd_, nullptr, FALSE);
             frame_count_ = reported_frame_count;
             frame_delay_ms_ = std::clamp(reported_delay_ms, 20u, 2000u);
@@ -1285,32 +1851,189 @@ void QuickPreviewWindow::Render() {
         if (result == PreviewDrawResult::Bitmap) {
             native_kind_ = NativeKind::Bitmap;
             DrawHud(dc, content, text_brush.get());
+            if (icon) {
+                ParseIconSizes(text);
+                DrawIconSizes(dc, content, text_brush.get());
+                if (icon_unsized) InvalidateRect(hwnd_, nullptr, FALSE);  // lay out at the real size
+            }
         } else if (result == PreviewDrawResult::Archive &&
                    archive_.SetPayload(text, item_.name, item_.size)) {
             native_kind_ = NativeKind::Archive;
             archive_.Draw(dc, &compositor_, content, CurrentTheme(), scale_, true);
+        } else if (result == PreviewDrawResult::Markdown && markdown_.SetPayload(text, item_.path) &&
+                   (!markdown_.DocFormat().empty() ||
+                    !(markdown_.IsNotebook() ? notebook_source_ : markdown_source_))) {
+            // DOCX / EPUB have no source view; DOCX may switch to the handler.
+            const bool document = !markdown_.DocFormat().empty();
+            markdown_shown_ = !document ||
+                (markdown_.DocFormat() == L"docx" && PreviewHandlerHost::CanHost(item_.path));
+            native_kind_ = NativeKind::Markdown;
+            if (markdown_.IsNotebook()) toggle_kind_ = ToggleKind::NotebookSource;
+            if (document) toggle_kind_ = ToggleKind::DocHandler;
+            if (preview_text_ != markdown_.PlainText()) {
+                preview_text_ = markdown_.PlainText();
+                text_layout_.reset();
+                sel_anchor_ = sel_focus_ = 0;
+                if (find_open_) UpdateFindMatches();
+            }
+            std::vector<MarkdownView::Highlight> marks;
+            marks.reserve(find_matches_.size());
+            for (size_t i = 0; i < find_matches_.size(); ++i)
+                marks.push_back({find_matches_[i], static_cast<uint32_t>(find_query_.size()),
+                                 i == find_index_});
+            if (markdown_.Draw(dc, compositor_.DwriteFactory(), content, CurrentTheme(), dark_,
+                               scale_, &thumbnails_, generation_,
+                               (std::min)(sel_anchor_, sel_focus_),
+                               (std::max)(sel_anchor_, sel_focus_), marks))
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            if (markdown_.IsNotebook()) {
+                // Jupyter · Python 3  |  12 个单元格  |  86 KB
+                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+                std::vector<std::wstring> parts;
+                parts.push_back(markdown_.NotebookKernel().empty()
+                                    ? std::wstring(L"Jupyter")
+                                    : L"Jupyter \x00B7 " + markdown_.NotebookKernel());
+                parts.push_back(std::to_wstring(markdown_.NotebookCells()) +
+                                (zh ? L" \x4E2A\x5355\x5143\x683C" : L" cells"));
+                std::wstring size = pulse::format::ByteSize(bytes_read, true);
+                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                parts.push_back(std::move(size));
+                DrawStatusPill(dc, content, parts, text_brush.get());
+            } else if (markdown_.DocFormat() == L"docx") {
+                // Word 文档  |  约 1,240 字  |  38 KB
+                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+                std::vector<std::wstring> parts;
+                parts.push_back(zh ? L"Word \x6587\x6863" : L"Word document");
+                const std::wstring words = GroupedNumber(markdown_.WordCount());
+                parts.push_back(zh ? L"\x7EA6 " + words + L" \x5B57" : L"about " + words + L" words");
+                std::wstring size = pulse::format::ByteSize(item_.size ? item_.size : bytes_read, true);
+                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                parts.push_back(std::move(size));
+                DrawStatusPill(dc, content, parts, text_brush.get());
+            } else if (markdown_.DocFormat() == L"epub") {
+                // EPUB  |  第 1 / 27 章  |  author
+                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+                std::vector<std::wstring> parts;
+                parts.push_back(L"EPUB");
+                const int count = (std::max)(1, markdown_.SectionCount());
+                const std::wstring at = std::to_wstring(markdown_.SectionIndex() + 1) + L" / " + std::to_wstring(count);
+                parts.push_back(zh ? L"\x7B2C " + at + L" \x7AE0" : L"Chapter " + at);
+                std::wstring who = markdown_.DocAuthor();
+                if (who.size() > 40) who = who.substr(0, 39) + L"\x2026";
+                if (!who.empty()) parts.push_back(std::move(who));
+                if (truncated) parts.push_back(zh ? L"\x5DF2\x622A\x65AD" : L"truncated");
+                DrawStatusPill(dc, content, parts, text_brush.get());
+            }
+        } else if (result == PreviewDrawResult::Markdown && markdown_.SetPayload(text, item_.path)) {
+            // Source mode: the highlighted text view with its status pill.
+            markdown_shown_ = true;
+            if (markdown_.IsNotebook()) toggle_kind_ = ToggleKind::NotebookSource;
+            native_kind_ = NativeKind::Text;
+            const bool changed = preview_text_ != markdown_.Source();
+            EnsureTextLayout(markdown_.Source(), false, (std::max)(1.0f, width - pad * 2.0f));
+            if (changed) {
+                sel_anchor_ = sel_focus_ = 0;
+                if (find_open_) UpdateFindMatches();
+            }
+            DrawTextPreview(dc, content, text_brush.get());
+            DrawTextStatus(dc, content, false, bytes_read, truncated, text_encoding,
+                           text_brush.get());
+        } else if (result == PreviewDrawResult::Table && table_.SetPayload(text)) {
+            const bool sheet = table_.IsSpreadsheet();
+            if (kTableView && (!sheet || PreviewHandlerHost::CanHost(item_.path))) {
+                markdown_shown_ = true;
+                toggle_kind_ = sheet ? ToggleKind::TableHandler : ToggleKind::TableSource;
+            }
+            if (!sheet && (!kTableView || table_source_)) {
+                // Source mode: the text view with its status pill.
+                native_kind_ = NativeKind::Text;
+                const bool changed = preview_text_ != table_.Source();
+                EnsureTextLayout(table_.Source(), false, (std::max)(1.0f, width - pad * 2.0f));
+                if (changed) {
+                    sel_anchor_ = sel_focus_ = 0;
+                    if (find_open_) UpdateFindMatches();
+                }
+                DrawTextPreview(dc, content, text_brush.get());
+                DrawTextStatus(dc, content, false, bytes_read, truncated, text_encoding,
+                               text_brush.get());
+            } else {
+                native_kind_ = NativeKind::Table;
+                if (preview_text_ != table_.PlainText()) {
+                    preview_text_ = table_.PlainText();
+                    text_layout_.reset();
+                    sel_anchor_ = sel_focus_ = 0;
+                    if (find_open_) UpdateFindMatches();
+                }
+                std::vector<TableView::Highlight> marks;
+                marks.reserve(find_matches_.size());
+                for (size_t i = 0; i < find_matches_.size(); ++i)
+                    marks.push_back({find_matches_[i], static_cast<uint32_t>(find_query_.size()),
+                                     i == find_index_});
+                table_.Draw(dc, compositor_.DwriteFactory(), content, CurrentTheme(), dark_, scale_,
+                            background, marks);
+                const auto parts = table_.StatusParts(text_encoding);
+                if (!parts.empty()) DrawStatusPill(dc, content, parts, text_brush.get());
+            }
+        } else if (result == PreviewDrawResult::Tree && tree_.SetPayload(text)) {
+            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+            // The Tree | Source pill only when there is a tree to go back to.
+            markdown_shown_ = kTreeView && !tree_.HasError();
+            toggle_kind_ = ToggleKind::TreeSource;
+            if (!kTreeView || tree_.HasError() || tree_source_) {
+                native_kind_ = NativeKind::Text;
+                const bool changed = preview_text_ != tree_.Source();
+                EnsureTextLayout(tree_.Source(), false, (std::max)(1.0f, width - pad * 2.0f));
+                if (changed) {
+                    sel_anchor_ = sel_focus_ = 0;
+                    if (find_open_) UpdateFindMatches();
+                }
+                DrawTextPreview(dc, content, text_brush.get());
+                if (tree_.HasError() && kTreeView) {
+                    // Malformed: the source, with where it broke in the pill.
+                    std::vector<std::wstring> parts;
+                    parts.push_back(tree_.IsXml() ? L"XML" : L"JSON");
+                    parts.push_back(tree_.ErrorText());
+                    parts.push_back(pulse::format::ByteSize(bytes_read, true));
+                    DrawStatusPill(dc, content, parts, text_brush.get());
+                } else {
+                    DrawTextStatus(dc, content, false, bytes_read, truncated, text_encoding,
+                                   text_brush.get());
+                }
+            } else {
+                native_kind_ = NativeKind::Tree;
+                if (preview_text_ != tree_.PlainText()) {
+                    preview_text_ = tree_.PlainText();
+                    text_layout_.reset();
+                    sel_anchor_ = sel_focus_ = 0;
+                    if (find_open_) UpdateFindMatches();
+                }
+                std::vector<TreeView::Highlight> marks;
+                marks.reserve(find_matches_.size());
+                for (size_t i = 0; i < find_matches_.size(); ++i)
+                    marks.push_back({find_matches_[i], static_cast<uint32_t>(find_query_.size()),
+                                     i == find_index_});
+                tree_.Draw(dc, compositor_.DwriteFactory(), content, CurrentTheme(), dark_, scale_, marks);
+                auto parts = tree_.StatusParts();
+                std::wstring size = pulse::format::ByteSize(bytes_read, true);
+                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                parts.push_back(std::move(size));
+                DrawStatusPill(dc, content, parts, text_brush.get());
+            }
         } else if (result == PreviewDrawResult::Text || result == PreviewDrawResult::Hex ||
                    result == PreviewDrawResult::Archive) {
             native_kind_ = result == PreviewDrawResult::Hex ? NativeKind::Hex : NativeKind::Text;
             EnsureTextLayout(text, result == PreviewDrawResult::Hex,
                              (std::max)(1.0f, width - pad * 2.0f));
             DrawTextPreview(dc, content, text_brush.get());
-            std::wstring footer = pulse::l10n::Get(result == PreviewDrawResult::Hex
-                ? pulse::l10n::StringId::HexPrefix : pulse::l10n::StringId::TextPrefix);
-            footer += pulse::format::ByteSize(bytes_read, true);
-            if (truncated) footer += pulse::l10n::Get(pulse::l10n::StringId::TruncatedSuffix);
-            IDWriteTextFormat* small_format = compositor_.SmallFormat();
-            if (small_format) {
-                small_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                small_format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-                dc->DrawTextW(footer.data(), static_cast<UINT32>(footer.size()), small_format,
-                    D2D1::RectF(pad, content.bottom - 18.0f * scale_, width - pad,
-                                content.bottom - 2.0f * scale_),
-                    secondary_brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            }
+            DrawTextStatus(dc, content, result == PreviewDrawResult::Hex, bytes_read, truncated,
+                           text_encoding, text_brush.get());
         } else if (result == PreviewDrawResult::Pending && !animation_started_) {
             native_kind_ = NativeKind::None;
             status = pulse::l10n::Get(pulse::l10n::StringId::PreviewLoading);
+        } else if (result == PreviewDrawResult::Failed && kImageExtras &&
+                   error.rfind(L"image-codec-missing:", 0) == 0) {
+            native_kind_ = NativeKind::None;
+            DrawImageCodecCard(dc, content, error.substr(20), text_brush.get());
         } else if (result == PreviewDrawResult::Failed) {
             native_kind_ = NativeKind::None;
             status = pulse::l10n::Get(error == L"path-unavailable"
@@ -1318,6 +2041,7 @@ void QuickPreviewWindow::Render() {
                 : pulse::l10n::StringId::PreviewCannotRender);
         }
         dc->PopAxisAlignedClip();
+        if (markdown_shown_) DrawMarkdownToggle(dc, text_brush.get());
         if (FindBarHeight() > 0.0f) {
             DrawFindBar(dc, FindBarRect());
         }
@@ -1346,7 +2070,8 @@ void QuickPreviewWindow::Render() {
         }
     }
     if (find_open_ && (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
-                       native_kind_ == NativeKind::Archive))
+                       native_kind_ == NativeKind::Archive || native_kind_ == NativeKind::Markdown ||
+                       native_kind_ == NativeKind::Table || native_kind_ == NativeKind::Tree))
         LayoutFindEdit();
     else if (find_edit_)
         ShowWindow(find_edit_, SW_HIDE);
@@ -1395,6 +2120,7 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         if (point.y >= 0 && point.y < static_cast<int>(kTitleBarHeight * scale_)) {
             if (point.x >= close_left) return HTCLOSE;
             if (point.x >= chrome_left) return HTCLIENT;  // prev / next / more buttons
+            if (HitMarkdownToggle(point) >= 0) return HTCLIENT;
             return HTCAPTION;
         }
         return HTCLIENT;
@@ -1451,16 +2177,37 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         const float steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
         POINT cursor{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         ScreenToClient(hwnd_, &cursor);
-        if (native_kind_ == NativeKind::Bitmap) {
+        if (PlaybackWheel(cursor, steps)) {
+            return 0;
+        }
+        if (PagesWheel(cursor, steps, (GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) != 0,
+                       (GET_KEYSTATE_WPARAM(wparam) & MK_SHIFT) != 0)) {
+            // handled by the page reader
+        } else if (native_kind_ == NativeKind::Bitmap) {
             ZoomAt(static_cast<float>(cursor.x), static_cast<float>(cursor.y),
                    std::pow(1.15f, steps));
         } else if (native_kind_ == NativeKind::Archive) {
             archive_.Scroll(steps);
             archive_.Hover(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
+        } else if (native_kind_ == NativeKind::Markdown) {
+            markdown_.ScrollAt(static_cast<float>(cursor.x), static_cast<float>(cursor.y), steps);
+        } else if (native_kind_ == NativeKind::Table) {
+            table_.Scroll(steps, (GET_KEYSTATE_WPARAM(wparam) & MK_SHIFT) != 0);
+            KillTimer(hwnd_, kTableTipTimer);
+        } else if (native_kind_ == NativeKind::Tree) {
+            tree_.Scroll(steps);
+            tree_.Hover(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
         } else {
             text_scroll_ = (std::max)(0.0f, text_scroll_ - steps * 56.0f * scale_);
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
+    case WM_MOUSEHWHEEL: {
+        // Tilt wheel / touchpad sideways: the table grid scrolls horizontally.
+        if (native_kind_ != NativeKind::Table) break;
+        const float steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
+        if (table_.Scroll(-steps, true)) InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -1470,6 +2217,24 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         if (const ChromeButton button = HitChromeButton(point); button != ChromeButton::None) {
             if (GetFocus() != hwnd_) SetFocus(hwnd_);  // provider may hold focus
             ActivateChromeButton(button);
+            return 0;
+        }
+        if (CodecCardClick(point)) return 0;
+        if (const int size = HitIconSize(point); size >= 0) {
+            if (static_cast<uint32_t>(size + 1) != icon_request_ && size != icon_selected_) {
+                icon_request_ = static_cast<uint32_t>(size + 1);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+        if (const int segment = HitMarkdownToggle(point); segment >= 0) {
+            bool& second = ToggleSecond();
+            if ((segment == 1) != second) {
+                second = segment == 1;
+                selecting_ = false;
+                sel_anchor_ = sel_focus_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
             return 0;
         }
         if (find_open_ && FindBarHeight() > 0.0f) {
@@ -1488,13 +2253,52 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
                 InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
+        if (native_kind_ == NativeKind::Table) {
+            KillTimer(hwnd_, kTableTipTimer);
+            if (table_.MouseDown(static_cast<float>(point.x), static_cast<float>(point.y),
+                                 (wparam & MK_SHIFT) != 0)) {
+                if (table_.Dragging()) SetCapture(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+        if (native_kind_ == NativeKind::Tree) {
+            if (tree_.MouseDown(static_cast<float>(point.x), static_cast<float>(point.y))) {
+                if (tree_.Dragging()) SetCapture(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+        if (native_kind_ == NativeKind::Markdown &&
+            markdown_.Click(static_cast<float>(point.x), static_cast<float>(point.y))) {
+            // Contents entry or next-chapter link: the click is spent.
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        if (AudioMouseDown(point)) return 0;
+        if (PagesMouseDown(point)) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         SetCapture(hwnd_);
         if (native_kind_ == NativeKind::Bitmap && CanPanImage()) {
             panning_ = true;
             pan_anchor_ = point;
             pan_start_x_ = pan_x_;
             pan_start_y_ = pan_y_;
-        } else if (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex) {
+        } else if (native_kind_ == NativeKind::Markdown && (wparam & MK_CONTROL) &&
+                   !markdown_.LinkAt(static_cast<float>(point.x),
+                                     static_cast<float>(point.y)).empty()) {
+            ReleaseCapture();
+            const std::wstring target =
+                markdown_.LinkAt(static_cast<float>(point.x), static_cast<float>(point.y));
+            // Only web and mail links; local paths and other schemes stay inert.
+            if (_wcsnicmp(target.c_str(), L"http://", 7) == 0 ||
+                _wcsnicmp(target.c_str(), L"https://", 8) == 0 ||
+                _wcsnicmp(target.c_str(), L"mailto:", 7) == 0)
+                ShellExecuteW(hwnd_, L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
+                   native_kind_ == NativeKind::Markdown) {
             uint32_t index = 0;
             if (HitTestText(static_cast<float>(point.x), static_cast<float>(point.y), index)) {
                 selecting_ = true;
@@ -1514,9 +2318,26 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         }
         const D2D1_RECT_F content = ContentRect();
         if (native_kind_ == NativeKind::Archive) {
+            // Folder listing: double-click opens the item in the main window.
+            if (archive_.IsFolderListing() && archive_.HasSelection() &&
+                archive_.Contains(static_cast<float>(point.x), static_cast<float>(point.y)) &&
+                OpenListingSelection())
+                return 0;
             // Second click of a fast pair keeps toggling like a single click.
             if (archive_.Click(static_cast<float>(point.x), static_cast<float>(point.y)))
                 InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        if (native_kind_ == NativeKind::Pages) {
+            const PagesLayout pages = ComputePagesLayout();
+            if (point.x >= pages.view.left && point.x < pages.view.right &&
+                point.y >= pages.view.top && point.y < pages.view.bottom) {
+                TogglePagesFit();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else {
+                PagesMouseDown(point);  // fast clicks in the strip keep jumping
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
             return 0;
         }
         if (native_kind_ == NativeKind::Bitmap &&
@@ -1534,6 +2355,7 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
             SeekPlayback(static_cast<float>(point.x));
             return 0;
         }
+        if (PlaybackHover(point)) InvalidateRect(hwnd_, nullptr, FALSE);
         if (const ChromeButton hover = (panning_ || selecting_) ? ChromeButton::None
                                                                  : HitChromeButton(point);
             hover != chrome_hover_) {
@@ -1547,7 +2369,28 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         if (native_kind_ == NativeKind::Archive && !panning_ && !selecting_ &&
             archive_.Hover(static_cast<float>(point.x), static_cast<float>(point.y)))
             InvalidateRect(hwnd_, nullptr, FALSE);
-        if (panning_) {
+        if (native_kind_ == NativeKind::Table) {
+            const float x = static_cast<float>(point.x), y = static_cast<float>(point.y);
+            if (table_.Dragging()) {
+                if (table_.MouseMove(x, y)) InvalidateRect(hwnd_, nullptr, FALSE);
+            } else {
+                if (table_.Hover(x, y)) InvalidateRect(hwnd_, nullptr, FALSE);
+                // Full text of a clipped cell once the pointer rests on it.
+                if (table_.TipArmed()) SetTimer(hwnd_, kTableTipTimer, 500, nullptr);
+                else KillTimer(hwnd_, kTableTipTimer);
+            }
+        }
+        if (native_kind_ == NativeKind::Tree) {
+            const float x = static_cast<float>(point.x), y = static_cast<float>(point.y);
+            if (tree_.Dragging() ? tree_.MouseMove(x, y) : tree_.Hover(x, y))
+                InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        if (panning_ && native_kind_ == NativeKind::Pages) {
+            pages_pan_x_ = pan_start_x_ - static_cast<float>(point.x - pan_anchor_.x);
+            pages_scroll_ = pan_start_y_ - static_cast<float>(point.y - pan_anchor_.y);
+            ClampPages(ComputePagesLayout());
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (panning_) {
             pan_x_ = pan_start_x_ + static_cast<float>(point.x - pan_anchor_.x);
             pan_y_ = pan_start_y_ + static_cast<float>(point.y - pan_anchor_.y);
             const D2D1_RECT_F content = ContentRect();
@@ -1565,6 +2408,10 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
     case WM_MOUSELEAVE:
         mouse_tracking_ = false;
         if (archive_.Leave()) InvalidateRect(hwnd_, nullptr, FALSE);
+        KillTimer(hwnd_, kTableTipTimer);
+        if (table_.Leave()) InvalidateRect(hwnd_, nullptr, FALSE);
+        if (tree_.Leave()) InvalidateRect(hwnd_, nullptr, FALSE);
+        if (PlaybackHover(POINT{-1, -1})) InvalidateRect(hwnd_, nullptr, FALSE);
         if (chrome_hover_ != ChromeButton::None) {
             chrome_hover_ = ChromeButton::None;
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1577,6 +2424,14 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         EndPlaybackDrag(message == WM_LBUTTONUP);
         panning_ = false;
         selecting_ = false;
+        if (table_.Dragging()) {
+            table_.MouseUp();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        if (tree_.Dragging()) {
+            tree_.MouseUp();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
         if (message == WM_LBUTTONUP) ReleaseCapture();
         return 0;
     case WM_RBUTTONUP: {
@@ -1593,7 +2448,8 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         const D2D1_RECT_F content = ContentRect();
         const bool in_content = point.x >= content.left && point.x < content.right &&
             point.y >= content.top && point.y < content.bottom;
-        if ((native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex) && in_content) {
+        if ((native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
+             native_kind_ == NativeKind::Markdown) && in_content) {
             uint32_t index = 0;
             if (HitTestText(static_cast<float>(point.x), static_cast<float>(point.y), index)) {
                 const uint32_t a = (std::min)(sel_anchor_, sel_focus_);
@@ -1629,6 +2485,12 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         return 0;
     }
     case WM_TIMER:
+        if (wparam == kTableTipTimer) {
+            KillTimer(hwnd_, kTableTipTimer);
+            if (native_kind_ == NativeKind::Table && table_.ShowTip())
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         if (wparam == kZoomCloseTimer) {
             if (closing_) FinishClose(false);
             else KillTimer(hwnd_, kZoomCloseTimer);
@@ -1752,7 +2614,16 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
             Close();
             return 0;
         }
-        const bool text_kind = native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex;
+        const bool text_kind = native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
+                               native_kind_ == NativeKind::Markdown ||
+                               native_kind_ == NativeKind::Table ||
+                               native_kind_ == NativeKind::Tree;
+        if (native_kind_ == NativeKind::Tree && !find_open_ && ctrl && shift && wparam == 'C' &&
+            tree_.HasCurrent()) {
+            // The node's path ($.items[3].name) rather than the file's.
+            pulse::ops::WriteClipboardText(tree_.CurrentPath());
+            return 0;
+        }
         if (!find_open_ && command_message_) {
             // File verbs on the previewed entry (same keys as the main list).
             QuickPreviewAction action = QuickPreviewAction::None;
@@ -1780,26 +2651,47 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         }
         if (native_kind_ == NativeKind::Archive && find_open_ && wparam == VK_RETURN)
             return 0;
+        if (native_kind_ == NativeKind::Table && !find_open_ &&
+            table_.Key(static_cast<UINT>(wparam), shift, ctrl)) {
+            KillTimer(hwnd_, kTableTipTimer);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        if (native_kind_ == NativeKind::Tree && !find_open_ && !ctrl &&
+            !(HasPlayback() && (wparam == VK_HOME || wparam == VK_END)) &&
+            tree_.Key(static_cast<UINT>(wparam))) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        if (native_kind_ == NativeKind::Markdown && !find_open_ && !ctrl &&
+            (wparam == VK_PRIOR || wparam == VK_NEXT ||
+             ((wparam == VK_HOME || wparam == VK_END) && !HasPlayback()))) {
+            markdown_.Key(static_cast<UINT>(wparam));
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         if (ctrl && wparam == 'F' &&
             (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
-             native_kind_ == NativeKind::Archive)) {
+             native_kind_ == NativeKind::Archive || native_kind_ == NativeKind::Markdown ||
+             native_kind_ == NativeKind::Table || native_kind_ == NativeKind::Tree)) {
             OpenFind();
             return 0;
         }
-        if (ctrl && wparam == 'C' &&
-            (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex)) {
+        if (ctrl && wparam == 'C' && text_kind) {
             CopyTextSelection(false);
             return 0;
         }
-        if (ctrl && wparam == 'A' &&
-            (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex)) {
+        if (ctrl && wparam == 'A' && text_kind) {
             SelectAllText();
             return 0;
         }
-        if ((wparam == VK_F3 || (find_open_ && wparam == VK_RETURN)) &&
-            (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex)) {
+        if ((wparam == VK_F3 || (find_open_ && wparam == VK_RETURN)) && text_kind) {
             if (!find_open_) OpenFind();
             FindNext(shift ? -1 : 1);
+            return 0;
+        }
+        if (!find_open_ && !ctrl && PagesKey(wparam)) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
         if (!find_open_ && native_kind_ == NativeKind::Bitmap) {
@@ -1814,6 +2706,9 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
                 return 0;
             }
         }
+        if (wparam == VK_RETURN && native_kind_ == NativeKind::Archive && !find_open_ &&
+            OpenListingSelection())
+            return 0;
         if (wparam == VK_RETURN && owner_ && open_message_ && !find_open_)
             PostMessageW(owner_, open_message_, 0, 0);
         else if ((wparam == VK_LEFT || wparam == VK_UP) && owner_ && navigate_message_)

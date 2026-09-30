@@ -335,7 +335,9 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
             // std::wstring_view: the view would dangle before DrawText runs.
             tray.count_label = countLabel;
             if (vm.tray_deck.total_count != 0) {
-                tray.action_text = pulse::l10n::Get(pulse::l10n::StringId::Release);
+                tray.action_text = pulse::l10n::Get(vm.tray_deck.release_move
+                    ? pulse::l10n::StringId::TrayReleaseMove
+                    : pulse::l10n::StringId::TrayReleaseCopy);
             }
             tray.action_hovered =
                 vm.hover_region == static_cast<int>(HitTestResult::TrayRelease);
@@ -343,7 +345,65 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
             tray.state.hovered = vm.tray_drop;
             tray.expanded = true;
             painter_.DrawStagingTrayPanel(tray);
-            DrawTrayDeck(vm, slot.rc, theme);
+            DrawTrayDeck(vm, TrayDeckArea(slot.rc, vm.tray_deck, scale_), theme);
+            if (TrayStaleRowH(vm.tray_deck, scale_) > 0.0f && vm.tray_deck.live_count > 0) {
+                // Items moved or deleted outside Pulse: amber notice + Find / Remove.
+                const D2D1_RECT_F row = TrayStaleRowRect(slot.rc, vm.tray_deck, scale_);
+                const D2D1_RECT_F find = TrayStaleButtonRect(slot.rc, vm.tray_deck, scale_, 0);
+                std::wstring note = pulse::l10n::Get(pulse::l10n::StringId::TrayStaleFormat);
+                const size_t at = note.find(L"{n}");
+                if (at != std::wstring::npos)
+                    note.replace(at, 3, std::to_wstring(vm.tray_deck.stale_count));
+                D2D1_RECT_F nr = row;
+                nr.right = find.left - 4.0f * scale_;
+                if (IDWriteFactory2* f = compositor_ ? compositor_->DwriteFactory() : nullptr) {
+                    auto measure = [&](const std::wstring& s) {
+                        return MeasureTextWidth(f, compositor_->SmallFormat(), s);
+                    };
+                    note = FitEndEllipsis(note, std::max(0.0f, nr.right - nr.left), measure);
+                }
+                const D2D1_COLOR_F amber = IsHighContrast() ? theme.text : D2D1::ColorF(0xE0A43A);
+                painter_.DrawText(note, nr, compositor_->SmallFormat(), amber);
+                for (int b = 0; b < 2; ++b) {
+                    const D2D1_RECT_F rc = TrayStaleButtonRect(slot.rc, vm.tray_deck, scale_, b);
+                    const bool hot = IsHovered(vm, HitTestResult::TrayStale, b);
+                    D2D1_COLOR_F fill = theme.fill_hover;
+                    fill.a *= hot ? 1.0f : 0.55f;
+                    painter_.FillRoundedRect(rc, 6.0f * scale_, fill);
+                    painter_.DrawText(pulse::l10n::Get(b == 0 ? pulse::l10n::StringId::TrayStaleFind
+                                                            : pulse::l10n::StringId::TrayStaleRemove),
+                                      rc, compositor_->SmallFormat(),
+                                      hot ? theme.text : theme.text_secondary,
+                                      fluent::HorizontalAlignment::Center);
+                }
+            }
+            if (TrayDestRowH(vm.tray_deck, scale_) > 0.0f && vm.tray_deck.live_count > 0) {
+                // Recent destinations: click copies the tray there, Shift moves.
+                IDWriteFactory2* factory = compositor_ ? compositor_->DwriteFactory() : nullptr;
+                for (int d = 0; d < static_cast<int>(vm.tray_deck.dests.size()); ++d) {
+                    const TrayDestView& dest = vm.tray_deck.dests[static_cast<size_t>(d)];
+                    const D2D1_RECT_F rc = TrayDestChipRect(slot.rc, vm.tray_deck, scale_, d);
+                    const bool hot = !dest.missing && IsHovered(vm, HitTestResult::TrayDest, d);
+                    D2D1_COLOR_F fill = theme.fill_hover;
+                    fill.a *= hot ? 1.0f : 0.55f;
+                    painter_.FillRoundedRect(rc, 6.0f * scale_, fill);
+                    D2D1_COLOR_F fg = hot ? theme.text : theme.text_secondary;
+                    if (dest.missing) fg.a *= 0.45f;
+                    DrawIconText(rc.left + 4.0f * scale_, rc.top, 18.0f * scale_, rc.bottom - rc.top,
+                                 L"\xE8B7", L"\u25A1", fg, 0.62f);
+                    D2D1_RECT_F tr = rc;
+                    tr.left += 24.0f * scale_;
+                    tr.right -= 6.0f * scale_;
+                    std::wstring label = dest.label;
+                    if (factory && compositor_->SmallFormat()) {
+                        auto measure = [&](const std::wstring& s) {
+                            return MeasureTextWidth(factory, compositor_->SmallFormat(), s);
+                        };
+                        label = FitEndEllipsis(label, std::max(0.0f, tr.right - tr.left), measure);
+                    }
+                    painter_.DrawText(label, tr, compositor_->SmallFormat(), fg);
+                }
+            }
             continue;
         }
         if (slot.kind == SidebarSlot::TrayRelease) continue;
@@ -379,6 +439,11 @@ void MainRenderer::DrawSidebar(const WindowViewModel& vm, const D2D1_RECT_F& rec
                 slot.rc.top + 8.0f * scale_, 3.0f * scale_, barH, 1.5f * scale_);
         } else if (item.tab_row) {
             state.selected = false;
+        }
+        if (item.tab_row && item.flash > 0.0f) {
+            MakeBrush(dc, WithAlpha(theme.accent, (vm.dark ? 0.34f : 0.26f) * item.flash), brFillHover_);
+            FillRoundedRect(dc, brFillHover_.get(), slot.rc.left, slot.rc.top,
+                slot.rc.right - slot.rc.left, slot.rc.bottom - slot.rc.top, theme.radius_control * scale_);
         }
         if (isPillSlot(slot)) {
             // The gliding pill already painted this row's background.
@@ -656,7 +721,8 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
     const D2D1_COLOR_F nameColor = vm.dark ? rgba(0xEEF3F9, 1.0f) : rgba(0x1B1F24, 1.0f);
     const D2D1_COLOR_F subColor = vm.dark ? rgba(0x9FB0C4, 1.0f) : rgba(0x5B6675, 1.0f);
     const D2D1_COLOR_F folderColor = vm.dark ? rgba(0x71829A, 1.0f) : rgba(0x8A95A3, 1.0f);
-    const std::wstring cutLabel = pulse::l10n::Get(pulse::l10n::StringId::Cut);
+    const std::wstring moveLabel = pulse::l10n::Get(pulse::l10n::StringId::TrayIntentMove);
+    const std::wstring copyLabel = pulse::l10n::Get(pulse::l10n::StringId::TrayIntentCopy);
 
     auto draw_card = [&](const TrayCardView& card, bool is_top) {
         const TrayCardPose pose = TrayCardPoseOf(g, card, deck.spread);
@@ -722,30 +788,40 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
         const float tw = std::max(0.0f, rc.right - pad - reserve - tx);
         const float lineName = 18.0f * scale_, lineSub = 16.0f * scale_, lineDir = 15.0f * scale_;
         float ty = (rc.top + rc.bottom) * 0.5f - (lineName + lineSub + lineDir) * 0.5f;
-        float nameW = tw;
-        float badgeW = 0.0f;
-        if (card.cut && factory) {
-            badgeW = MeasureTextWidth(factory, folderFmt, cutLabel) + 10.0f * scale_;
-            if (badgeW + 40.0f * scale_ < tw) nameW = tw - badgeW - 6.0f * scale_;
-            else badgeW = 0.0f;
-        }
-        const float nameInk = std::min(nameW, factory ? MeasureTextWidth(factory, nameFmt, card.name) : nameW);
+        const float nameW = tw;
         DrawTextEndEllipsis(dc, factory, nameFmt,
             color(card.missing ? theme.text_disabled : nameColor), card.name, tx, ty, nameW, lineName);
-        if (badgeW > 0.0f) {
-            const float bx = tx + nameInk + 6.0f * scale_;
-            const float bh = 14.0f * scale_;
-            const float by = ty + (lineName - bh) * 0.5f + 0.5f * scale_;
-            FillRoundedRect(dc, color(vm.dark ? rgba(0xFFAA3C, 0.18f) : rgba(0xD67800, 0.12f)),
-                            bx, by, badgeW, bh, 4.0f * scale_);
+        // Intent chip (bottom-right): what release does with this card's
+        // batch. Orange = move, neutral = copy; clickable on the top card.
+        const D2D1_RECT_F chipRc = TrayIntentRect(g);
+        if (card.batch >= 0) {
+            const std::wstring& chipLabel = card.cut ? moveLabel : copyLabel;
+            const bool chipHot = is_top &&
+                vm.hover_region == static_cast<int>(HitTestResult::TrayIntent);
+            const float bw = chipRc.right - chipRc.left, bh = chipRc.bottom - chipRc.top;
+            const D2D1_COLOR_F chipFill = card.cut
+                ? (vm.dark ? rgba(0xFFAA3C, chipHot ? 0.30f : 0.18f)
+                           : rgba(0xD67800, chipHot ? 0.22f : 0.12f))
+                : (vm.dark ? rgba(0xFFFFFF, chipHot ? 0.16f : 0.08f)
+                           : rgba(0x000000, chipHot ? 0.10f : 0.05f));
+            FillRoundedRect(dc, color(chipFill), chipRc.left, chipRc.top, bw, bh, bh * 0.5f);
+            if (is_top && card.hover > 0.01f && !hc) {
+                D2D1_COLOR_F edge = card.cut ? (vm.dark ? rgba(0xFFB454, 0.55f) : rgba(0xB25E00, 0.45f))
+                                             : theme.text_secondary;
+                edge.a *= 0.6f * std::clamp(card.hover, 0.0f, 1.0f);
+                dc->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(chipRc.left + 0.5f,
+                    chipRc.top + 0.5f, chipRc.right - 0.5f, chipRc.bottom - 0.5f),
+                    bh * 0.5f, bh * 0.5f), color(edge), 1.0f);
+            }
             ComPtr<IDWriteTextLayout> bl;
-            if (factory && SUCCEEDED(factory->CreateTextLayout(cutLabel.c_str(),
-                    static_cast<UINT32>(cutLabel.size()), folderFmt, badgeW, bh, &bl)) && bl.get()) {
+            if (factory && SUCCEEDED(factory->CreateTextLayout(chipLabel.c_str(),
+                    static_cast<UINT32>(chipLabel.size()), folderFmt, bw, bh, &bl)) && bl.get()) {
                 bl->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                 bl->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                bl->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, {0, static_cast<UINT32>(cutLabel.size())});
-                dc->DrawTextLayout(D2D1::Point2F(bx, by), bl.get(),
-                    color(vm.dark ? rgba(0xFFB454, 1.0f) : rgba(0xB25E00, 1.0f)));
+                bl->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, {0, static_cast<UINT32>(chipLabel.size())});
+                dc->DrawTextLayout(D2D1::Point2F(chipRc.left, chipRc.top), bl.get(),
+                    color(card.cut ? (vm.dark ? rgba(0xFFB454, 1.0f) : rgba(0xB25E00, 1.0f))
+                                   : theme.text_secondary));
             }
         }
         ty += lineName;
@@ -757,9 +833,12 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
         ty += lineSub;
         if (!card.folder.empty() && factory) {
             auto measure = [&](const std::wstring& s) { return MeasureTextWidth(factory, folderFmt, s); };
-            const auto [head, last] = MiddleEllipsisPath(card.folder, tw, measure);
+            // The last line shares its row with the intent chip.
+            const float dirW = card.batch >= 0
+                ? std::max(0.0f, std::min(tw, chipRc.left - 6.0f * scale_ - tx)) : tw;
+            const auto [head, last] = MiddleEllipsisPath(card.folder, dirW, measure);
             DrawTextEndEllipsis(dc, factory, folderFmt, color(folderColor), head + last,
-                                tx, ty, tw, lineDir);
+                                tx, ty, dirW, lineDir);
         }
 
         // Peeking layers read as "further away": dim them.
@@ -785,10 +864,81 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
         dc->SetTransform(old);
     };
 
-    const std::vector<int> order = TrayCardPaintOrder(deck);
-    for (const int idx : order) {
-        const TrayCardView& card = deck.cards[static_cast<size_t>(idx)];
-        draw_card(card, !card.ghost && idx == 0);
+    if (deck.comparing) {
+        // Two staged files side by side: where / modified / size / content.
+        const TrayCompareGeom cg = TrayCompareGeometry(panel_rc, scale_, deck.thumb_dip);
+        const TrayCompareView& cv = deck.compare;
+        dc->FillRoundedRectangle(D2D1::RoundedRect(cg.box, g.radius, g.radius), color(cardFill));
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(cg.box, g.radius, g.radius), color(cardEdge),
+                                 1.0f);
+        auto fit = [&](const std::wstring& t, const D2D1_RECT_F& rc, IDWriteTextFormat* f) {
+            if (!factory) return t;
+            return FitEndEllipsis(t, std::max(0.0f, rc.right - rc.left),
+                [&](const std::wstring& x) { return MeasureTextWidth(factory, f, x); });
+        };
+        using TrayStr = pulse::l10n::StringId;
+        const TrayStr labels[4] = {TrayStr::TrayCmpLocation, TrayStr::TrayCmpModified, TrayStr::TrayCmpSize,
+                               TrayStr::TrayCmpContent};
+        for (int row = 1; row <= 4; ++row) {
+            const D2D1_RECT_F rc = TrayCompareCell(cg, row, -1);
+            painter_.DrawText(fit(pulse::l10n::Get(labels[row - 1]), rc, subFmt), rc, subFmt,
+                              folderColor);
+        }
+        const std::wstring newer = L" \x2191"; // later mtime (2 s tolerance)
+        for (int c = 0; c < 2; ++c) {
+            D2D1_RECT_F rc = TrayCompareCell(cg, 0, c);
+            painter_.DrawText(fit(cv.name[c], rc, nameFmt), rc, nameFmt, nameColor);
+            rc = TrayCompareCell(cg, 1, c);
+            painter_.DrawText(fit(cv.where[c], rc, subFmt), rc, subFmt, subColor);
+            rc = TrayCompareCell(cg, 2, c);
+            const bool is_newer = cv.newer == c;
+            painter_.DrawText(fit(is_newer ? cv.time[c] + newer : cv.time[c], rc, subFmt), rc,
+                              subFmt, is_newer ? theme.accent
+                                               : (cv.newer >= 0 ? folderColor : subColor));
+            rc = TrayCompareCell(cg, 3, c);
+            painter_.DrawText(fit(cv.size[c], rc, subFmt), rc, subFmt,
+                              cv.size_differs ? nameColor : subColor);
+        }
+        const D2D1_RECT_F crc = TrayCompareCell(cg, 4, 2);
+        std::wstring ctext;
+        D2D1_COLOR_F ccol = subColor;
+        switch (cv.content) {
+        case 0: {
+            ctext = pulse::l10n::Get(TrayStr::TrayCmpCheck);
+            ccol = theme.accent;
+            if (vm.hover_region == static_cast<int>(HitTestResult::TrayCompare) &&
+                vm.hover_control_index == 1) {
+                painter_.FillRoundedRect(crc, 6.0f * scale_, theme.fill_hover);
+            }
+            break;
+        }
+        case 1: ctext = pulse::l10n::Get(TrayStr::TrayCmpChecking); break;
+        case 2: ctext = pulse::l10n::Get(TrayStr::TrayCmpSame); ccol = theme.accent; break;
+        case 3: {
+            if (cv.text == 1) {
+                ctext = pulse::l10n::Get(TrayStr::TrayCmpViewDiff);
+                ccol = theme.accent;
+                if (vm.hover_region == static_cast<int>(HitTestResult::TrayCompare) &&
+                    vm.hover_control_index == 2)
+                    painter_.FillRoundedRect(crc, 6.0f * scale_, theme.fill_hover);
+            } else {
+                ctext = pulse::l10n::Get(cv.text == 0 ? TrayStr::TrayCmpBinary
+                                                      : TrayStr::TrayCmpDifferent);
+                ccol = theme.danger;
+            }
+            break;
+        }
+        default: ctext = pulse::l10n::Get(TrayStr::TrayCmpFailed); break;
+        }
+        D2D1_RECT_F ctr = crc;
+        ctr.left += 4.0f * scale_;
+        painter_.DrawText(fit(ctext, ctr, subFmt), ctr, subFmt, ccol);
+    } else {
+        const std::vector<int> order = TrayCardPaintOrder(deck);
+        for (const int idx : order) {
+            const TrayCardView& card = deck.cards[static_cast<size_t>(idx)];
+            draw_card(card, !card.ghost && idx == 0);
+        }
     }
 
     // Dismiss smoke: radial puffs drifting out of the × badge.
@@ -829,8 +979,9 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
     // exiting ghosts remain (tray already cleared).
     if (deck.live_count > 0) {
         const std::wstring index_text = TrayIndexText(deck);
-        const TrayFooterGeom f = TrayFooterGeometry(panel_rc, scale_, deck.total_count,
-            MeasureTextWidth(factory, compositor_->SmallFormat(), index_text));
+        const TrayFooterGeom f = TrayFooterGeometry(panel_rc, scale_,
+            deck.comparing ? 1 : deck.total_count,
+            MeasureTextWidth(factory, compositor_->SmallFormat(), index_text), deck.can_compare);
         if (f.pager) {
             auto pager_button = [&](const D2D1_RECT_F& rc, const wchar_t* glyph,
                                     const wchar_t* fallback, HitTestResult::Region region) {
@@ -866,9 +1017,27 @@ void MainRenderer::DrawTrayDeck(const WindowViewModel& vm, const D2D1_RECT_F& pa
             // Next to the pager the sentence rarely fits: fall back to the bare
             // size ("1.6 MB") before cutting anything with an ellipsis.
             if (f.pager && measure(totals) > avail) totals = size_text;
+            // A lone "…" next to the pager says nothing: leave the slot empty.
+            if (f.pager && measure(totals) > avail) totals.clear();
             totals = FitEndEllipsis(totals, avail, measure);
         }
         painter_.DrawText(totals, f.totals, compositor_->SmallFormat(), theme.text_secondary);
+        if (deck.can_compare) {
+            const bool cmp_hot = vm.hover_region == static_cast<int>(HitTestResult::TrayCompare) &&
+                                 vm.hover_control_index == 0;
+            const float cr = (f.compare.bottom - f.compare.top) * 0.5f;
+            if (deck.comparing) {
+                D2D1_COLOR_F on = theme.accent;
+                on.a *= cmp_hot ? 0.28f : 0.18f;
+                painter_.FillRoundedRect(f.compare, cr, on);
+            } else if (cmp_hot) {
+                painter_.FillRoundedRect(f.compare, cr, theme.fill_hover);
+            }
+            painter_.DrawText(pulse::l10n::Get(pulse::l10n::StringId::TrayCompare), f.compare,
+                              compositor_->SmallFormat(),
+                              deck.comparing || cmp_hot ? theme.accent : theme.text_secondary,
+                              fluent::HorizontalAlignment::Center);
+        }
         const bool clear_hovered =
             vm.hover_region == static_cast<int>(HitTestResult::TrayClear);
         const float clear_w = 72.0f * scale_;

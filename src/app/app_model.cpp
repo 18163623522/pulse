@@ -1,6 +1,7 @@
 // app_model.cpp
 #include "app_model.h"
 #include "search_query.h"
+#include "entry_group.h"
 #include "../common/json_utils.h"
 #include "../common/localization.h"
 #include "../common/path_utils.h"
@@ -842,8 +843,52 @@ void StagingTray::Collect(const std::vector<std::wstring>& paths, bool move_inte
     batches_.push_back(std::move(batch));
 }
 
+void StagingTray::ReplacePath(const std::wstring& from, const std::wstring& to) {
+    const std::wstring key = fs::NormalizePath(from);
+    for (auto& batch : batches_)
+        for (auto& item : batch.items)
+            if (_wcsicmp(item.path.c_str(), key.c_str()) == 0) item.path = fs::NormalizePath(to);
+}
+
+bool StagingTray::RefreshExists() {
+    bool changed = false;
+    for (auto& batch : batches_) {
+        for (auto& it : batch.items) {
+            // Network paths are not probed: a dead share would stall the UI thread.
+            const bool unc = it.path.starts_with(L"\\\\?\\UNC\\") ||
+                (it.path.starts_with(L"\\\\") && !it.path.starts_with(L"\\\\?\\"));
+            if (unc) continue;
+            const bool now = GetFileAttributesW(it.path.c_str()) != INVALID_FILE_ATTRIBUTES;
+            if (now != it.exists) {
+                it.exists = now;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+size_t StagingTray::RemoveMissing() {
+    size_t removed = 0;
+    for (size_t b = batches_.size(); b-- > 0;) {
+        auto& batch = batches_[b];
+        for (size_t i = batch.items.size(); i-- > 0;) {
+            if (batch.items[i].exists) continue;
+            batch.total_size -= std::min(batch.total_size, batch.items[i].size);
+            batch.items.erase(batch.items.begin() + static_cast<std::ptrdiff_t>(i));
+            ++removed;
+        }
+        if (batch.items.empty()) batches_.erase(batches_.begin() + static_cast<std::ptrdiff_t>(b));
+    }
+    return removed;
+}
+
 void StagingTray::RemoveBatch(size_t idx) {
     if (idx < batches_.size()) batches_.erase(batches_.begin() + idx);
+}
+
+void StagingTray::SetMoveIntent(size_t idx, bool move_intent) {
+    if (idx < batches_.size()) batches_[idx].move_intent = move_intent;
 }
 
 void StagingTray::RemoveItem(size_t batch_idx, size_t item_idx) {
@@ -1164,8 +1209,7 @@ SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
                   L" (" + root[0] + L":)";
         uint64_t total = totalBytes.QuadPart;
         uint64_t free = freeBytes.QuadPart;
-        uint64_t used = total > free ? total - free : 0;
-        e.detail = pulse::format::ByteSize(used, false, pulse::format::ByteSizeStyle::Compact)
+        e.detail = pulse::format::ByteSize(free, false, pulse::format::ByteSizeStyle::Compact)
                  + L" / " + pulse::format::ByteSize(total, false,
                                                      pulse::format::ByteSizeStyle::Compact);
         e.glyph = L"\xE7F1"; // HardDrive (Segoe Fluent Icons)
@@ -1420,6 +1464,22 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
         ParsePulsePath(tab->current_path, nullptr, &rest);
         out.search_query = rest;
         out.is_content_search = SplitSearchQueryText(rest).content.present();
+        // The breadcrumb shows where the search started, then one search segment.
+        out.has_search_origin = true;
+        if (tab->search_origin_valid) {
+            out.search_origin = tab->search_origin_path;
+        } else {
+            const auto spec = ParseSearchQuery(rest);
+            out.search_origin = spec.location == LocationScope::CustomFolder ? spec.custom_folder
+                : spec.location == LocationScope::CurrentFolder ? spec.current_folder : std::wstring{};
+        }
+        std::wstring needle = SearchDisplayNeedle(rest);
+        if (needle.size() > 24) needle = needle.substr(0, 23) + L"\u2026";
+        std::wstring crumb(needle.size() + 64, L'\0');
+        const int written = swprintf_s(crumb.data(), crumb.size(),
+            l10n::Get(l10n::StringId::SearchCrumbFormat).c_str(), needle.c_str());
+        crumb.resize(written > 0 ? static_cast<size_t>(written) : 0);
+        out.search_crumb = crumb.empty() ? l10n::Get(l10n::StringId::Search) : crumb;
         // Keep pulse:search:... so the address bar is one segment, not C:\ splits.
         out.path = tab->current_path;
     }
@@ -1480,6 +1540,174 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
         }
         out.filter_map = tab->view_filter_map;
     }
+    out.compare_marks = tab->compare_marks;
+    out.compare_active = tab->compare_marks != nullptr;
+    out.compare_diff_only = out.compare_active && tab->compare_diff_only;
+    out.compare_counts = out.compare_active ? tab->compare_counts : std::array<int, 5>{};
+    if (out.compare_active) {
+        const auto& c = tab->compare_counts;
+        // Summary only (no title): split panes are narrow.
+        out.banner_title.clear();
+        if (c[1] + c[2] + c[3] + c[4] == 0) {
+            out.banner_message = l10n::Get(l10n::StringId::CompareIdentical);
+        } else {
+            wchar_t summary[256]{};
+            swprintf_s(summary, l10n::Get(l10n::StringId::CompareSummaryFormat).c_str(),
+                       c[1], c[2], c[3], c[4]);
+            out.banner_message = summary;
+        }
+        out.banner_kind = 0;
+        if (out.compare_diff_only && tab->snapshot && !tab->content_results &&
+            tab->compare_marks->size() == tab->EntryCount()) {
+            if (!tab->view_compare_map || tab->view_compare_base != out.filter_map ||
+                tab->view_compare_marks != tab->compare_marks) {
+                auto diff = std::make_shared<ui::PaneViewModel::FilterMap>();
+                const auto& marks = *tab->compare_marks;
+                if (out.filter_map) {
+                    for (int i : *out.filter_map)
+                        if (i >= 0 && static_cast<size_t>(i) < marks.size() && marks[static_cast<size_t>(i)])
+                            diff->push_back(i);
+                } else {
+                    const int n = static_cast<int>(tab->EntryCount());
+                    for (int i = 0; i < n; ++i)
+                        if (marks[static_cast<size_t>(i)] && tab->EntryVisible(i)) diff->push_back(i);
+                }
+                tab->view_compare_base = out.filter_map;
+                tab->view_compare_marks = tab->compare_marks;
+                tab->view_compare_map = std::move(diff);
+            }
+            out.filter_map = tab->view_compare_map;
+        }
+    }
+    // "Group by": the worker sorted with the same key, so each group is one
+    // run of view rows. Spans are cached until an input changes.
+    out.group_by = tab->EffectiveGroup();
+    if (out.group_by != 0 && tab->snapshot && !tab->content_results && !out.compare_active) {
+        const GroupBy by = GroupByFromInt(out.group_by);
+        GroupClock clock = by == GroupBy::Date ? MakeGroupClock() : GroupClock{};
+        // Tag groups re-split when the catalog changes; dates at midnight.
+        const auto tag_catalog = by == GroupBy::Tag ? CurrentTagCatalog() : nullptr;
+        const uint64_t day_key = by == GroupBy::Tag ? (tag_catalog ? tag_catalog->revision : 0) : clock.today;
+        const int sort_key = static_cast<int>(tab->sort_column) * 2 +
+                             static_cast<int>(tab->sort_direction);
+        if (!tab->view_groups || tab->view_groups_snapshot != tab->snapshot ||
+            tab->view_groups_filter != out.filter_map || tab->view_groups_by != out.group_by ||
+            tab->view_groups_sort != sort_key || tab->view_groups_day != day_key ||
+            tab->view_groups_rev != tab->group_collapse_rev) {
+            auto groups = std::make_shared<ui::ListGroups>();
+            if (by == GroupBy::Tag) clock.tags = TagGroupsForFolder(tab->current_path);
+            const auto& entries = *tab->snapshot;
+            const auto folded = tab->collapsed_groups.find(tab->current_path);
+            const std::set<std::wstring>* collapsed =
+                folded != tab->collapsed_groups.end() ? &folded->second : nullptr;
+            const size_t rows = out.filter_map ? out.filter_map->size() : entries.size();
+            // A key seen twice means the snapshot is not in grouped order yet
+            // (re-sort pending, day rollover): draw it flat until it is.
+            std::set<std::wstring> seen;
+            bool contiguous = true;
+            int prev = -1;
+            for (size_t row = 0; row < rows; ++row) {
+                const int src = out.filter_map ? (*out.filter_map)[row] : static_cast<int>(row);
+                if (src < 0 || static_cast<size_t>(src) >= entries.size()) {
+                    if (!groups->empty()) ++groups->back().count;
+                    continue;
+                }
+                const fs::DirEntry& e = entries[static_cast<size_t>(src)];
+                if (groups->empty() || prev < 0 ||
+                    GroupCompare(entries[static_cast<size_t>(prev)], e, by, clock,
+                                 tab->sort_column, tab->sort_direction) != 0) {
+                    ui::ListGroup g;
+                    g.first = static_cast<int>(row);
+                    g.rank = GroupRank(e, by, clock);
+                    g.sample = src;
+                    g.key = GroupKey(e, by, clock);
+                    g.collapsed = collapsed && collapsed->contains(g.key);
+                    if (by == GroupBy::Tag && tag_catalog && g.rank >= 0 &&
+                        static_cast<size_t>(g.rank) < tag_catalog->tags.size()) {
+                        g.label = tag_catalog->tags[static_cast<size_t>(g.rank)].name;
+                        g.color_rgb = tag_catalog->tags[static_cast<size_t>(g.rank)].rgb;
+                    }
+                    if (by == GroupBy::Location) g.label = GroupLocationLabel(e);
+                    if (!seen.insert(g.key).second) {
+                        contiguous = false;
+                        break;
+                    }
+                    groups->push_back(std::move(g));
+                }
+                ui::ListGroup& g = groups->back();
+                ++g.count;
+                if (!e.is_dir) g.bytes += e.size;
+                prev = src;
+            }
+            if (!contiguous) groups->clear();
+            tab->view_groups = std::move(groups);
+            tab->view_groups_snapshot = tab->snapshot;
+            tab->view_groups_filter = out.filter_map;
+            tab->view_groups_by = out.group_by;
+            tab->view_groups_sort = sort_key;
+            tab->view_groups_day = day_key;
+            tab->view_groups_rev = tab->group_collapse_rev;
+        }
+        out.groups = tab->view_groups;
+    }
+}
+
+namespace {
+std::wstring CompareKey(const std::wstring& name) {
+    std::wstring key = name;
+    if (!key.empty()) CharLowerBuffW(key.data(), static_cast<DWORD>(key.size()));
+    return key;
+}
+uint64_t CompareTicks(const FILETIME& ft) {
+    return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+}
+} // namespace
+
+FolderCompareResult CompareFolderTabs(const Tab& a, const Tab& b) {
+    FolderCompareResult result;
+    if (!a.snapshot || !b.snapshot || a.content_results || b.content_results) return result;
+    using M = ui::CompareMark;
+    const auto& ea = *a.snapshot;
+    const auto& eb = *b.snapshot;
+    auto ma = std::make_shared<std::vector<uint8_t>>(ea.size(), static_cast<uint8_t>(M::Same));
+    auto mb = std::make_shared<std::vector<uint8_t>>(eb.size(), static_cast<uint8_t>(M::Same));
+    std::unordered_map<std::wstring, int> index_b;
+    index_b.reserve(eb.size());
+    for (int j = 0; j < static_cast<int>(eb.size()); ++j)
+        if (b.EntryVisible(j)) index_b.emplace(CompareKey(eb[static_cast<size_t>(j)].name), j);
+    std::vector<char> matched(eb.size(), 0);
+    constexpr uint64_t kTolerance = 20000000ull; // 2 s: FAT/exFAT timestamp granularity
+    for (int i = 0; i < static_cast<int>(ea.size()); ++i) {
+        if (!a.EntryVisible(i)) continue;
+        const fs::DirEntry& x = ea[static_cast<size_t>(i)];
+        const auto found = index_b.find(CompareKey(x.name));
+        if (found == index_b.end()) {
+            (*ma)[static_cast<size_t>(i)] = static_cast<uint8_t>(M::OnlyHere);
+            continue;
+        }
+        const int j = found->second;
+        matched[static_cast<size_t>(j)] = 1;
+        const fs::DirEntry& y = eb[static_cast<size_t>(j)];
+        M mark_a = M::Same, mark_b = M::Same;
+        if (x.is_dir != y.is_dir) {
+            mark_a = mark_b = M::Differs;
+        } else if (!x.is_dir) {
+            const uint64_t tx = CompareTicks(x.mtime), ty = CompareTicks(y.mtime);
+            if (tx > ty + kTolerance) { mark_a = M::Newer; mark_b = M::Older; }
+            else if (ty > tx + kTolerance) { mark_a = M::Older; mark_b = M::Newer; }
+            else if (x.size != y.size) mark_a = mark_b = M::Differs;
+        }
+        (*ma)[static_cast<size_t>(i)] = static_cast<uint8_t>(mark_a);
+        (*mb)[static_cast<size_t>(j)] = static_cast<uint8_t>(mark_b);
+    }
+    for (int j = 0; j < static_cast<int>(eb.size()); ++j)
+        if (!matched[static_cast<size_t>(j)] && b.EntryVisible(j))
+            (*mb)[static_cast<size_t>(j)] = static_cast<uint8_t>(M::OnlyHere);
+    for (size_t i = 0; i < ma->size(); ++i) if (a.EntryVisible(static_cast<int>(i))) ++result.counts_a[(*ma)[i]];
+    for (size_t j = 0; j < mb->size(); ++j) if (b.EntryVisible(static_cast<int>(j))) ++result.counts_b[(*mb)[j]];
+    result.marks_a = std::move(ma);
+    result.marks_b = std::move(mb);
+    return result;
 }
 
 std::wstring LayoutTabTitle(const LayoutTab& tab) {

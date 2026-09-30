@@ -26,6 +26,7 @@ struct WorkItem {
     bool load_paths = false;
     bool preserve_order = false;
     std::vector<std::wstring> paths;
+    int group_by = 0;
     std::vector<uint64_t> display_times;
 };
 
@@ -53,12 +54,14 @@ public:
     void Stop();
 
     // Enqueue a refresh for path. Returns the generation assigned.
-    uint64_t Refresh(const std::wstring& path, ui::SortColumn col, ui::SortDirection dir);
+    uint64_t Refresh(const std::wstring& path, ui::SortColumn col, ui::SortDirection dir,
+                     int group_by = 0);
 
     uint64_t LoadPaths(const std::wstring& view_path, std::vector<std::wstring> paths,
                        ui::SortColumn col, ui::SortDirection dir,
                        bool preserve_order = false,
-                       std::vector<uint64_t> display_times = {});
+                       std::vector<uint64_t> display_times = {},
+                       int group_by = 0);
 
     void EnqueueIo(std::function<void()> task);
 

@@ -96,6 +96,17 @@ enum MenuCmd : int {
     CmdViewRecentChanges = 180,
     CmdColumnLayout = 181,
     CmdShortcutHelp = 182,
+    CmdCompareSideBySide = 183, // two folders selected: split + compare
+    CmdCompareToggle = 184,     // split menu: compare the two panes
+    CmdCompareDiffOnly = 185,   // split menu: differences only
+    CmdGroupNone = 186,         // "group by" submenu: none / name / date / type / size
+    CmdGroupName = 187,
+    CmdGroupDate = 188,
+    CmdGroupType = 189,
+    CmdGroupSize = 190,
+    CmdGroupTag = 191,          // = CmdGroupNone + GroupBy::Tag
+    CmdGroupLocation = 192,     // = CmdGroupNone + GroupBy::Location
+    CmdRestoreAllRecycle = 193, // recycle background: restore every listed item
     CmdRecentBase = 200,
     CmdIndexBase = 1000,
     // Explorer integration (优化.md §7): registry static verbs bound to the
@@ -157,10 +168,15 @@ struct BackgroundViewOptions {
     bool indexed_search = false;
     bool show_path = false;
     bool filesystem = true;
+    int group_by = 0;        // app::GroupBy value
+    bool can_group = false;  // real folders, Recent, search results, tag views
+    bool group_virtual = false; // multi-folder view (search, tag, recycle): Location instead of Tag
 };
 void AppendBackgroundViewCommands(std::vector<ui::FluentMenuItem>& items,
                                   const BackgroundViewOptions& options);
 std::vector<ui::FluentMenuItem> BuildSortMenu(const BackgroundViewOptions& options);
+// "Group by" submenu item (children: name, date, type, size, none).
+ui::FluentMenuItem BuildGroupMenu(const BackgroundViewOptions& options);
 ui::FluentMenuItem BuildShortcutHints();
 std::vector<ui::FluentMenuItem> BuildRecycleItemMenu(bool can_undo,
                                                      const std::wstring& undo_label);

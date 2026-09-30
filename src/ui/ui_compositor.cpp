@@ -138,7 +138,7 @@ bool Compositor::DrawLumaText(std::wstring_view text, IDWriteTextFormat* format,
                               const D2D1_COLOR_F& foreground,
                               const D2D1_COLOR_F& background,
                               DWRITE_TEXT_ALIGNMENT alignment) {
-    if (!lumaText_ || !lumaText_->Enabled()) return false;
+    if (!lumaText_ || !lumaText_->Enabled() || !typography::UseLumaTextForUi()) return false;
     if (lumaText_->Draw(text, format, bounds, foreground, background, alignment)) {
         return true;
     }
@@ -148,7 +148,7 @@ bool Compositor::DrawLumaText(std::wstring_view text, IDWriteTextFormat* format,
 
 bool Compositor::MeasureLumaText(std::wstring_view text, IDWriteTextFormat* format,
                                  float& width, float* height) {
-    if (!lumaText_ || !lumaText_->Enabled()) return false;
+    if (!lumaText_ || !lumaText_->Enabled() || !typography::UseLumaTextForUi()) return false;
     return lumaText_->Measure(text, format, width, height);
 }
 
@@ -294,7 +294,8 @@ void Compositor::Resize(int width, int height) {
 bool Compositor::UpdateTextRenderingParams(HMONITOR monitor) {
     if (!dwriteFactory_.get() || !dc_.get()) return false;
     if (!monitor && hwnd_) monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-    if (textRenderingParams_.get() && monitor == text_params_monitor_) return true;
+    const int mode = static_cast<int>(typography::CurrentTextRenderMode());
+    if (textRenderingParams_.get() && monitor == text_params_monitor_ && mode == text_params_mode_) return true;
 
     ComPtr<IDWriteRenderingParams2> next;
     if (FAILED(typography::CreateRenderingParams(dwriteFactory_.get(), monitor, &next)) ||
@@ -304,6 +305,7 @@ bool Compositor::UpdateTextRenderingParams(HMONITOR monitor) {
     const bool monitor_changed = text_params_monitor_ && text_params_monitor_ != monitor;
     textRenderingParams_ = std::move(next);
     text_params_monitor_ = monitor;
+    text_params_mode_ = mode;
     dc_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     dc_->SetTextRenderingParams(textRenderingParams_.get());
     if (monitor_changed && hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);

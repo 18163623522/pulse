@@ -19,7 +19,7 @@ void FillFolderSizes(AppState& s, ui::WindowViewModel& vm) {
             (!pane.is_file_system && !pane.is_search) || pane.is_recycle) continue;
         const auto list = s.renderer.PaneListRect(pane, slot.rect);
         ui::ViewLayout layout(pane.view_mode, list, pane.EntryCount(), pane.scroll_x, pane.scroll_y, s.scale,
-                              s.renderer.ListRowHeightDip(pane, list));
+                              s.renderer.ListRowHeightDip(pane, list), pane.Groups());
         const auto [first, last] = layout.VisibleRange();
         for (int i = std::max(0, first); i <= last; ++i) {
             const int source = pane.SourceIndex(i);

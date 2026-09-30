@@ -846,6 +846,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::ListSizeBar: target=l.list_style_row[2];break;
         case I::ListTagNameColor: target=l.list_style_row[3];break;
     case I::SettingsFolderSort: target=l.folder_sort_card;break;
+    case I::SettingsTextRender: target=l.text_render_card;break;
     case I::SettingsWallpaper: target=l.wallpaper_card;break;
     case I::SettingsWallpaperLook: target=l.wallpaper_look_card;break;
     case I::SettingsWallpaperBlur: target=l.wallpaper_blur_card;break;
@@ -854,6 +855,8 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsShowProtected: target=l.protected_files_row;break;
     case I::PinnedNames: target=l.pinned_names_row;break;
     case I::SettingsVerticalTabs: target=l.vertical_tabs_row;break;
+    case I::SettingsHints: target=l.hints_row;break;
+    case I::SettingsHintsReset: target=l.hints_reset_row;break;
     case I::SettingsBlankClickBack: target=l.blank_click_row;break;
     case I::SettingsWinE: target=l.win_e_row;break;
     case I::SettingsShellTags: target=l.shell_tags_row;break;

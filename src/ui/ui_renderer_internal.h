@@ -10,6 +10,7 @@
 #include "../app/search_query.h"
 #include "../common/text_format.h"
 #include "../common/display_path.h"
+#include "preview_format_catalog.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -372,12 +373,91 @@ void ClearTextWidthCache() {
     }
     inline float TrayCardHeightDip(float thumb_dip) { return TrayThumbDip(thumb_dip) + 20.0f; }
 
+    // Recent drop destinations: one chip row at the very bottom of the tray
+    // panel; the deck and its footer sit in the area above it.
+    inline float TrayDestRowH(const TrayDeckView& deck, float scale) {
+        return deck.total_count > 0 && !deck.dests.empty() ? 30.0f * scale : 0.0f;
+    }
+    // Stale-items notice ("⚠ N moved or deleted  [Find] [Remove]") above the chips.
+    inline float TrayStaleRowH(const TrayDeckView& deck, float scale) {
+        return deck.total_count > 0 && deck.stale_count > 0 ? 28.0f * scale : 0.0f;
+    }
+    inline float TrayBottomRowsH(const TrayDeckView& deck, float scale) {
+        return TrayDestRowH(deck, scale) + TrayStaleRowH(deck, scale);
+    }
+    inline D2D1_RECT_F TrayDeckArea(const D2D1_RECT_F& panel, const TrayDeckView& deck,
+                                    float scale) {
+        D2D1_RECT_F r = panel;
+        r.bottom -= TrayBottomRowsH(deck, scale);
+        return r;
+    }
+    inline D2D1_RECT_F TrayStaleRowRect(const D2D1_RECT_F& panel, const TrayDeckView& deck,
+                                        float scale) {
+        const float bottom = panel.bottom - TrayDestRowH(deck, scale) - 8.0f * scale;
+        return D2D1::RectF(panel.left + 10.0f * scale, bottom - 22.0f * scale,
+                           panel.right - 10.0f * scale, bottom);
+    }
+    // i = 0 find, 1 remove (right-most).
+    inline D2D1_RECT_F TrayStaleButtonRect(const D2D1_RECT_F& panel, const TrayDeckView& deck,
+                                           float scale, int i) {
+        const D2D1_RECT_F row = TrayStaleRowRect(panel, deck, scale);
+        const float w = 52.0f * scale;
+        const float right = row.right - (i == 0 ? w + 4.0f * scale : 0.0f);
+        return D2D1::RectF(right - w, row.top, right, row.bottom);
+    }
+    inline D2D1_RECT_F TrayDestChipRect(const D2D1_RECT_F& panel, const TrayDeckView& deck,
+                                        float scale, int i) {
+        const int n = std::max(1, static_cast<int>(deck.dests.size()));
+        const float gap = 6.0f * scale;
+        const float left = panel.left + 10.0f * scale;
+        const float right = panel.right - 10.0f * scale;
+        const float bottom = panel.bottom - 8.0f * scale;
+        const float w = std::max(1.0f, (right - left - gap * static_cast<float>(n - 1)) /
+                                       static_cast<float>(n));
+        const float x = left + static_cast<float>(i) * (w + gap);
+        return D2D1::RectF(x, bottom - 24.0f * scale, x + w, bottom);
+    }
+
+    // Compare table (two staged files): 5 rows in the card-stack area.
+    inline float TrayCompareBoxDip(float thumb_dip) {
+        return std::max(TrayCardHeightDip(thumb_dip) + 22.0f, 98.0f);
+    }
+    struct TrayCompareGeom {
+        D2D1_RECT_F box{};
+        float label_w = 0.0f, row_h = 0.0f, col_w = 0.0f, scale = 1.0f;
+    };
+    inline TrayCompareGeom TrayCompareGeometry(const D2D1_RECT_F& deck, float scale,
+                                               float thumb_dip) {
+        TrayCompareGeom g;
+        g.scale = scale;
+        const float top = deck.top + 38.0f * scale;
+        g.box = D2D1::RectF(deck.left + 10.0f * scale, top, deck.right - 10.0f * scale,
+                            top + TrayCompareBoxDip(thumb_dip) * scale);
+        g.row_h = std::min(20.0f * scale, (g.box.bottom - g.box.top - 8.0f * scale) / 5.0f);
+        g.label_w = 58.0f * scale;
+        g.col_w = std::max(0.0f, (g.box.right - 6.0f * scale - (g.box.left + g.label_w)) * 0.5f);
+        return g;
+    }
+    // col -1 = row label, 0/1 = file columns, 2 = both file columns.
+    inline D2D1_RECT_F TrayCompareCell(const TrayCompareGeom& g, int row, int col) {
+        const float top = g.box.top + 4.0f * g.scale + static_cast<float>(row) * g.row_h;
+        const float bottom = top + g.row_h;
+        if (col < 0) return D2D1::RectF(g.box.left + 10.0f * g.scale, top, g.box.left + g.label_w, bottom);
+        const float l = g.box.left + g.label_w + (col == 1 ? g.col_w : 0.0f);
+        const float r = col == 2 ? g.box.right - 6.0f * g.scale : l + g.col_w - 4.0f * g.scale;
+        return D2D1::RectF(l, top, r, bottom);
+    }
+
     float ExpandedTrayHeight(const WindowViewModel& vm, const SidebarMetrics& m) {
         if (vm.tray_deck.cards.empty())
             return 112.0f * m.scale; // header + dashed empty state
         // Card stack: header (38) + top card + peeking layers when fanned
-        // out (25) + gap + footer row (31).
-        return (TrayCardHeightDip(vm.tray_deck.thumb_dip) + 94.0f) * m.scale;
+        // out (25) + gap + footer row (31) + destination chips when any.
+        const float card = TrayCardHeightDip(vm.tray_deck.thumb_dip);
+        const float compare_extra = vm.tray_deck.comparing
+            ? std::max(0.0f, TrayCompareBoxDip(vm.tray_deck.thumb_dip) - (card + 22.0f)) : 0.0f;
+        return (card + 94.0f + compare_extra) * m.scale +
+               TrayBottomRowsH(vm.tray_deck, m.scale);
     }
 
     float SidebarContentHeight(const WindowViewModel& vm, const SidebarMetrics& m) {
@@ -595,10 +675,11 @@ void ClearTextWidthCache() {
             // Footer "clear all" action, bottom-right of the panel.
             SidebarSlot clear;
             clear.kind = SidebarSlot::TrayClear;
+            const float deckBottom = tray.rc.bottom - TrayBottomRowsH(vm.tray_deck, scale);
             clear.rc = D2D1::RectF(innerR - inset - 72.0f * scale,
-                                   tray.rc.bottom - m.trayInner - 22.0f * scale,
+                                   deckBottom - m.trayInner - 22.0f * scale,
                                    tray.rc.right - inset,
-                                   tray.rc.bottom - m.trayInner);
+                                   deckBottom - m.trayInner);
             out.push_back(clear);
         }
     }
@@ -631,6 +712,26 @@ void ClearTextWidthCache() {
         if (!pane.is_changes) return pane.banner_message.empty() ? 0.0f : 36 * scale;
         ComPtr<IDWriteTextLayout> layout;
         return ChangeBannerLayout(pane, width, scale, compositor, layout);
+    }
+
+    // Folder compare status colors (rows, banner chips).
+    D2D1_COLOR_F CompareMarkColor(uint8_t mark, bool dark) {
+        switch (static_cast<CompareMark>(mark)) {
+        case CompareMark::OnlyHere: return HexColor(dark ? 0x3FB950u : 0x1A7F37u);
+        case CompareMark::Newer:    return HexColor(dark ? 0x58A6FFu : 0x0969DAu);
+        case CompareMark::Older:    return HexColor(dark ? 0xD29922u : 0x9A6700u);
+        default:                    return HexColor(dark ? 0xBC8CFFu : 0x8250DFu);
+        }
+    }
+
+    // Folder compare banner: [只看差异|显示全部] [退出对比] on the right.
+    void CompareBannerButtons(const D2D1_RECT_F& bar, float scale, D2D1_RECT_F& diff,
+                              D2D1_RECT_F& exit) {
+        const float avail = bar.right - bar.left;
+        const float ew = std::min(56.0f * scale, avail * 0.16f);
+        const float dw = std::min(84.0f * scale, avail * 0.24f);
+        exit = D2D1::RectF(bar.right - ew, bar.top, bar.right, bar.bottom);
+        diff = D2D1::RectF(exit.left - dw, bar.top, exit.left, bar.bottom);
     }
 
     float PaneExtraTop(const PaneViewModel& pane, float scale, float width, Compositor* compositor) {
@@ -692,6 +793,10 @@ void ClearTextWidthCache() {
                 return pulse::l10n::Get(pulse::l10n::StringId::Size1To10MB);
             case app::SizePreset::Gt10MB:
                 return pulse::l10n::Get(pulse::l10n::StringId::SizeGt10MB);
+            case app::SizePreset::Gt100MB:
+                return pulse::l10n::Get(pulse::l10n::StringId::SizeGt100MB);
+            case app::SizePreset::Gt1GB:
+                return pulse::l10n::Get(pulse::l10n::StringId::SizeGt1GB);
             default:
                 return pulse::l10n::Get(pulse::l10n::StringId::SearchChipSize);
             }
@@ -699,18 +804,30 @@ void ClearTextWidthCache() {
         labels[0] = kind_label();
         labels[1] = date_label();
         labels[2] = size_label();
-        labels[3] = spec.content.empty()
-            ? pulse::l10n::Get(pulse::l10n::StringId::SearchChipContent)
-            : spec.content;
+        if (spec.content.empty()) {
+            labels[3] = pulse::l10n::Get(pulse::l10n::StringId::SearchChipContent);
+        } else {
+            // "Contents: word" so the chip says what the word filters.
+            std::wstring text(spec.content.size() + 64, L'\0');
+            const int n = swprintf_s(text.data(), text.size(),
+                pulse::l10n::Get(pulse::l10n::StringId::SearchChipContentFormat).c_str(),
+                spec.content.c_str());
+            text.resize(n > 0 ? static_cast<size_t>(n) : 0);
+            labels[3] = text.empty() ? spec.content : text;
+        }
         labels[4] = pulse::l10n::Get(pulse::l10n::StringId::AdvancedSearch);
     }
+
+    // The Advanced chip leads the row so it is never the one clipped by a narrow pane.
+    inline constexpr int kSearchFilterOrder[5] = {4, 0, 1, 2, 3};
+    inline constexpr const wchar_t* kSearchAdvancedGlyph = L"\xE9E9";
 
     void SearchFilterChipWidthsPx(const fluent::Painter& painter, float scale,
                                   const std::wstring labels[5], float widths[5]) {
         const float cap = 220.0f * scale;
         const float min_w = 32.0f * scale;
         for (int i = 0; i < 5; ++i) {
-            float w = painter.MeasureButtonWidth(labels[i], {}, i < 3);
+            float w = painter.MeasureButtonWidth(labels[i], i == 4 ? kSearchAdvancedGlyph : L"", i < 3);
             if (w < 1.0f) {
                 float dip = 18.0f + (i < 3 ? 20.0f : 0.0f);
                 for (wchar_t c : labels[i]) dip += (c > 0x7F) ? 13.0f : 7.4f;
@@ -725,7 +842,8 @@ void ClearTextWidthCache() {
                                  float scale, int index, const float widths_px[5]) {
         float x = pane.left + 10.0f * scale;
         const float gap = 8.0f * scale;
-        for (int i = 0; i < index && i < 5; ++i) x += widths_px[i] + gap;
+        for (int slot = 0; slot < 5 && kSearchFilterOrder[slot] != index; ++slot)
+            x += widths_px[kSearchFilterOrder[slot]] + gap;
         const float top = pane.top + header_height + 5.0f * scale;
         const float width = widths_px[std::clamp(index, 0, 4)];
         return D2D1::RectF(x, top, x + width, top + 30.0f * scale);
@@ -872,9 +990,16 @@ void ClearTextWidthCache() {
         return D2D1::Point2F(g.card.right - 17.0f * g.scale, g.card.top + 17.0f * g.scale);
     }
 
+    // Copy/move intent chip, bottom-right in card-rest space.
+    D2D1_RECT_F TrayIntentRect(const TrayStackGeom& g) {
+        const float w = 40.0f * g.scale, h = 18.0f * g.scale, m = 8.0f * g.scale;
+        return D2D1::RectF(g.card.right - m - w, g.card.bottom - m - h,
+                           g.card.right - m, g.card.bottom - m);
+    }
+
     // Hit test a point against a posed card (inverse transform into rest space).
     bool TrayCardHit(const TrayStackGeom& g, const TrayCardView& card, float spread,
-                     float x, float y, bool* close_zone) {
+                     float x, float y, bool* close_zone, bool* intent_zone = nullptr) {
         TrayCardPose pose = TrayCardPoseOf(g, card, spread);
         D2D1::Matrix3x2F m = *D2D1::Matrix3x2F::ReinterpretBaseType(&pose.m);
         if (!m.Invert()) return false;
@@ -885,6 +1010,12 @@ void ClearTextWidthCache() {
             const D2D1_POINT_2F c = TrayCloseCentre(g);
             const float dx = local.x - c.x, dy = local.y - c.y;
             *close_zone = dx * dx + dy * dy <= (11.0f * g.scale) * (11.0f * g.scale);
+        }
+        if (intent_zone) {
+            const D2D1_RECT_F ir = TrayIntentRect(g);
+            const float slop = 3.0f * g.scale;
+            *intent_zone = local.x >= ir.left - slop && local.x < ir.right + slop &&
+                           local.y >= ir.top - slop && local.y < ir.bottom + slop;
         }
         return true;
     }
@@ -905,10 +1036,11 @@ void ClearTextWidthCache() {
         D2D1_RECT_F index{};
         D2D1_RECT_F next{};
         D2D1_RECT_F totals{};
+        D2D1_RECT_F compare{};   // "⇄ Compare" pill (two staged files)
         bool pager = false;
     };
     TrayFooterGeom TrayFooterGeometry(const D2D1_RECT_F& panel, float scale, int total,
-                                      float index_text_w) {
+                                      float index_text_w, bool compare = false) {
         TrayFooterGeom f;
         const float h = 22.0f * scale;
         const float bottom = panel.bottom - 8.0f * scale;
@@ -928,6 +1060,11 @@ void ClearTextWidthCache() {
             x = f.row.left;
         }
         f.totals = D2D1::RectF(x, f.row.top, f.row.right - 76.0f * scale, f.row.bottom);
+        if (compare) {
+            const float right = f.row.right - 78.0f * scale;
+            f.compare = D2D1::RectF(right - 76.0f * scale, f.row.top, right, f.row.bottom);
+            f.totals.right = std::max(f.totals.left, f.compare.left - 4.0f * scale);
+        }
         return f;
     }
 
@@ -1326,6 +1463,7 @@ struct StatusBarMetrics {
     D2D1_RECT_F bar{};
     D2D1_RECT_F task{};
     D2D1_RECT_F cancel_search{};
+    D2D1_RECT_F hint_action{};   // empty unless the hint carries a clickable action
     float pad = 0.0f;
     float right_reserved = 0.0f;
 };
@@ -1349,6 +1487,14 @@ StatusBarMetrics MakeStatusBarMetrics(const WindowViewModel& vm, const D2D1_RECT
         const float perfWidth = std::min(rect.right * 0.50f,
             MeasureTextWidth(factory, small_format, *trailing) + 16.0f * scale);
         m.right_reserved = perfWidth + m.pad;
+    }
+    if (trailing == &vm.status.hint_text && !vm.status.hint_action_text.empty() &&
+        !vm.status.query_cancellable && factory && small_format) {
+        // The action chip sits at the far right; the hint text moves left of it.
+        const float width = MeasureTextWidth(factory, small_format, vm.status.hint_action_text) + 16.0f * scale;
+        m.hint_action = D2D1::RectF(std::max(rect.left, rect.right - m.pad - width), m.bar.top + 5.0f * scale,
+                                    rect.right - m.pad, m.bar.bottom - 5.0f * scale);
+        m.right_reserved += width + 8.0f * scale;
     }
     if (vm.status.query_cancellable) {
         const float width = 22.0f * scale;
@@ -1522,7 +1668,10 @@ struct SettingsLayout {
     D2D1_RECT_F duplicate_options{};
     D2D1_RECT_F section[4]{}, group[3]{}, footer{};
     D2D1_RECT_F theme_row{}, theme_tile[3]{}, effect_choice{}, language_choice{};
-    D2D1_RECT_F performance_row{}, disclosure[2]{}, filename_status{};
+    D2D1_RECT_F performance_row{}, disclosure[3]{}, filename_status{};
+    // General > Quick Look: supported formats card (disclosure[2]).
+    D2D1_RECT_F preview_section{}, preview_group{}, preview_formats{};
+    D2D1_RECT_F preview_codec_row[kPreviewCodecCount]{}, preview_codec_button[kPreviewCodecCount]{};
     D2D1_RECT_F content_header{}, content_types{}, content_pause{}, content_options{}, content_rebuild{}, content_empty{};
     D2D1_RECT_F body{};
     D2D1_RECT_F nav{};
@@ -1537,6 +1686,8 @@ struct SettingsLayout {
     D2D1_RECT_F density_row[3]{};
     D2D1_RECT_F folder_sort_card{};
     D2D1_RECT_F folder_sort_row[3]{};
+    D2D1_RECT_F text_render_card{};
+    D2D1_RECT_F text_render_row[3]{};
     D2D1_RECT_F tray_icon_card{};
     D2D1_RECT_F tray_icon_row[3]{};
     D2D1_RECT_F language_card{};
@@ -1554,6 +1705,9 @@ struct SettingsLayout {
     D2D1_RECT_F protected_files_row{};
     D2D1_RECT_F pinned_names_row{};
     D2D1_RECT_F vertical_tabs_row{};
+    D2D1_RECT_F hints_row{};
+    D2D1_RECT_F hints_reset_row{};
+    D2D1_RECT_F hints_reset_button{};
     D2D1_RECT_F blank_click_row{};
     D2D1_RECT_F win_e_row{};
     D2D1_RECT_F shell_tags_row{};
@@ -2008,6 +2162,8 @@ HitTestResult::Region StatusBarHitRegion(const WindowViewModel& vm, const D2D1_R
     const StatusBarMetrics sb = MakeStatusBarMetrics(
         vm, rect, scale, status_height, factory, fmt);
     if (vm.status.query_cancellable && ContainsPt(sb.cancel_search, x, y)) return HitTestResult::StatusBarCancelSearch;
+    if (sb.hint_action.right > sb.hint_action.left && ContainsPt(sb.hint_action, x, y))
+        return HitTestResult::StatusHintAction;
     return !vm.status.query_active && !vm.status.task_is_update && ContainsPt(sb.task, x, y) ? HitTestResult::StatusBarTask
                                     : HitTestResult::StatusBar;
 }

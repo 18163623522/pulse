@@ -14,7 +14,18 @@ bool ToggleTagForSelection(AppState& s, const app::TagId& tag_id,
                                   const std::vector<std::wstring>& paths);
 std::vector<uint32_t>& TagColorPalette(AppState& s);
 void AppendCustomTagColor(AppState& s, uint32_t rgb);
-void ShowTagPicker(AppState& s, POINT screen_pt);
+void ShowTagPicker(AppState& s, POINT screen_pt,
+                   const std::vector<std::wstring>* paths_override = nullptr);
+// Staging tray batch menu (right-click on the tray).
+void ShowTrayBatchMenu(AppState& s, POINT screen_pt);
+// Stale tray items: search everywhere for the first missing one / drop them all.
+void TrayFindStale(AppState& s);
+void TrayRemoveStale(AppState& s);
+// Two staged files: toggle the compare table / start the byte comparison.
+void TrayToggleCompare(AppState& s);
+void TrayStartContentCompare(AppState& s);
+// Opens the stand-alone text compare window for the two staged files.
+void TrayOpenTextDiff(AppState& s);
 void ShowCreateTagPicker(AppState& s, POINT screen_pt);
 void ShowTagSidebarMenu(AppState& s, const app::TagId& tag_id, POINT screen_pt);
 void DispatchMenuCommand(AppState& s, int cmd);
@@ -55,6 +66,8 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
 void SetViewMode(AppState& s, ui::ViewMode mode);
 void ShowViewDropdown(AppState& s, int pane_index);
 void ShowSortDropdown(AppState& s);
+// Toolbar "Group" button: the group-by choices on their own.
+void ShowGroupDropdown(AppState& s);
 void ShowToolbarMore(AppState& s);
 void ShowOmnibar(AppState& s, OmnibarMode mode);
 void ShowAdvancedSearch(AppState& s, bool require_scope = false);

@@ -5,6 +5,8 @@
 #include "video_preview.h"
 #include "../common/path_utils.h"
 #include <mfplay.h>
+#include <mfapi.h>
+#include <mfreadwrite.h>
 #include <mferror.h>
 #include <propvarutil.h>
 #include <wrl/client.h>
@@ -79,6 +81,81 @@ int64_t Position(IMFPMediaPlayer* player, bool duration) {
     PropVariantClear(&value);
     return (std::max)(int64_t{0}, result);
 }
+struct CodecInfo {
+    std::wstring short_name, name;
+    const wchar_t* store = nullptr;
+};
+
+CodecInfo DescribeCodec(const GUID& subtype) {
+    // FourCC subtypes share the {XXXXXXXX-0000-0010-8000-00AA00389B71} base.
+    static constexpr BYTE kBase4[8] = {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
+    static constexpr GUID kMpeg2 = {0xe06d8026, 0xdb46, 0x11cf, {0xb4, 0xd1, 0x00, 0x80, 0x5f, 0x6c, 0xbb, 0xea}};
+    if (subtype == kMpeg2) return {L"MPEG-2", L"MPEG-2", nullptr};
+    if (subtype.Data2 != 0x0000 || subtype.Data3 != 0x0010 ||
+        memcmp(subtype.Data4, kBase4, sizeof(kBase4)) != 0)
+        return {L"?", L"?", nullptr};
+    std::wstring fourcc;
+    for (int i = 0; i < 4; ++i) {
+        const wchar_t c = static_cast<wchar_t>((subtype.Data1 >> (8 * i)) & 0xFF);
+        if (c > L' ' && c < 0x7F) fourcc += static_cast<wchar_t>(std::towupper(c));
+    }
+    if (fourcc == L"HEVC" || fourcc == L"HEVS" || fourcc == L"H265" || fourcc == L"HVC1" ||
+        fourcc == L"HEV1")
+        return {L"HEVC", L"HEVC (H.265)", L"9NMZLZ57R3T7"};
+    if (fourcc == L"AV01") return {L"AV1", L"AV1", L"9MVZQVXJBQ9V"};
+    if (fourcc == L"VP90" || fourcc == L"VP09") return {L"VP9", L"VP9", L"9N4D0MSMP0PT"};
+    if (fourcc == L"VP80") return {L"VP8", L"VP8", nullptr};
+    if (fourcc.empty()) fourcc = L"?";
+    return {fourcc, fourcc, nullptr};
+}
+
+// True when the file has a video track that no installed decoder (software,
+// hardware or Store extension) accepts. Everything is loaded on demand.
+bool MissingVideoDecoder(const std::wstring& path, CodecInfo& info) {
+    HMODULE plat = LoadLibraryExW(L"mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE readwrite = LoadLibraryExW(L"mfreadwrite.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    bool missing = false;
+    if (plat && readwrite) {
+        using Startup = HRESULT (WINAPI*)(ULONG, DWORD);
+        using Shutdown = HRESULT (WINAPI*)();
+        using EnumEx = HRESULT (WINAPI*)(GUID, UINT32, const MFT_REGISTER_TYPE_INFO*,
+                                         const MFT_REGISTER_TYPE_INFO*, IMFActivate***, UINT32*);
+        using CreateReader = HRESULT (WINAPI*)(LPCWSTR, IMFAttributes*, IMFSourceReader**);
+        const auto startup = reinterpret_cast<Startup>(GetProcAddress(plat, "MFStartup"));
+        const auto shutdown = reinterpret_cast<Shutdown>(GetProcAddress(plat, "MFShutdown"));
+        const auto enumerate = reinterpret_cast<EnumEx>(GetProcAddress(plat, "MFTEnumEx"));
+        const auto create = reinterpret_cast<CreateReader>(
+            GetProcAddress(readwrite, "MFCreateSourceReaderFromURL"));
+        if (startup && shutdown && enumerate && create &&
+            SUCCEEDED(startup(MF_VERSION, MFSTARTUP_LITE))) {
+            {
+                ComPtr<IMFSourceReader> reader;
+                ComPtr<IMFMediaType> type;
+                GUID subtype{};
+                if (SUCCEEDED(create(path.c_str(), nullptr, &reader)) &&
+                    SUCCEEDED(reader->GetNativeMediaType(
+                        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &type)) &&
+                    SUCCEEDED(type->GetGUID(MF_MT_SUBTYPE, &subtype))) {
+                    const MFT_REGISTER_TYPE_INFO input{MFMediaType_Video, subtype};
+                    IMFActivate** found = nullptr;
+                    UINT32 count = 0;
+                    if (SUCCEEDED(enumerate(MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG_ALL, &input,
+                                            nullptr, &found, &count))) {
+                        missing = count == 0;
+                        for (UINT32 i = 0; i < count; ++i)
+                            if (found[i]) found[i]->Release();
+                        CoTaskMemFree(found);
+                    }
+                    if (missing) info = DescribeCodec(subtype);
+                }
+            }
+            shutdown();
+        }
+    }
+    if (readwrite) FreeLibrary(readwrite);
+    if (plat) FreeLibrary(plat);
+    return missing;
+}
 } // namespace
 
 struct VideoPreview::Shared {
@@ -92,19 +169,35 @@ struct VideoPreview::Shared {
     bool seek_pending = false;
     double seek_fraction = 0;
     unsigned steps = 0;
+    bool audio_dirty = true;  // volume / mute / rate to apply on the player thread
 };
 
 VideoPreview::~VideoPreview() { Reset(); }
 
-bool VideoPreview::Supports(const std::wstring& path) {
+namespace {
+std::wstring LowerExtension(const std::wstring& path) {
     const auto dot = path.find_last_of(L'.');
-    if (dot == std::wstring::npos) return false;
+    if (dot == std::wstring::npos) return {};
     std::wstring ext = path.substr(dot);
     for (auto& c : ext) c = static_cast<wchar_t>(std::towlower(c));
+    return ext;
+}
+} // namespace
+
+bool VideoPreview::IsAudio(const std::wstring& path) {
+    const std::wstring ext = LowerExtension(path);
+    for (const auto* audio : {L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma",
+                              L".ogg", L".oga", L".opus", L".aif", L".aiff"})
+        if (ext == audio) return true;
+    return false;
+}
+
+bool VideoPreview::Supports(const std::wstring& path) {
+    const std::wstring ext = LowerExtension(path);
     for (const auto* video : {L".mp4", L".m4v", L".mov", L".wmv", L".avi", L".mkv",
                               L".webm", L".mpg", L".mpeg", L".m2ts", L".mts", L".3gp"})
         if (ext == video) return true;
-    return false;
+    return IsAudio(path);
 }
 
 LRESULT CALLBACK VideoPreview::VideoProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -176,13 +269,25 @@ void VideoPreview::Reset() {
         child_ = nullptr;
     }
     state_.reset();
+    region_size_ = {};
+    region_radius_ = 0;
 }
 
-void VideoPreview::Layout(const RECT& bounds, bool visible) {
+void VideoPreview::Layout(const RECT& bounds, bool visible, int corner_radius) {
     if (!child_) return;
-    SetWindowPos(child_, nullptr, bounds.left, bounds.top,
-        (std::max)(1L, bounds.right - bounds.left), (std::max)(1L, bounds.bottom - bounds.top),
+    const LONG width = (std::max)(1L, bounds.right - bounds.left);
+    const LONG height = (std::max)(1L, bounds.bottom - bounds.top);
+    SetWindowPos(child_, nullptr, bounds.left, bounds.top, width, height,
         SWP_NOACTIVATE | SWP_NOZORDER | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    if (width != region_size_.cx || height != region_size_.cy || corner_radius != region_radius_) {
+        region_size_ = SIZE{width, height};
+        region_radius_ = corner_radius;
+        // The window owns the region after SetWindowRgn.
+        HRGN region = corner_radius > 0
+            ? CreateRoundRectRgn(0, 0, width + 1, height + 1, corner_radius * 2, corner_radius * 2)
+            : nullptr;
+        if (!SetWindowRgn(child_, region, TRUE) && region) DeleteObject(region);
+    }
 }
 
 VideoPreview::State VideoPreview::Snapshot() const {
@@ -210,6 +315,24 @@ void VideoPreview::Seek(double fraction) {
     state_->seek_pending = true;
     state_->steps = 0;
     state_->snapshot.control_error = S_OK;
+}
+void VideoPreview::SetVolume(float volume) {
+    if (!state_) return;
+    std::lock_guard lock(state_->mutex);
+    state_->snapshot.volume = std::clamp(volume, 0.0f, 1.0f);
+    state_->audio_dirty = true;
+}
+void VideoPreview::SetMuted(bool muted) {
+    if (!state_) return;
+    std::lock_guard lock(state_->mutex);
+    state_->snapshot.muted = muted;
+    state_->audio_dirty = true;
+}
+void VideoPreview::SetRate(float rate) {
+    if (!state_) return;
+    std::lock_guard lock(state_->mutex);
+    state_->snapshot.rate = std::clamp(rate, 0.25f, 4.0f);
+    state_->audio_dirty = true;
 }
 void VideoPreview::Step() {
     if (!state_) return;
@@ -241,6 +364,16 @@ void VideoPreview::Run(std::shared_ptr<Shared> state, std::wstring path) {
         state->snapshot.playing = false;
     };
     if (FAILED(com)) { fail(com); return; }
+    if (!IsAudio(path) && !state->stop.load()) {
+        CodecInfo codec;
+        if (MissingVideoDecoder(pulse::path::StripExtendedPathPrefix(path), codec)) {
+            std::lock_guard lock(state->mutex);
+            state->snapshot.missing_decoder = true;
+            state->snapshot.codec = codec.short_name;
+            state->snapshot.codec_name = codec.name;
+            state->snapshot.store_id = codec.store;
+        }
+    }
     library = LoadLibraryExW(L"mfplay.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     using CreatePlayer = HRESULT (WINAPI*)(LPCWSTR, BOOL, MFP_CREATION_OPTIONS,
         IMFPMediaPlayerCallback*, HWND, IMFPMediaPlayer**);
@@ -390,6 +523,27 @@ void VideoPreview::Run(std::shared_ptr<Shared> state, std::wstring path) {
             state->snapshot.busy = false;
             state->playing = false;
             state->steps = 0;
+        }
+        if (ready) {
+            bool apply = false;
+            float volume = 1.0f, rate = 1.0f;
+            bool muted = false;
+            {
+                std::lock_guard lock(state->mutex);
+                apply = std::exchange(state->audio_dirty, false);
+                volume = state->snapshot.volume;
+                muted = state->snapshot.muted;
+                rate = state->snapshot.rate;
+            }
+            if (apply) {
+                player->SetVolume(volume);
+                player->SetMute(muted ? TRUE : FALSE);
+                float applied_rate = 1.0f;
+                if (FAILED(player->SetRate(rate)) || FAILED(player->GetRate(&applied_rate)))
+                    applied_rate = 1.0f;
+                std::lock_guard lock(state->mutex);
+                if (!state->audio_dirty) state->snapshot.rate = applied_rate;
+            }
         }
         // Repaint paused frames as well after exposure/resize; no provider calls on UI.
         if (ready && state->repaint.exchange(false)) player->UpdateVideo();

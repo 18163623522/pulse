@@ -3,8 +3,14 @@
 #include "../common/preview_extensions.h"
 #include "archive_listing.h"
 #include "content_sniff.h"
+#include "docx_document.h"
+#include "epub_document.h"
 #include "dwg_thumb.h"
+#include "folder_listing.h"
+#include "markdown_document.h"
+#include "notebook_document.h"
 #include "font_raster.h"
+#include "image_frames.h"
 #include "metafile_raster.h"
 #include "office_doc_model.h"
 #include "office_sketch.h"
@@ -12,6 +18,8 @@
 #include "preview_file_utils.h"
 #include "psd_raster.h"
 #include "svg_raster.h"
+#include "table_document.h"
+#include "tree_document.h"
 #include "zip_entry.h"
 #include <shobjidl.h>
 #include <shlobj.h>
@@ -22,6 +30,7 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -117,22 +126,28 @@ bool LooksBinary(const std::vector<uint8_t>& bytes) {
     return !bytes.empty() && controls * 20 > bytes.size();
 }
 
-bool DecodeText(const std::vector<uint8_t>& bytes, std::wstring& text) {
+bool DecodeText(const std::vector<uint8_t>& bytes, std::wstring& text,
+                ipc::PreviewTextEncoding* encoding = nullptr) {
+    if (encoding) *encoding = ipc::PreviewTextEncoding::Utf8;
     if (bytes.empty()) { text.clear(); return true; }
     size_t offset = 0;
     if (bytes.size() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+        if (encoding) *encoding = ipc::PreviewTextEncoding::Utf16Le;
         offset = 2;
         text.reserve((bytes.size() - offset) / 2);
         for (size_t i = offset; i + 1 < bytes.size(); i += 2)
             text.push_back(static_cast<wchar_t>(bytes[i] | (bytes[i + 1] << 8)));
     } else if (bytes.size() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+        if (encoding) *encoding = ipc::PreviewTextEncoding::Utf16Be;
         offset = 2;
         text.reserve((bytes.size() - offset) / 2);
         for (size_t i = offset; i + 1 < bytes.size(); i += 2)
             text.push_back(static_cast<wchar_t>((bytes[i] << 8) | bytes[i + 1]));
     } else {
-        if (bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        if (bytes.size() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) {
             offset = 3;
+            if (encoding) *encoding = ipc::PreviewTextEncoding::Utf8Bom;
+        }
         const char* raw = reinterpret_cast<const char*>(bytes.data() + offset);
         const int raw_size = static_cast<int>(bytes.size() - offset);
         int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw, raw_size,
@@ -142,6 +157,7 @@ bool DecodeText(const std::vector<uint8_t>& bytes, std::wstring& text) {
         if (chars <= 0) {
             code_page = CP_ACP;
             flags = 0;
+            if (encoding) *encoding = ipc::PreviewTextEncoding::Ansi;
             chars = MultiByteToWideChar(code_page, flags, raw, raw_size, nullptr, 0);
         }
         if (chars <= 0) return false;
@@ -180,7 +196,8 @@ std::wstring MakeHex(const std::vector<uint8_t>& bytes) {
 }
 
 bool MakeTextOrHex(const std::wstring& path, DWORD attrs, ipc::PreviewContentKind& kind,
-                   std::wstring& text, uint32_t& bytes_read, bool& truncated) {
+                   std::wstring& text, uint32_t& bytes_read, bool& truncated,
+                   ipc::PreviewTextEncoding* encoding = nullptr) {
     if ((attrs & FILE_ATTRIBUTE_DIRECTORY) || IsOfflinePlaceholder(attrs)) return false;
     const bool known_text = IsKnownText(ExtensionOf(path));
     std::vector<uint8_t> bytes;
@@ -197,7 +214,7 @@ bool MakeTextOrHex(const std::wstring& path, DWORD attrs, ipc::PreviewContentKin
     if (!known_text && file_size > bytes.size()) {
         if (!ReadPrefix(path, 32u * 1024u, bytes, file_size)) return false;
     }
-    if (LooksBinary(bytes) || !DecodeText(bytes, text)) return false;
+    if (LooksBinary(bytes) || !DecodeText(bytes, text, encoding)) return false;
     kind = ipc::PreviewContentKind::Text;
     bytes_read = static_cast<uint32_t>(bytes.size());
     truncated = file_size > bytes.size();
@@ -546,7 +563,273 @@ static bool DwgHeaderThumbnailInto(const DecodeRequest& q, DecodeResult& r) {
 }
 
 static bool TextOrHexInto(const DecodeRequest& q, DecodeResult& r) {
-    return MakeTextOrHex(q.path, q.request.attrs, r.kind, r.text, r.bytes_read, r.truncated);
+    return MakeTextOrHex(q.path, q.request.attrs, r.kind, r.text, r.bytes_read, r.truncated,
+                         &r.text_encoding);
+}
+
+// ---- Image extras: animated WebP / APNG, icon sizes, missing codecs --------
+
+static bool ReadFileBytes(const std::wstring& path, size_t max_bytes, std::vector<uint8_t>& out) {
+    out.clear();
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    bool ok = GetFileSizeEx(file, &size) && size.QuadPart > 0 &&
+              static_cast<uint64_t>(size.QuadPart) <= max_bytes;
+    if (ok) {
+        out.resize(static_cast<size_t>(size.QuadPart));
+        size_t done = 0;
+        while (ok && done < out.size()) {
+            DWORD n = 0;
+            const DWORD want = static_cast<DWORD>((std::min<size_t>)(out.size() - done, 1u << 24));
+            ok = ReadFile(file, out.data() + done, want, &n, nullptr) && n > 0;
+            done += n;
+        }
+    }
+    CloseHandle(file);
+    if (!ok) out.clear();
+    return ok;
+}
+
+// PBGRA canvas -> the reply, shrunk to fit the requested size.
+static bool FitCanvas(IWICImagingFactory* factory, std::vector<uint8_t>& canvas, UINT cw, UINT ch,
+                      UINT pixels, std::vector<uint8_t>& out, UINT& width, UINT& height, UINT& stride) {
+    const UINT longest = (std::max)(cw, ch);
+    if (longest <= pixels) {
+        out = canvas;
+        width = cw; height = ch; stride = cw * 4;
+        return true;
+    }
+    const double ratio = static_cast<double>(pixels) / longest;
+    width = (std::max)(1u, static_cast<UINT>(cw * ratio + 0.5));
+    height = (std::max)(1u, static_cast<UINT>(ch * ratio + 0.5));
+    ComPtr<IWICBitmap> bitmap;
+    ComPtr<IWICBitmapScaler> scaler;
+    if (FAILED(factory->CreateBitmapFromMemory(cw, ch, GUID_WICPixelFormat32bppPBGRA, cw * 4,
+                                               static_cast<UINT>(canvas.size()), canvas.data(), &bitmap)) ||
+        FAILED(factory->CreateBitmapScaler(&scaler)) ||
+        FAILED(scaler->Initialize(bitmap.Get(), width, height, WICBitmapInterpolationModeFant)))
+        return false;
+    stride = width * 4;
+    out.resize(static_cast<size_t>(stride) * height);
+    return SUCCEEDED(scaler->CopyPixels(nullptr, stride, static_cast<UINT>(out.size()), out.data()));
+}
+
+static bool FramePixels(IWICImagingFactory* factory, IWICBitmapSource* frame, std::vector<uint8_t>& pixels,
+                        UINT& width, UINT& height) {
+    ComPtr<IWICFormatConverter> converter;
+    if (FAILED(factory->CreateFormatConverter(&converter)) ||
+        FAILED(converter->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                     nullptr, 0.0, WICBitmapPaletteTypeCustom)) ||
+        FAILED(converter->GetSize(&width, &height)) || !width || !height || width > 16384 || height > 16384)
+        return false;
+    pixels.resize(static_cast<size_t>(width) * height * 4);
+    return SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data()));
+}
+
+// Animated WebP: the system decoder (Windows 10 1809+) hands out whole
+// composed frames with their duration. false for still pictures.
+static bool DecodeWebpFrame(const std::wstring& path, UINT pixels, uint32_t frame_index, DecodeResult& r,
+                            uint32_t& frame_count, uint32_t& delay_ms, uint32_t& loop_count) {
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+        FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                   WICDecodeMetadataCacheOnDemand, &decoder)))
+        return false;
+    UINT count = 0;
+    if (FAILED(decoder->GetFrameCount(&count)) || count < 2) return false;
+    frame_index = (std::min)(frame_index, count - 1);
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(frame_index, &frame))) return false;
+    std::vector<uint8_t> canvas;
+    UINT cw = 0, ch = 0;
+    if (!FramePixels(factory.Get(), frame.Get(), canvas, cw, ch)) return false;
+    delay_ms = 100;
+    ComPtr<IWICMetadataQueryReader> reader;
+    uint32_t value = 0;
+    if (SUCCEEDED(frame->GetMetadataQueryReader(&reader)) && reader &&
+        MetadataUInt(reader.Get(), L"/ANMF/FrameDuration", value) && value > 10)
+        delay_ms = (std::min)(value, 60000u);
+    loop_count = 0;
+    ComPtr<IWICMetadataQueryReader> top;
+    if (SUCCEEDED(decoder->GetMetadataQueryReader(&top)) && top && MetadataUInt(top.Get(), L"/ANIM/LoopCount", value))
+        loop_count = value;
+    frame_count = count;
+    r.source_width = cw;
+    r.source_height = ch;
+    return FitCanvas(factory.Get(), canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride);
+}
+
+// acTL in the chunks before the first IDAT (read from the first 64 KB).
+static bool HasApngControl(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    uint8_t head[65536];
+    DWORD n = 0;
+    const bool ok = ReadFile(file, head, sizeof(head), &n, nullptr) && n >= 8 + 25;
+    CloseHandle(file);
+    if (!ok || head[0] != 0x89 || head[1] != 'P' || head[2] != 'N' || head[3] != 'G') return false;
+    size_t pos = 8;
+    while (pos + 8 <= n) {
+        const uint32_t length = (static_cast<uint32_t>(head[pos]) << 24) | (static_cast<uint32_t>(head[pos + 1]) << 16) |
+                                (static_cast<uint32_t>(head[pos + 2]) << 8) | head[pos + 3];
+        const uint8_t* type = head + pos + 4;
+        if (type[0] == 'a' && type[1] == 'c' && type[2] == 'T' && type[3] == 'L') return true;
+        if ((type[0] == 'I' && type[1] == 'D' && type[2] == 'A' && type[3] == 'T') ||
+            (type[0] == 'I' && type[1] == 'E' && type[2] == 'N' && type[3] == 'D'))
+            return false;
+        pos += static_cast<size_t>(length) + 12;
+    }
+    return false;
+}
+
+// APNG: frames are rebuilt as standalone PNGs for WIC and composed here. The
+// canvas of the last request is kept, so playing forward costs one frame.
+namespace {
+struct ApngState {
+    std::mutex lock;
+    std::wstring path;
+    uint64_t size = 0, modified = 0;
+    std::vector<uint8_t> file;
+    preview::ApngInfo info;
+    bool valid = false;
+    uint32_t next = 0;             // frames composed into canvas
+    std::vector<uint8_t> canvas;   // what frame next-1 shows
+    std::vector<uint8_t> saved;    // canvas before frame next-1 (dispose 2)
+};
+ApngState g_apng;
+}
+
+static bool DecodeApngFrame(const std::wstring& path, UINT pixels, uint32_t frame_index, DecodeResult& r,
+                            uint32_t& frame_count, uint32_t& delay_ms, uint32_t& loop_count) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
+    const uint64_t size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    const uint64_t modified = (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                              data.ftLastWriteTime.dwLowDateTime;
+    std::lock_guard guard(g_apng.lock);
+    ApngState& st = g_apng;
+    if (st.path != path || st.size != size || st.modified != modified) {
+        st.path = path; st.size = size; st.modified = modified;
+        st.valid = false; st.next = 0;
+        st.canvas.clear(); st.saved.clear(); st.info = {};
+        // Cheap check first: acTL sits before the first IDAT.
+        if (size < 64 || !HasApngControl(path) || size > 96u * 1024u * 1024u || !ReadFileBytes(path, 96u * 1024u * 1024u, st.file) ||
+            !preview::ParseApng(st.file, st.info) ||
+            static_cast<uint64_t>(st.info.width) * st.info.height > 4096u * 4096u) {
+            st.file.clear();
+            st.file.shrink_to_fit();
+            return false;
+        }
+        st.valid = true;
+    }
+    if (!st.valid) return false;
+    ComPtr<IWICImagingFactory> factory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))))
+        return false;
+    const auto& frames = st.info.frames;
+    const UINT cw = st.info.width, ch = st.info.height;
+    frame_index = (std::min)(frame_index, static_cast<uint32_t>(frames.size() - 1));
+    if (st.next == 0 || frame_index + 1 < st.next) {
+        st.next = 0;
+        st.canvas.assign(static_cast<size_t>(cw) * ch * 4, 0);
+        st.saved.clear();
+    }
+    auto clear_rect = [&](const preview::ApngFrame& f) {
+        for (uint32_t y = f.y; y < f.y + f.height; ++y)
+            std::fill(st.canvas.begin() + (static_cast<size_t>(y) * cw + f.x) * 4,
+                      st.canvas.begin() + (static_cast<size_t>(y) * cw + f.x + f.width) * 4, uint8_t{0});
+    };
+    while (st.next <= frame_index) {
+        if (st.next > 0) {
+            const preview::ApngFrame& prev = frames[st.next - 1];
+            if (prev.dispose == 1) clear_rect(prev);
+            else if (prev.dispose == 2 && st.saved.size() == st.canvas.size()) st.canvas = st.saved;
+        }
+        const preview::ApngFrame& f = frames[st.next];
+        if (f.dispose == 2) st.saved = st.canvas;
+        const std::vector<uint8_t> png = preview::BuildApngFramePng(st.file, st.info, st.next);
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapDecoder> decoder;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        std::vector<uint8_t> px;
+        UINT fw = 0, fh = 0;
+        if (png.empty() || FAILED(factory->CreateStream(&stream)) ||
+            FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(png.data()), static_cast<DWORD>(png.size()))) ||
+            FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) ||
+            FAILED(decoder->GetFrame(0, &frame)) || !FramePixels(factory.Get(), frame.Get(), px, fw, fh)) {
+            st.next = 0;  // start over next time
+            return false;
+        }
+        const UINT w = (std::min)(fw, f.width), h = (std::min)(fh, f.height);
+        for (UINT y = 0; y < h; ++y) {
+            uint8_t* dst = &st.canvas[(static_cast<size_t>(f.y + y) * cw + f.x) * 4];
+            const uint8_t* src = &px[static_cast<size_t>(y) * fw * 4];
+            if (f.blend == 0) std::copy(src, src + static_cast<size_t>(w) * 4, dst);
+            else for (UINT x = 0; x < w; ++x) AlphaBlendPbgra(dst + x * 4, src + x * 4);
+        }
+        ++st.next;
+    }
+    frame_count = static_cast<uint32_t>(frames.size());
+    delay_ms = frames[frame_index].delay_ms;
+    loop_count = st.info.plays;
+    r.source_width = cw;
+    r.source_height = ch;
+    return FitCanvas(factory.Get(), st.canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride);
+}
+
+// .ico / .cur: one directory entry (frame_index 0 = the largest, k = entry
+// k-1) and the list of sizes as text for the window's size pills.
+static bool DecodeIconEntry(const std::wstring& path, UINT pixels, uint32_t frame_index, DecodeResult& r) {
+    std::vector<uint8_t> file;
+    std::vector<preview::IconEntry> entries;
+    bool cursor = false;
+    if (!ReadFileBytes(path, 32u * 1024u * 1024u, file) || !preview::ParseIconDirectory(file, entries, cursor))
+        return false;
+    const size_t selected = frame_index == 0 ? preview::DefaultIconEntry(entries)
+                                             : (std::min<size_t>)(frame_index - 1, entries.size() - 1);
+    if (cursor) file[2] = 1;  // WIC's icon decoder reads cursors once they claim to be icons
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICStream> stream;
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    std::vector<uint8_t> canvas;
+    UINT cw = 0, ch = 0;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+        FAILED(factory->CreateStream(&stream)) ||
+        FAILED(stream->InitializeFromMemory(file.data(), static_cast<DWORD>(file.size()))) ||
+        FAILED(factory->CreateDecoder(GUID_ContainerFormatIco, nullptr, &decoder)) ||
+        FAILED(decoder->Initialize(stream.Get(), WICDecodeMetadataCacheOnDemand)) ||
+        FAILED(decoder->GetFrame(entries[selected].frame, &frame)) ||
+        !FramePixels(factory.Get(), frame.Get(), canvas, cw, ch))
+        return false;
+    r.source_width = cw;
+    r.source_height = ch;
+    if (!FitCanvas(factory.Get(), canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride)) return false;
+    r.text = preview::MakeIconSizesPayload(entries, selected);
+    return true;
+}
+
+// HEIF / AVIF without their Store extensions: names the missing piece for the
+// window's codec card ("heif", "hevc" or "av1"), empty when unknown.
+static std::wstring MissingImageCodec(const std::wstring& path, const std::wstring& extension) {
+    const bool heif = extension == L".heic" || extension == L".heif" || extension == L".hif";
+    const bool avif = extension == L".avif";
+    if (!heif && !avif) return {};
+    ComPtr<IWICImagingFactory> factory;
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))))
+        return {};
+    const HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                          WICDecodeMetadataCacheOnDemand, &decoder);
+    if (hr == WINCODEC_ERR_COMPONENTNOTFOUND) return avif ? L"av1" : L"heif";
+    // The HEIF container opened but its pictures did not decode: HEVC is the
+    // separate extension HEIC photos need.
+    if (SUCCEEDED(hr) && heif) return L"hevc";
+    return {};
 }
 
 // WIC images (animated GIF frames included).
@@ -560,7 +843,19 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
         made = DecodeGifFrame(q.path, q.request.attrs, cap, q.request.frame_index,
             r.pixels, r.width, r.height, r.stride, frame_count, frame_delay, loop_count,
             r.source_width, r.source_height);
+    } else if (!q.offline && !q.grid && q.extension == L".webp" &&
+               DecodeWebpFrame(q.path, ipc::ClampPreviewPixelSize(q.request.pixel_size, true),
+                               q.request.frame_index, r, frame_count, frame_delay, loop_count)) {
+        made = true;
+    } else if (!q.offline && !q.grid && q.extension == L".png" &&
+               DecodeApngFrame(q.path, ipc::ClampPreviewPixelSize(q.request.pixel_size, true),
+                               q.request.frame_index, r, frame_count, frame_delay, loop_count)) {
+        made = true;
+    } else if (!q.offline && (q.extension == L".ico" || q.extension == L".cur") &&
+               DecodeIconEntry(q.path, cap, q.request.frame_index, r)) {
+        made = true;
     } else {
+        ClearBitmap(r);
         made = DecodeImage(q.path, q.request.attrs, cap, r.pixels, r.width, r.height,
                            r.stride, r.source_width, r.source_height);
     }
@@ -576,6 +871,11 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
         r.pixels.clear();
         r.width = r.height = r.stride = 0;
         if (ShellThumbnailInto(q, r)) return MadeBitmap(r);
+        const std::wstring codec = MissingImageCodec(q.path, q.extension);
+        if (!codec.empty()) {
+            r.error = L"image-codec-missing:" + codec;
+            return DecodeStep::Failed;
+        }
     }
     r.error = L"image-decode-failed";
     return DecodeStep::Failed;
@@ -613,7 +913,10 @@ static DecodeStep RunMetaFile(const DecodeRequest& q, DecodeResult& r) {
     return DecodeStep::Failed;
 }
 
-// PDF / PDF-compatible AI: PDFium renders page 1 at the requested size. Legacy
+// PDF / PDF-compatible AI: PDFium renders the requested page (frame_index) at
+// the requested size and reports the page count as frame_count with a zero
+// frame delay, which tells the UI this is a paged document, not an animation
+// (GIF delays are never below 20 ms). Legacy
 // PostScript AI, encrypted PDFs or a missing DLL fall back to whatever shell
 // thumbnail provider is registered.
 static bool AcceptsPdf(const DecodeRequest& q) {
@@ -622,8 +925,14 @@ static bool AcceptsPdf(const DecodeRequest& q) {
 static DecodeStep RunPdf(const DecodeRequest& q, DecodeResult& r) {
     bool made = false;
     if (!q.offline) {
+        UINT pages = 0;
         made = preview::RasterizePdfFile(q.path, q.cap, r.pixels, r.width, r.height, r.stride,
-                                         r.source_width, r.source_height, &r.error);
+                                         r.source_width, r.source_height, &r.error,
+                                         q.request.frame_index, &pages);
+        if (made && pages > 1) {
+            r.frame_count = pages;
+            r.frame_delay_ms = 0;
+        }
         if (!made) {
             r.pixels.clear();
             r.width = r.height = r.stride = r.source_width = r.source_height = 0;
@@ -842,6 +1151,128 @@ static DecodeStep RunTextOrHex(const DecodeRequest& q, DecodeResult& r) {
     return DecodeStep::Failed;
 }
 
+// Markdown in Quick Look: parsed here (untrusted input stays in the sandboxed
+// host) into blocks the UI lays out. Elsewhere it stays plain text.
+static bool AcceptsMarkdown(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           IsOneOf(q.extension, {L".md", L".markdown", L".mdown", L".mkd", L".mkdn"});
+}
+static DecodeStep RunMarkdown(const DecodeRequest& q, DecodeResult& r) {
+    if (!TextOrHexInto(q, r) || r.kind != ipc::PreviewContentKind::Text) return DecodeStep::Next;
+    std::wstring payload;
+    if (preview::MakeMarkdownDocument(r.text, payload)) {
+        r.text = std::move(payload);
+        r.kind = ipc::PreviewContentKind::Markdown;
+    }
+    return DecodeStep::Made;
+}
+
+// CSV/TSV and XLSX in Quick Look: a grid payload. Needs the RichText flag
+// (elsewhere CSV stays text and XLSX keeps its shell thumbnail/preview); a
+// workbook that cannot be read falls through to the shell preview.
+static bool AcceptsTable(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           (preview::IsTableExtension(q.extension) || preview::IsSpreadsheetExtension(q.extension));
+}
+static DecodeStep RunTable(const DecodeRequest& q, DecodeResult& r) {
+    std::wstring payload;
+    if (preview::IsSpreadsheetExtension(q.extension)) {
+        uint32_t bytes = 0;
+        if (!preview::MakeXlsxTable(q.path, payload, bytes)) return DecodeStep::Next;
+        r.bytes_read = bytes;
+        r.truncated = false;
+    } else {
+        ipc::PreviewTextEncoding encoding = ipc::PreviewTextEncoding::Unknown;
+        if (!preview::MakeCsvTable(q.path, q.extension, payload, r.bytes_read, r.truncated, encoding))
+            return DecodeStep::Next;
+        r.text_encoding = encoding;
+    }
+    r.text = std::move(payload);
+    r.kind = ipc::PreviewContentKind::Table;
+    return DecodeStep::Made;
+}
+
+// Jupyter notebooks in Quick Look: converted to the Markdown payload (cells,
+// text outputs, pictures). Code is never run. Not a notebook: next decoder.
+static bool AcceptsNotebook(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           preview::IsNotebookExtension(q.extension);
+}
+static DecodeStep RunNotebook(const DecodeRequest& q, DecodeResult& r) {
+    std::wstring payload;
+    ipc::PreviewTextEncoding encoding = ipc::PreviewTextEncoding::Unknown;
+    if (!preview::MakeNotebookDocument(q.path, payload, r.bytes_read, r.truncated, encoding))
+        return DecodeStep::Next;
+    r.text_encoding = encoding;
+    r.text = std::move(payload);
+    r.kind = ipc::PreviewContentKind::Markdown;
+    return DecodeStep::Made;
+}
+
+// JSON and XML in Quick Look: a node tree payload (a parse error still makes
+// one, carrying the source). Binary plists and the like fall through.
+static bool AcceptsTree(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           (preview::IsJsonExtension(q.extension) || preview::IsXmlExtension(q.extension));
+}
+static DecodeStep RunTree(const DecodeRequest& q, DecodeResult& r) {
+    std::wstring payload;
+    ipc::PreviewTextEncoding encoding = ipc::PreviewTextEncoding::Unknown;
+    if (!preview::MakeTreeDocument(q.path, q.extension, payload, r.bytes_read, r.truncated, encoding))
+        return DecodeStep::Next;
+    r.text_encoding = encoding;
+    r.text = std::move(payload);
+    r.kind = ipc::PreviewContentKind::Tree;
+    return DecodeStep::Made;
+}
+
+// DOCX and EPUB in Quick Look: converted to the Markdown block payload (EPUB
+// with chapters and contents). A document that does not convert falls
+// through to the shell preview and thumbnail providers.
+static bool AcceptsDocx(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           preview::IsDocxExtension(q.extension);
+}
+static DecodeStep RunDocx(const DecodeRequest& q, DecodeResult& r) {
+    std::wstring payload;
+    if (!preview::MakeDocxDocument(q.path, payload, r.bytes_read, r.truncated)) return DecodeStep::Next;
+    r.text = std::move(payload);
+    r.kind = ipc::PreviewContentKind::Markdown;
+    return DecodeStep::Made;
+}
+static bool AcceptsEpub(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagRichText) != 0 &&
+           preview::IsEpubExtension(q.extension);
+}
+static DecodeStep RunEpub(const DecodeRequest& q, DecodeResult& r) {
+    std::wstring payload;
+    if (!preview::MakeEpubDocument(q.path, payload, r.bytes_read, r.truncated)) return DecodeStep::Next;
+    r.text = std::move(payload);
+    r.kind = ipc::PreviewContentKind::Markdown;
+    return DecodeStep::Made;
+}
+
+// Folders in Quick Look: a contents listing drawn by the archive tree view.
+// Everywhere else (grid, details pane) they keep the shell icon below.
+static bool AcceptsFolder(const DecodeRequest& q) {
+    return q.is_directory && !q.offline &&
+           (q.request.flags & ipc::kPreviewRequestFlagFolderListing) != 0;
+}
+static DecodeStep RunFolder(const DecodeRequest& q, DecodeResult& r) {
+    const bool final_pass = q.request.frame_index != 0;
+    if (!preview::MakeFolderListing(q.path, final_pass ? 3000u : 400u, final_pass, r.text))
+        return DecodeStep::Next;
+    r.kind = ipc::PreviewContentKind::Archive;
+    r.bytes_read = 0;
+    return DecodeStep::Made;
+}
+
 // Shortcuts (.lnk): the preview of the file they point to, as Explorer shows
 // it. The link is read, never resolved (Resolve may search the disk or wake a
 // network share); network targets, folders and programs keep the link icon.
@@ -892,12 +1323,19 @@ static DecodeStep RunShortcut(const DecodeRequest& q, DecodeResult& r) {
 // table existed. New families go before "shell-preview" unless the shell
 // provider must win.
 static const preview::DecoderEntry kDecoders[] = {
+    { "folder",          AcceptsFolder,       RunFolder },
     { "shortcut",        AcceptsShortcut,     RunShortcut },
     { "image",           AcceptsImage,        RunImage },
     { "svg",             AcceptsVector,       RunVector },
     { "metafile",        AcceptsMetaFile,     RunMetaFile },
     { "pdf",             AcceptsPdf,          RunPdf },
     { "archive",         AcceptsArchive,      RunArchive },
+    { "markdown",        AcceptsMarkdown,     RunMarkdown },
+    { "table",           AcceptsTable,        RunTable },
+    { "notebook",        AcceptsNotebook,     RunNotebook },
+    { "tree",            AcceptsTree,         RunTree },
+    { "docx",            AcceptsDocx,         RunDocx },
+    { "epub",            AcceptsEpub,         RunEpub },
     { "psd",             AcceptsPsd,          RunPsd },
     { "font",            AcceptsFont,         RunFont },
     { "rtf",             AcceptsRtf,          RunRtf },

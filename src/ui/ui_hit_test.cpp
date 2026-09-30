@@ -103,6 +103,16 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             return r;
         }
     }
+    if (vm.teach.visible) {
+        const TeachBubbleLayout t = MakeTeachBubbleLayout(rect, status_height_, scale_);
+        if (t.card.right - t.card.left >= 200.0f * scale_ && ContainsPt(t.card, x, y)) {
+            r.region = ContainsPt(t.primary, x, y) ? HitTestResult::TeachPrimary
+                     : ContainsPt(t.close, x, y) ? HitTestResult::TeachDismiss
+                     : ContainsPt(t.never, x, y) ? HitTestResult::TeachNever
+                     : HitTestResult::TeachBubble;
+            return r;
+        }
+    }
     // Title bar. With vertical tabs the address row sits up here; those
     // points fall through to the toolbar branch below.
     bool titleToolbar = false;
@@ -208,8 +218,11 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             }
         }
         if (ContainsPt(lay.content, x, y)) {
-            for(int i=0;i<2;++i) if(ContainsPt(lay.disclosure[i],x,y)) {
+            for(int i=0;i<3;++i) if(ContainsPt(lay.disclosure[i],x,y)) {
                 r.region=HitTestResult::SettingsDisclosure;r.index=i;return r;
+            }
+            for(int i=0;i<kPreviewCodecCount;++i) if(ContainsPt(lay.preview_codec_button[i],x,y)) {
+                r.region=HitTestResult::SettingsPreviewStore;r.index=i;return r;
             }
             for(int i=0;i<3;++i) if(ContainsPt(lay.theme_tile[i],x,y)) {
                 const int values[]={1,2,0};r.region=HitTestResult::SettingsTheme;r.index=values[i];return r;
@@ -236,6 +249,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.density_row[i], x, y)) {
                         r.region = HitTestResult::SettingsDensity;
+                        r.index = i;
+                        return r;
+                    }
+                }
+                for (int i = 0; i < 3; ++i) {
+                    if (ContainsPt(lay.text_render_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsTextRender;
                         r.index = i;
                         return r;
                     }
@@ -310,6 +330,12 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 }
                 if (ContainsPt(lay.vertical_tabs_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 23; return r;
+                }
+                if (ContainsPt(lay.hints_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 24; return r;
+                }
+                if (vm.settings_tips_seen && ContainsPt(lay.hints_reset_button, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 25; return r;
                 }
                 if (ContainsPt(lay.shell_tags_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 21; return r;
@@ -517,7 +543,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         const bool searchOverlay=vm.address_searching && rect.right-EffectiveSidebarWidth(rect.right)<480*scale_;
         if (!searchOverlay)
             for (int i=0; i<4; ++i) if (ContainsPt(toolbar.navigation[i],x,y)) {r.region=nav[i]; return r;}
-        const auto searchBounds=searchOverlay ? SearchBarRect(rect.right) : toolbar.search;
+        // Hit-test the same rect the chrome is drawn in; toolbar.search can be wider,
+        // which shifted every chip target (e.g. the options icon toggled the mode).
+        const auto searchBounds=searchOverlay || vm.address_searching ? SearchBarRect(rect.right) : toolbar.search;
         if (ContainsPt(searchBounds,x,y)) {
             r.region = HitTestResult::AddressSearch;
             if (vm.address_searching) {
@@ -526,7 +554,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(layout.scope,x,y)) r.region=HitTestResult::AddressSearchScope;
                 else if (ContainsPt(layout.name,x,y)) r.region=HitTestResult::AddressSearchMode;
                 else if (ContainsPt(layout.content,x,y)) r.region=HitTestResult::AddressSearchContent;
-                else if (ContainsPt(layout.close,x,y)) r.region=HitTestResult::AddressSearchClose;
+                else if (ContainsPt(layout.close,x,y)) r.region=vm.address_editing && vm.address_search_has_text
+                    ? HitTestResult::AddressSearchClear : HitTestResult::AddressSearchClose;
                 else if (ContainsPt(layout.options,x,y)) r.region=HitTestResult::AddressSearchOptions;
                 else if (vm.address_search_has_text && ContainsPt(layout.clear,x,y)) r.region=HitTestResult::AddressSearchClear;
             }
@@ -544,6 +573,12 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             return r;
         }
         if (ContainsPt(toolbar.sort,x,y)) {r.region=HitTestResult::ToolbarSort; return r;}
+        if (toolbar.group.right>toolbar.group.left && ContainsPt(toolbar.group,x,y)) {
+            const bool chip=toolbar_group_>0 && toolbar.group.right-toolbar.group.left>=60*scale_;
+            r.region=chip && ContainsPt(ToolbarGroupClearRect(toolbar.group,scale_),x,y)
+                ? HitTestResult::ToolbarGroupClear : HitTestResult::ToolbarGroup;
+            return r;
+        }
         if (ContainsPt(toolbar.overflow,x,y)) {r.region=HitTestResult::ToolbarMore; return r;}
         if (ContainsPt(toolbar.filter,x,y)) {
             r.region = !vm.pane.filter_text.empty() && vm.pane.filter_expand >= 0.985f &&
@@ -622,11 +657,36 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (!compact) {
                     const TrayDeckView& deck = vm.tray_deck;
                     if (deck.live_count > 0) {
+                        if (TrayDestRowH(deck, scale_) > 0.0f) {
+                            for (int d = 0; d < static_cast<int>(deck.dests.size()); ++d) {
+                                if (!ContainsPt(TrayDestChipRect(slot.rc, deck, scale_, d), x, y))
+                                    continue;
+                                r.region = HitTestResult::TrayDest;
+                                r.index = d;
+                                r.path = deck.dests[static_cast<size_t>(d)].path;
+                                return r;
+                            }
+                        }
+                        if (TrayStaleRowH(deck, scale_) > 0.0f) {
+                            for (int b = 0; b < 2; ++b) {
+                                if (!ContainsPt(TrayStaleButtonRect(slot.rc, deck, scale_, b), x, y))
+                                    continue;
+                                r.region = HitTestResult::TrayStale;
+                                r.index = b;
+                                return r;
+                            }
+                        }
+                        const D2D1_RECT_F deck_rc = TrayDeckArea(slot.rc, deck, scale_);
                         const std::wstring index_text = TrayIndexText(deck);
-                        const TrayFooterGeom f = TrayFooterGeometry(slot.rc, scale_,
-                            deck.total_count, compositor_ ? MeasureTextWidth(
+                        const TrayFooterGeom f = TrayFooterGeometry(deck_rc, scale_,
+                            deck.comparing ? 1 : deck.total_count, compositor_ ? MeasureTextWidth(
                                 compositor_->DwriteFactory(), compositor_->SmallFormat(),
-                                index_text) : 30.0f * scale_);
+                                index_text) : 30.0f * scale_, deck.can_compare);
+                        if (deck.can_compare && ContainsPt(f.compare, x, y)) {
+                            r.region = HitTestResult::TrayCompare;
+                            r.index = 0;
+                            return r;
+                        }
                         if (f.pager && ContainsPt(f.prev, x, y)) {
                             r.region = HitTestResult::TrayPrev;
                             return r;
@@ -635,13 +695,30 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                             r.region = HitTestResult::TrayNext;
                             return r;
                         }
-                        const TrayStackGeom g = TrayStackGeometry(slot.rc, scale_, deck.thumb_dip);
+                        if (deck.comparing) {
+                            // Compare table: only the content cell is live (before it runs).
+                            const TrayCompareGeom cg = TrayCompareGeometry(deck_rc, scale_, deck.thumb_dip);
+                            const bool can_diff = deck.compare.content == 3 && deck.compare.text == 1;
+                            if ((deck.compare.content == 0 || can_diff) &&
+                                ContainsPt(TrayCompareCell(cg, 4, 2), x, y)) {
+                                r.region = HitTestResult::TrayCompare;
+                                r.index = can_diff ? 2 : 1;
+                            }
+                            return r;
+                        }
+                        const TrayStackGeom g = TrayStackGeometry(deck_rc, scale_, deck.thumb_dip);
                         for (int c = 0; c < deck.live_count; ++c) {
                             const TrayCardView& card = deck.cards[static_cast<size_t>(c)];
                             if (card.ghost || card.depth > 0.5f) continue;
                             bool close_zone = false;
-                            if (!TrayCardHit(g, card, deck.spread, x, y, &close_zone)) continue;
-                            if (close_zone) {
+                            bool intent_zone = false;
+                            if (!TrayCardHit(g, card, deck.spread, x, y, &close_zone,
+                                             &intent_zone)) continue;
+                            if (intent_zone && !close_zone && card.batch >= 0) {
+                                r.region = HitTestResult::TrayIntent;
+                                r.index = card.batch;
+                                r.sub_index = c; // display index (hover identity)
+                            } else if (close_zone) {
                                 r.region = HitTestResult::TrayItemRemove;
                                 r.index = card.batch;
                                 r.sub_index = card.sub;
@@ -797,6 +874,23 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 return out;
             }
         }
+        if (paneVm.compare_active && !paneVm.is_changes && !paneVm.is_content_search && banner > 0 &&
+            y >= paneRc.top + pane_header_height_ && y < paneRc.top + pane_header_height_ + banner - 4 * scale_) {
+            const D2D1_RECT_F bar = D2D1::RectF(paneRc.left + 8 * scale_, paneRc.top + pane_header_height_,
+                paneRc.right - 8 * scale_, paneRc.top + pane_header_height_ + banner - 4 * scale_);
+            D2D1_RECT_F diffRc{}, exitRc{};
+            CompareBannerButtons(bar, scale_, diffRc, exitRc);
+            if (ContainsPt(diffRc, x, y)) {
+                out.region = HitTestResult::CompareDiffToggle;
+                out.index = paneIndex;
+                return out;
+            }
+            if (ContainsPt(exitRc, x, y)) {
+                out.region = HitTestResult::CompareExit;
+                out.index = paneIndex;
+                return out;
+            }
+        }
         const float extra = PaneExtraTop(paneVm, scale_, paneRc.right - paneRc.left, compositor_);
         const float recentTop = paneRc.top + pane_header_height_ + banner;
         const float filterExtra = (paneVm.is_recent ? kRecentControlsDip * scale_ : 0.0f) +
@@ -886,6 +980,38 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 out.region = HitTestResult::Pane;
                 return out;
             }
+            if (!paneVm.loading && paneVm.EntryCount() == 0 && !paneVm.filter_text.empty() &&
+                !paneVm.is_changes) {
+                const int first = paneVm.is_file_system ? 0 : 1;
+                const SearchEmptyLayout emptyLayout = MakeSearchEmptyLayout(
+                    D2D1::RectF(paneRc.left, listTop, paneRc.right, paneRc.bottom), scale_, 2 - first);
+                for (int i = 0; i < 2 - first; ++i) {
+                    const D2D1_RECT_F& rc = emptyLayout.buttons[i];
+                    if (rc.right - rc.left < 40.0f * scale_) break;
+                    if (ContainsPt(rc, x, y)) {
+                        out.region = HitTestResult::FilterEmptyAction;
+                        out.index = first + i;
+                        return out;
+                    }
+                }
+            }
+            if (!paneVm.loading && paneVm.EntryCount() == 0 && paneVm.filter_text.empty() &&
+                paneVm.is_query_search && !paneVm.is_changes) {
+                app::SearchEmptyAction actions[3];
+                const int count = app::SearchEmptyActions(paneVm.search_query, actions);
+                const SearchEmptyLayout emptyLayout = MakeSearchEmptyLayout(
+                    D2D1::RectF(paneRc.left, listTop, paneRc.right, paneRc.bottom), scale_, count);
+                for (int i = 0; i < count; ++i) {
+                    const D2D1_RECT_F& rc = emptyLayout.buttons[i];
+                    if (rc.right - rc.left < 40.0f * scale_) break;
+                    if (ContainsPt(rc, x, y)) {
+                        out.region = HitTestResult::SearchEmptyAction;
+                        out.index = i;
+                        out.path = app::ApplySearchEmptyAction(paneVm.search_query, actions[i]);
+                        return out;
+                    }
+                }
+            }
             if (!paneVm.loading && paneVm.EntryCount() == 0 &&
                 paneVm.filter_text.empty() && paneVm.is_file_system && paneVm.can_create) {
                 const PaneEmptyLayout emptyLayout = MakePaneEmptyLayout(
@@ -908,6 +1034,27 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 out.region = HitTestResult::Scrollbar;
                 return out;
             }
+            if (const ListGroups* groups = paneVm.Groups()) {
+                const D2D1_RECT_F list = PaneListRect(paneRc, extra, paneVm.view_mode);
+                const ViewLayout grouped(paneVm.view_mode, list, paneVm.EntryCount(),
+                                         paneVm.scroll_x, paneVm.scroll_y, scale_,
+                                         ListRowHeightDip(paneVm, list), groups);
+                D2D1_RECT_F header{};
+                int g = grouped.StickyHeader(&header);
+                if (g < 0 || !ContainsPt(header, x, y)) {
+                    g = grouped.HeaderHitTest(x, y);
+                    header = g >= 0 ? grouped.HeaderRect(g) : D2D1_RECT_F{};
+                }
+                if (g >= 0) {
+                    const D2D1_RECT_F content = DetailsContentRect(header, scale_);
+                    out.region = GroupSelectVisible(content, scale_) &&
+                                 ContainsPt(GroupSelectRect(content, scale_), x, y)
+                        ? HitTestResult::GroupSelect : HitTestResult::GroupHeader;
+                    out.index = g;
+                    out.pane_index = paneIndex;
+                    return out;
+                }
+            }
             int idx = ItemFromPointInPane(paneVm, paneRect, x, y);
             if(idx>=0 && paneVm.content_results && !paneVm.content_results->Ready(static_cast<size_t>(idx))) {
                 paneVm.content_results->Prefetch(static_cast<size_t>(idx));
@@ -921,7 +1068,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         const DetailsColumnLayout columns = DetailsColumns(list, paneVm);
                         ViewLayout layout(paneVm.view_mode, list, paneVm.EntryCount(),
                                           paneVm.scroll_x, paneVm.scroll_y, scale_,
-                                          ListRowHeightDip(paneVm, list));
+                                          ListRowHeightDip(paneVm, list), paneVm.Groups());
                         const D2D1_RECT_F nameRc = layout.NameRect(viewRow);
                         const D2D1_RECT_F cell = layout.ItemRect(viewRow);
                         const ListEntryView& entry = MakeVisibleEntry(paneVm, static_cast<size_t>(idx));

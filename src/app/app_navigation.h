@@ -33,6 +33,8 @@ enum class PathLoadReason { Navigate, RestoreSession, History };
 void MarkContentSearchStopped(app::Tab& tab);
 void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path,
                      PathLoadReason reason = PathLoadReason::Navigate);
+// Saved "group by" for a folder, else the Downloads/Recent Date default.
+int FolderGroupFor(const AppState& s, const std::wstring& path);
 void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path,
                       PathLoadReason reason = PathLoadReason::Navigate);
 void ApplyWorkerResult(AppState& s, app::WorkResult& res);
@@ -55,21 +57,43 @@ void RestoreNavigationReturnSelection(AppState& s, app::Tab& tab,
 void NavigateTo(AppState& s, const std::wstring& path);
 void FocusPane(AppState& s, app::Pane* p);
 void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset);
+// Two-pane folder compare.
+void UpdateFolderCompare(AppState& s);
+void SetFolderCompare(AppState& s, bool on);
+void ToggleCompareDiffOnly(AppState& s);
+bool FolderCompareAvailable(AppState& s);
+std::vector<std::wstring> SideBySideFolders(const app::Tab& tab);
+void OpenFoldersSideBySide(AppState& s);
 void TransferToTarget(AppState& s, bool move);
 void CycleFocus(AppState& s);
 void MarkTargetPane(AppState& s);
 void SortBy(AppState& s, ui::SortColumn col);
 void SetSort(AppState& s, ui::SortColumn col, ui::SortDirection direction);
+// "Group by" for the active folder (remembered per folder); 0 turns it off.
+void SetGroupBy(AppState& s, int group_by);
 void OpenSelected(AppState& s);
+// Opens one path as if chosen in the list: folders navigate, files launch.
+void OpenPath(AppState& s, const std::wstring& path);
 void GoUp(AppState& s);
 void GoBack(AppState& s);
 void GoForward(AppState& s);
 bool IsSettingsTab(const app::Tab* tab);
 std::wstring NewTabPath(const AppState& s);
 void NewTab(AppState& s, const std::wstring& path);
+void NewBackgroundTab(AppState& s, const std::wstring& path);
 void OpenSettingsTab(AppState& s, int page);
 void CloseLayoutTab(AppState& s, size_t idx);
 void CloseActiveTab(AppState& s);
 void SwitchTab(AppState& s, size_t idx);
 bool ActivateExistingFolderTab(AppState& s, const std::wstring& path);
+// "Open in new tab": switches to (and pulses) a tab already showing `path`
+// instead of duplicating it.
+void OpenFolderTab(AppState& s, const std::wstring& path);
+// Selects `name` in `tab` now when listed, else once its listing lands.
+void SelectNameInTab(AppState& s, app::Tab& tab, const std::wstring& name);
+float TabFlashAmount(const AppState& s, const app::LayoutTab* key);
+// Publishes the tag catalog for tag grouping; true when it changed.
+bool SyncTagGroups(AppState& s);
+// Advances the pulse; false once it has finished (or none is running).
+bool TickTabFlash(AppState& s);
 } // namespace pulse

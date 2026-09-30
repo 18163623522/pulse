@@ -38,6 +38,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         l.effect_row[i]=D2D1::RectF(tile_x,tile_y,tile_x+effect_width,tile_y+74*scale);
     }
     l.language_card=row(narrow ? 98.0f : 64.0f); l.language_choice=choice(l.language_card,176);
+    l.text_render_card=row(narrow ? 98.0f : 64.0f); segments(l.text_render_card,l.text_render_row,3,282);
     l.group[0]=D2D1::RectF(left,l.theme_row.top,right,y);
     section(1);
     l.startup_row[0]=row(64); l.startup_row[1]=row(64);
@@ -48,6 +49,24 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     for(auto& list_row : l.list_style_row) list_row=row(64);
     l.folder_sort_card=row(narrow ? 98.0f : 64.0f); segments(l.folder_sort_card,l.folder_sort_row,3,282);
     l.group[2]=D2D1::RectF(left,l.density_card.top,right,y);
+    // Quick Look: read-only supported formats card, bit 2 of settings_expanded.
+    y+=24*scale; l.preview_section=row(28);
+    l.disclosure[2]=row(64);
+    if(vm.settings_expanded & 4u) {
+        l.preview_formats=D2D1::RectF(left,y,right,y);
+        y+=LayoutPreviewFormats(l.preview_formats,scale,nullptr,nullptr);
+        l.preview_formats.bottom=y;
+        const bool zh=l10n::effective_language()==l10n::Language::ZhCN;
+        const float bw=painter ? painter->MeasureButtonWidth(zh ? L"获取" : L"Get") : 72*scale;
+        for(int i=0;i<kPreviewCodecCount;++i) {
+            l.preview_codec_row[i]=row(60);
+            const bool detected=(vm.settings_preview_codecs & kPreviewCodecsDetected)!=0;
+            if(detected && !(vm.settings_preview_codecs & (1u<<i)) && PreviewCodec(i).store_id)
+                l.preview_codec_button[i]=D2D1::RectF(right-16*scale-bw,l.preview_codec_row[i].top+14*scale,
+                    right-16*scale,l.preview_codec_row[i].top+46*scale);
+        }
+    }
+    l.preview_group=D2D1::RectF(left,l.disclosure[2].top,right,y);
     y+=18*scale;
     l.disclosure[0]=row(64);
     if(vm.settings_expanded & 1u) {
@@ -68,6 +87,12 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         y+=8*scale; l.protected_files_row=row(64);
         y+=8*scale; l.pinned_names_row=row(64);
         y+=8*scale; l.vertical_tabs_row=row(64);
+        y+=8*scale; l.hints_row=row(64);
+        y+=8*scale; l.hints_reset_row=row(64);
+        {
+            const float rw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::HintsResetButton)) : 80*scale;
+            l.hints_reset_button=D2D1::RectF(right-16*scale-rw,l.hints_reset_row.top+16*scale,right-16*scale,l.hints_reset_row.top+48*scale);
+        }
         y+=8*scale; l.blank_click_row=row(64);
         y+=8*scale; l.change_tracking_row=row(64);
         l.change_days_row=row(narrow ? 98.0f : 64.0f); segments(l.change_days_row,l.change_days,3,282);

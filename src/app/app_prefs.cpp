@@ -55,7 +55,9 @@ void AppPrefs::ResetToDefaults() {
     list_zebra_rows = true;
     list_size_bar = false;
     folder_sort_mode = 0;
+    text_render = 0;
     folder_views.Clear();
+    folder_groups.Clear();
     search_pinyin = true;
     global_search_enabled = false;
     global_search_modifiers = 1;
@@ -76,6 +78,8 @@ void AppPrefs::ResetToDefaults() {
     address_search_current = false;
     address_search_content = false;
     tray_icon_size = 48;
+    show_hints = true;
+    tips_seen = 0;
     accent_rgb.clear();
     accent_follow_system = false;
     custom_tag_colors.clear();
@@ -119,6 +123,8 @@ std::wstring AppPrefs::ToJson() const {
     out += sidebar_collapsed ? L"true" : L"false";
     out += L",\n  \"folder_sort_mode\":";
     out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
+    out += L",\n  \"text_render\":";
+    out += std::to_wstring(text_render >= 0 && text_render <= 2 ? text_render : 0);
     out += L",\n  \"show_hidden_files\":";
     out += show_hidden_files ? L"true" : L"false";
     out += L",\n  \"show_protected_os_files\":";
@@ -151,6 +157,9 @@ std::wstring AppPrefs::ToJson() const {
     out += L",\n  \"address_search_content\":" + std::to_wstring(address_search_content);
     out += L",\n  \"tray_icon_size\":";
     out += std::to_wstring(tray_icon_size);
+    out += L",\n  \"show_hints\":";
+    out += show_hints ? L"true" : L"false";
+    out += L",\n  \"tips_seen\":" + std::to_wstring(tips_seen);
     // Legacy three-level keys stay for older builds reading the same app.json.
     out += L",\n  \"wallpaper_look\":";
     out += std::to_wstring(wallpaper_look < 38 ? 0 : (wallpaper_look < 63 ? 1 : 2));
@@ -194,8 +203,15 @@ std::wstring AppPrefs::ToJson() const {
         pulse::json::Escape(last_seen_version, escaped);
         out += escaped;
     }
+    out += L"\",\n  \"tray_dests\":\"";
+    {
+        std::wstring escaped;
+        pulse::json::Escape(tray_dests, escaped);
+        out += escaped;
+    }
     out += L"\"";
     folder_views.AppendJson(out);
+    folder_groups.AppendJson(out);
     out += L"\n}\n";
     return out;
 }
@@ -203,6 +219,7 @@ std::wstring AppPrefs::ToJson() const {
 bool AppPrefs::FromJson(const std::wstring& json) {
     if (json.empty()) return false;
     folder_views.ReadJson(json);
+    folder_groups.ReadJson(json);
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
@@ -218,6 +235,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
     if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
+    text_render = pulse::json::ExtractInt(json, L"text_render", 0);
+    if (text_render < 0 || text_render > 2) text_render = 0;
     search_pinyin = pulse::json::ExtractBool(json, L"search_pinyin", true);
     global_search_enabled = pulse::json::ExtractBool(json, L"global_search_enabled", false);
     const int modifiers = pulse::json::ExtractInt(json, L"global_search_modifiers", 1);
@@ -249,6 +268,9 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     address_search_content = pulse::json::ExtractInt(json, L"address_search_content", 0) != 0;
     if (row_height < 24 || row_height > 48) row_height = 34;
     tray_icon_size = pulse::json::ExtractInt(json, L"tray_icon_size", 48);
+    show_hints = pulse::json::ExtractBool(json, L"show_hints", true);
+    const int seen = pulse::json::ExtractInt(json, L"tips_seen", 0);
+    tips_seen = seen > 0 ? static_cast<uint32_t>(seen) : 0u;
     if (tray_icon_size < 32 || tray_icon_size > 64) tray_icon_size = 48;
     {
         // Continuous values; migrate the former 0/1/2 levels when absent.
@@ -288,6 +310,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     duplicate_scan_folder = pulse::json::ExtractString(json, L"duplicate_scan_folder");
     duplicate_scan_drive = pulse::json::ExtractString(json, L"duplicate_scan_drive");
     last_seen_version = pulse::json::ExtractString(json, L"last_seen_version");
+    tray_dests = pulse::json::ExtractString(json, L"tray_dests");
     return true;
 }
 

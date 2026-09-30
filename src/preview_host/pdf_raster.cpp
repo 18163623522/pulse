@@ -111,7 +111,8 @@ bool RasterizePdfFile(const std::wstring& path, UINT max_edge,
                       std::vector<unsigned char>& pixels,
                       UINT& width, UINT& height, UINT& stride,
                       UINT& source_width, UINT& source_height,
-                      std::wstring* error) {
+                      std::wstring* error, UINT page_index, UINT* page_count) {
+    if (page_count) *page_count = 0;
     pixels.clear();
     width = height = stride = source_width = source_height = 0;
     PdfApi& api = Api();
@@ -167,11 +168,14 @@ bool RasterizePdfFile(const std::wstring& path, UINT max_edge,
     }
     struct DocOwner { PdfApi& api; FPDF_DOCUMENT d; ~DocOwner() { api.FPDF_CloseDocument_fn(d); } }
         doc_owner{api, doc};
-    if (api.FPDF_GetPageCount_fn(doc) <= 0) {
+    const int pages = api.FPDF_GetPageCount_fn(doc);
+    if (pages <= 0) {
         SetError(error, L"pdf-empty");
         return false;
     }
-    FPDF_PAGE page = api.FPDF_LoadPage_fn(doc, 0);
+    if (page_count) *page_count = static_cast<UINT>(pages);
+    const int index = static_cast<int>((std::min)(page_index, static_cast<UINT>(pages - 1)));
+    FPDF_PAGE page = api.FPDF_LoadPage_fn(doc, index);
     if (!page) {
         SetError(error, L"pdf-page-failed");
         return false;

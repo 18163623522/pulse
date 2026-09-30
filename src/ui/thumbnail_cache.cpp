@@ -166,7 +166,8 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
                                        uint32_t* frame_delay_ms, uint32_t* loop_count,
                                        uint32_t* decoded_width, uint32_t* decoded_height,
                                        uint32_t* source_width, uint32_t* source_height,
-                                       PreviewViewport* viewport) {
+                                       PreviewViewport* viewport,
+                                       uint32_t* text_encoding) {
     if (!dc || path.empty() || pixels < 24) return PreviewDrawResult::Failed;
     const std::wstring key = Key(path, pixels, modified, size, frame_index);
     {
@@ -209,19 +210,27 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
             if (frame_count) *frame_count = item.frame_count;
             if (frame_delay_ms) *frame_delay_ms = item.frame_delay_ms;
             if (loop_count) *loop_count = item.loop_count;
+            if (text_encoding) *text_encoding = item.text_encoding;
             if (decoded_width) *decoded_width = item.w;
             if (decoded_height) *decoded_height = item.h;
             if (source_width) *source_width = item.source_width;
             if (source_height) *source_height = item.source_height;
             if (item.kind == ipc::PreviewContentKind::Text ||
                 item.kind == ipc::PreviewContentKind::Hex ||
-                item.kind == ipc::PreviewContentKind::Archive) {
+                item.kind == ipc::PreviewContentKind::Archive ||
+                item.kind == ipc::PreviewContentKind::Markdown ||
+                item.kind == ipc::PreviewContentKind::Table ||
+                item.kind == ipc::PreviewContentKind::Tree) {
                 if (text) *text = item.text;
+                if (item.kind == ipc::PreviewContentKind::Tree) return PreviewDrawResult::Tree;
+                if (item.kind == ipc::PreviewContentKind::Table) return PreviewDrawResult::Table;
                 if (item.kind == ipc::PreviewContentKind::Archive) return PreviewDrawResult::Archive;
+                if (item.kind == ipc::PreviewContentKind::Markdown) return PreviewDrawResult::Markdown;
                 return item.kind == ipc::PreviewContentKind::Hex
                     ? PreviewDrawResult::Hex : PreviewDrawResult::Text;
             }
             UploadBitmap(dc_, item.bitmap, item.pixels, item.w, item.h, item.stride);
+            if (text && item.kind == ipc::PreviewContentKind::Bitmap) *text = item.text;  // e.g. icon sizes
             if (item.bitmap.get()) {
                 if (viewport) {
                     viewport->SetContent(dest, static_cast<float>(item.source_width ? item.source_width : item.w),
@@ -350,8 +359,11 @@ bool ThumbnailCache::StoreResult(const Request& req, Item result) {
         }
     } else {
         transient_failures_.erase(req.key);
+        // Paged documents (frame_count > 1, zero delay) keep page 1 as the
+        // still, like a single-frame image.
         if (!result.failed && result.kind == ipc::PreviewContentKind::Bitmap &&
-            result.frame_count <= 1 && !req.identity.empty())
+            (result.frame_count <= 1 || (result.frame_delay_ms == 0 && req.frame_index == 0)) &&
+            !req.identity.empty())
             still_by_identity_[req.identity] = req.key;
     }
 
@@ -360,7 +372,10 @@ bool ThumbnailCache::StoreResult(const Request& req, Item result) {
         lru_.erase(old->second.lru_position);
         items_.erase(old);
     }
-    if (result.frame_count > 1) {
+    // Animation frames of one file are capped at four; pages of a paged
+    // document (zero delay) are ordinary LRU entries so every visible page and
+    // strip thumbnail can stay resident together.
+    if (result.frame_count > 1 && result.frame_delay_ms > 0) {
         size_t frames = 0;
         for (const auto& [key, item] : items_) {
             if (item.frame_count > 1 && item.animation_identity == req.identity) ++frames;
@@ -407,6 +422,9 @@ void ThumbnailCache::Worker() {
         wire.kind=req.kind; wire.pixel_size=req.pixels; wire.attrs=req.attrs;
         wire.frame_index = req.frame_index;
         if (!req.details) wire.flags |= ipc::kPreviewRequestFlagGrid;
+        else if (quick_look_content_)
+            wire.flags |= (req.attrs & FILE_ATTRIBUTE_DIRECTORY) ? ipc::kPreviewRequestFlagFolderListing
+                                                                 : ipc::kPreviewRequestFlagRichText;
         wire.path_chars=(uint32_t)req.path.size();
         if (ok) ok = ipc::WriteAll(pipe_, &wire, sizeof(wire)) &&
                      ipc::WriteAll(pipe_, req.path.data(), wire.path_chars * sizeof(wchar_t));
@@ -429,7 +447,12 @@ void ThumbnailCache::Worker() {
             ok = ipc::ReadAll(pipe_, mapping.data(), response.mapping_chars * sizeof(wchar_t)); }
         std::wstring previewText;
         if (ok && response.text_chars) {
-            const uint32_t limit = response.kind == ipc::PreviewContentKind::Archive
+            const uint32_t limit = response.kind == ipc::PreviewContentKind::Table ||
+                                   response.kind == ipc::PreviewContentKind::Tree
+                ? ipc::kPreviewMaxTableChars
+                : response.kind == ipc::PreviewContentKind::Markdown
+                ? ipc::kPreviewMaxTableChars  // DOCX / EPUB payloads run up to 2M
+                : response.kind == ipc::PreviewContentKind::Archive
                 ? ipc::kPreviewMaxArchiveChars : ipc::kPreviewMaxTextChars;
             if (response.text_chars > limit) ok = false;
             else {
@@ -482,6 +505,8 @@ void ThumbnailCache::Worker() {
             result.frame_count = (std::max)(1u, response.frame_count);
             result.frame_delay_ms = response.frame_delay_ms;
             result.loop_count = response.loop_count;
+            result.text_encoding = (response.flags & ipc::kPreviewFlagEncodingMask) >>
+                                   ipc::kPreviewFlagEncodingShift;
             result.frame_index = req.frame_index;
             result.animation_identity = req.identity;
             result.source_width = response.source_width;

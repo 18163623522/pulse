@@ -4,6 +4,8 @@
 #include "app_column_view.h"
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
+#include "group_wheel_ui.h"
+#include "text_diff.h"
 #include "global_search_controller.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
@@ -41,6 +43,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <cstring>
 #include <thread>
 #include <unordered_set>
 
@@ -204,11 +207,12 @@ void AppendCustomTagColor(AppState& s, uint32_t rgb) {
     s.appPrefs.Save();
 }
 
-void ShowTagPicker(AppState& s, POINT screen_pt) {
-    if(DeferContentSelection(s,[=](AppState& v){ShowTagPicker(v,screen_pt);})) return;
+void ShowTagPicker(AppState& s, POINT screen_pt, const std::vector<std::wstring>* paths_override) {
+    if (!paths_override &&
+        DeferContentSelection(s,[=](AppState& v){ShowTagPicker(v,screen_pt);})) return;
     if (!EnsureMenu(s)) return;
-    const std::vector<std::wstring> paths = ActiveTab(s)
-        ? SelectedFullPaths(*ActiveTab(s)) : std::vector<std::wstring>{};
+    const std::vector<std::wstring> paths = paths_override ? *paths_override
+        : ActiveTab(s) ? SelectedFullPaths(*ActiveTab(s)) : std::vector<std::wstring>{};
     constexpr int kTagPickerBase = 20000;
     constexpr int kCreateTag = 29999;
     auto rebuild = [&s, &paths](const std::wstring& query) {
@@ -273,6 +277,238 @@ void ShowTagPicker(AppState& s, POINT screen_pt) {
         if (!tag_id.empty()) ToggleTagForSelection(s, tag_id, paths);
     }
     s.menu->SetFilterPlaceholder(l10n::Get(l10n::StringId::TabMenuSearch));
+}
+
+// Hands the files to the shell's "Send to > Compressed (zipped) folder"
+// target; Windows names the archive after the first item and writes it next
+// to it, with its own progress UI.
+static bool ZipViaShell(const std::vector<std::wstring>& paths) {
+    PWSTR sendto = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_SendTo, 0, nullptr, &sendto)) || !sendto) return false;
+    const std::wstring dir = sendto;
+    CoTaskMemFree(sendto);
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((dir + L"\\*.ZFSendToTarget").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return false;
+    const std::wstring target = dir + L"\\" + fd.cFileName;
+    FindClose(find);
+    IShellItem* item = nullptr;
+    if (FAILED(SHCreateItemFromParsingName(target.c_str(), nullptr, IID_PPV_ARGS(&item)))) return false;
+    IDropTarget* drop = nullptr;
+    const HRESULT hr = item->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&drop));
+    item->Release();
+    if (FAILED(hr) || !drop) return false;
+    ui::FileDataObject* data = ui::FileDataObject::Create(paths);
+    bool ok = false;
+    if (data) {
+        POINTL pt{ 0, 0 };
+        DWORD effect = DROPEFFECT_COPY;
+        if (SUCCEEDED(drop->DragEnter(data, MK_LBUTTON, pt, &effect)) && effect != DROPEFFECT_NONE) {
+            effect = DROPEFFECT_COPY;
+            ok = SUCCEEDED(drop->Drop(data, MK_LBUTTON, pt, &effect));
+        } else {
+            drop->DragLeave();
+        }
+        data->Release();
+    }
+    drop->Release();
+    return ok;
+}
+
+void TrayFindStale(AppState& s) {
+    for (const auto& batch : s.tray.batches()) {
+        for (const auto& item : batch.items) {
+            if (item.exists) continue;
+            const size_t slash = item.path.find_last_of(L"\\/");
+            const std::wstring name = slash == std::wstring::npos ? item.path : item.path.substr(slash + 1);
+            if (name.empty()) continue;
+            app::AdvancedSearchSpec spec = app::ParseSearchQuery(name);
+            spec.location = app::LocationScope::Indexed;
+            spec.current_folder.clear();
+            spec.custom_folder.clear();
+            NavigateTo(s, app::MakeSearchPath(app::CompileSearchQuery(spec)));
+            return;
+        }
+    }
+}
+
+void TrayRemoveStale(AppState& s) {
+    if (s.tray.RemoveMissing() > 0) SpawnTrayPuffs(s);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void TrayToggleCompare(AppState& s) {
+    s.trayCompare = !s.trayCompare;
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+static int CompareFileBytes(const std::wstring& a, const std::wstring& b) {
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    HANDLE ha = CreateFileW(a.c_str(), GENERIC_READ, share, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    HANDLE hb = CreateFileW(b.c_str(), GENERIC_READ, share, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    int result = 4;
+    if (ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE) {
+        constexpr DWORD kChunk = 1u << 20;
+        std::vector<char> ba(kChunk), bb(kChunk);
+        for (;;) {
+            DWORD ra = 0, rb = 0;
+            if (!ReadFile(ha, ba.data(), kChunk, &ra, nullptr) ||
+                !ReadFile(hb, bb.data(), kChunk, &rb, nullptr)) {
+                result = 4;
+                break;
+            }
+            if (ra != rb || std::memcmp(ba.data(), bb.data(), ra) != 0) {
+                result = 3;
+                break;
+            }
+            if (ra == 0) {
+                result = 2;
+                break;
+            }
+        }
+    }
+    if (ha != INVALID_HANDLE_VALUE) CloseHandle(ha);
+    if (hb != INVALID_HANDLE_VALUE) CloseHandle(hb);
+    return result;
+}
+
+void TrayStartContentCompare(AppState& s) {
+    std::vector<std::wstring> paths;
+    for (const auto& batch : s.tray.batches())
+        for (const auto& item : batch.items) paths.push_back(item.path);
+    if (paths.size() != 2) return;
+    auto job = std::make_shared<TrayCompareJob>();
+    job->a = paths[0];
+    job->b = paths[1];
+    s.trayCmpJob = job;
+    const HWND hwnd = s.hwnd;
+    std::thread([job, hwnd] {
+        job->state.store(CompareFileBytes(job->a, job->b));
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }).detach();
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void TrayOpenTextDiff(AppState& s) {
+    std::vector<std::wstring> paths;
+    for (const auto& batch : s.tray.batches())
+        for (const auto& item : batch.items) paths.push_back(item.path);
+    if (paths.size() != 2) return;
+    if (!s.textDiff) s.textDiff = std::make_unique<ui::TextDiffWindow>();
+    s.textDiff->Show(s.hwnd, paths[0], paths[1], s.darkMode, s.accentColor);
+}
+
+void ShowTrayBatchMenu(AppState& s, POINT screen_pt) {
+    if (!EnsureMenu(s)) return;
+    std::vector<std::wstring> paths;
+    for (const auto& batch : s.tray.batches())
+        for (const auto& item : batch.items)
+            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
+                paths.push_back(item.path);
+    enum { kZip = 1, kRename, kTag, kCopyPaths, kOpenAll, kReveal, kClear, kDiff };
+    std::vector<ui::FluentMenuItem> items;
+    auto add = [&](int cmd, l10n::StringId id, const wchar_t* glyph, bool enabled, bool sep) {
+        ui::FluentMenuItem item;
+        item.command = cmd;
+        item.text = l10n::Get(id);
+        item.glyph = glyph;
+        item.enabled = enabled;
+        item.separator_after = sep;
+        items.push_back(std::move(item));
+    };
+    const bool any = !paths.empty();
+    add(kZip, l10n::StringId::TrayMenuZip, L"\xF012", any, false);
+    add(kRename, l10n::StringId::TrayMenuRename, L"\xE8AC", paths.size() >= 2, false);
+    size_t staged = 0;
+    for (const auto& batch : s.tray.batches()) staged += batch.items.size();
+    const bool two_text = paths.size() == 2 && staged == 2 &&
+                          diff::ProbeLooksText(paths[0]) && diff::ProbeLooksText(paths[1]);
+    add(kDiff, l10n::StringId::TrayCompareTwo, L"\xE8AB", two_text, false);
+    add(kTag, l10n::StringId::TrayMenuTag, L"\xE8EC", any, true);
+    add(kCopyPaths, l10n::StringId::TrayMenuCopyPaths, L"\xE8C8", any, false);
+    add(kOpenAll, l10n::StringId::TrayMenuOpenAll, L"\xE8E5", any, false);
+    add(kReveal, l10n::StringId::TrayMenuReveal, L"\xE838", any, true);
+    add(kClear, l10n::StringId::ClearAll, L"\xE74D", !s.tray.batches().empty(), false);
+    // The card tooltip would otherwise linger under the menu.
+    s.tooltipText.clear();
+    s.hoverSince = 0;
+    s.hoverRegion = 0;
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+    UpdateWindow(s.hwnd);
+    s.menu->SetTheme(s.darkMode, s.accentColor);
+    const int cmd = s.menu->TrackPopup(screen_pt, std::move(items));
+    switch (cmd) {
+    case kZip:
+        ZipViaShell(paths);
+        break;
+    case kRename:
+        ShowBatchRenamePaths(s, paths);
+        break;
+    case kDiff:
+        TrayOpenTextDiff(s);
+        break;
+    case kTag:
+        ShowTagPicker(s, screen_pt, &paths);
+        break;
+    case kCopyPaths: {
+        std::wstring text;
+        for (const auto& p : paths) {
+            if (!text.empty()) text += L"\r\n";
+            text += ClipboardPath(p);
+        }
+        ops::WriteClipboardText(text);
+        break;
+    }
+    case kOpenAll: {
+        if (paths.size() > 10) {
+            ui::ConfirmDialogSpec spec;
+            spec.title = l10n::Get(l10n::StringId::TrayMenuOpenAll);
+            spec.message = l10n::Get(l10n::StringId::TrayOpenAllConfirm);
+            const size_t at = spec.message.find(L"{n}");
+            if (at != std::wstring::npos) spec.message.replace(at, 3, std::to_wstring(paths.size()));
+            spec.confirm_text = l10n::Get(l10n::StringId::TrayMenuOpenAll);
+            spec.cancel_text = l10n::Get(l10n::StringId::Cancel);
+            if (!ui::ShowConfirmDialog(s.hwnd, spec, s.darkMode, s.accentColor)) break;
+        }
+        for (const auto& p : paths)
+            ShellExecuteW(s.hwnd, nullptr, p.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        break;
+    }
+    case kReveal: {
+        // Open the first item's folder and select every staged item living there.
+        const std::wstring parent = fs::ParentPath(paths.front());
+        if (parent.empty()) break;
+        std::vector<std::wstring> leaves;
+        for (const auto& p : paths) {
+            if (_wcsicmp(fs::ParentPath(p).c_str(), parent.c_str()) != 0) continue;
+            const size_t slash = p.find_last_of(L"\\/");
+            leaves.push_back(slash == std::wstring::npos ? p : p.substr(slash + 1));
+        }
+        NavigateTo(s, parent);
+        if (app::Tab* tab = ActiveTab(s)) {
+            tab->pending_selected_names = leaves;
+            if (!leaves.empty()) tab->pending_selected_name = leaves.front();
+            tab->pending_ensure_selection_visible = true;
+        }
+        break;
+    }
+    case kClear: {
+        std::vector<std::wstring> all;
+        for (const auto& b : s.tray.batches())
+            for (const auto& item : b.items) all.push_back(item.path);
+        if (!all.empty()) {
+            MarkTrayExit(s, all, true);
+            SpawnTrayPuffs(s);
+        }
+        s.tray.Clear();
+        break;
+    }
+    default:
+        break;
+    }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
 void ShowCreateTagPicker(AppState& s, POINT screen_pt) {
@@ -470,6 +706,15 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             SetSort(s, tab->sort_column, cmd == app::CmdSortAscending
                 ? ui::SortDirection::Asc : ui::SortDirection::Desc);
         break;
+    case app::CmdGroupNone:
+    case app::CmdGroupName:
+    case app::CmdGroupDate:
+    case app::CmdGroupType:
+    case app::CmdGroupSize:
+    case app::CmdGroupTag:
+    case app::CmdGroupLocation:
+        SetGroupBy(s, cmd - app::CmdGroupNone);
+        break;
     case app::CmdFolderSortTop:
     case app::CmdFolderSortFollow:
     case app::CmdFolderSortMixed:
@@ -482,6 +727,13 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             if (!path.empty()) OpenChangeView(s, path);
         }
         break;
+    case app::CmdCompareSideBySide: OpenFoldersSideBySide(s); break;
+    case app::CmdCompareToggle: {
+        const app::LayoutTab* lt = s.window_tabs.Active();
+        SetFolderCompare(s, !(lt && lt->compare));
+        break;
+    }
+    case app::CmdCompareDiffOnly: ToggleCompareDiffOnly(s); break;
     case app::CmdOpenInNewTab: {
         app::Tab* tab = ActiveTab(s);
         if (!tab || !tab->snapshot) break;
@@ -490,7 +742,7 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             const fs::DirEntry& entry = tab->EntryAt(static_cast<size_t>(index));
             if (!entry.is_dir) continue;
             const std::wstring path = EntryFullPath(*tab, index);
-            if (!path.empty()) NewTab(s, path);
+            if (!path.empty()) OpenFolderTab(s, path);
         }
         break;
     }
@@ -528,6 +780,7 @@ void DispatchMenuCommand(AppState& s, int cmd) {
     case app::CmdBatchRename: ShowBatchRename(s); break;
     case app::CmdAdvancedSearch: ShowAdvancedSearch(s); break;
     case app::CmdRestoreRecycle: RestoreSelected(s); break;
+    case app::CmdRestoreAllRecycle: RestoreAllRecycle(s); break;
     case app::CmdEmptyRecycle: EmptyRecycleBin(s); break;
     case app::CmdOpenRecycle: NavigateTo(s, app::MakeRecyclePath()); break;
     case app::CmdSelectAll: {
@@ -752,6 +1005,13 @@ std::vector<ui::FluentMenuItem> BuildFinderItemMenu(
         batch.glyph = L"\xE8AC";
         batch.shortcut = L"Ctrl+Shift+R";
         items.insert(items.begin() + 1, std::move(batch));
+    }
+    if (tab && SideBySideFolders(*tab).size() == 2) {
+        ui::FluentMenuItem compare;
+        compare.command = app::CmdCompareSideBySide;
+        compare.text = l10n::Get(l10n::StringId::CompareSideBySide);
+        compare.glyph = L"\xE89F"; // side-by-side panes
+        items.insert(items.begin() + 1, std::move(compare));
     }
     return items;
 }
@@ -1027,6 +1287,10 @@ void ShowBackgroundContextMenu(AppState& s, POINT screen_pt) {
     view_options.indexed_search = (kind == L"search" || kind == L"saved-search") && !tab->content_results;
     view_options.show_path = kind == L"search" || kind == L"saved-search" || kind == L"recycle";
     view_options.filesystem = !tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path);
+    view_options.group_virtual = kind == L"search" || kind == L"saved-search" || kind == L"tag" || kind == L"recycle";
+    view_options.can_group = !tab->content_results &&
+        (view_options.filesystem || kind == L"recent" || view_options.group_virtual);
+    view_options.group_by = tab->group_by;
     if (IsRecycleTab(tab)) {
         const bool can_empty = tab->snapshot && tab->EntryCount() != 0;
         const std::wstring undoLabel = s.ops.UndoLabel();
@@ -1076,7 +1340,25 @@ void ShowSplitDropdown(AppState& s) {
     if (!EnsureMenu(s)) return;
     const auto anchor = s.renderer.SplitCommandRect((float)s.compositor.Width()); POINT pt{(LONG)anchor.left, (LONG)anchor.bottom};
     ClientToScreen(s.hwnd, &pt);
-    int cmd = s.menu->TrackPopup(pt, app::BuildSplitMenu(static_cast<int>(LayoutOf(s))));
+    auto items = app::BuildSplitMenu(static_cast<int>(LayoutOf(s)));
+    if (!items.empty()) items.back().separator_after = true;
+    const app::LayoutTab* lt = s.window_tabs.Active();
+    ui::FluentMenuItem compare;
+    compare.command = app::CmdCompareToggle;
+    compare.text = l10n::Get(l10n::StringId::CompareMenu);
+    compare.glyph = L"\xE89F";
+    compare.checked = lt && lt->compare;
+    compare.enabled = FolderCompareAvailable(s);
+    items.push_back(std::move(compare));
+    if (lt && lt->compare) {
+        ui::FluentMenuItem diff;
+        diff.command = app::CmdCompareDiffOnly;
+        diff.text = l10n::Get(l10n::StringId::CompareDiffOnly);
+        diff.glyph = L"\xE71C"; // filter
+        diff.checked = lt->compare_diff_only;
+        items.push_back(std::move(diff));
+    }
+    int cmd = s.menu->TrackPopup(pt, std::move(items));
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
 }
 
@@ -1288,7 +1570,11 @@ void SetViewMode(AppState& s, ui::ViewMode mode) {
     if (s.appPrefs.folder_views.Set(tab->current_path, mode)) s.appPrefs.Save();
     if (tab->view_mode == mode) return;
     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
+    const int old_group = tab->EffectiveGroup();
     tab->view_mode = mode;
+    // Grouped order applies to list-like views only; re-sort when that flips.
+    if (tab->EffectiveGroup() != old_group && !fs::IsVirtualPath(tab->current_path))
+        RefreshActiveTab(s);
     ++tab->view_generation;
     tab->scroll_x = 0.0f;
     tab->scroll_y = 0.0f;
@@ -1321,6 +1607,9 @@ void ShowViewDropdown(AppState& s, int pane_index) {
     if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
 }
 
+// Drum pickers (group_wheel_ui.cpp) instead of popup menus; false restores the menu.
+constexpr bool kSortWheel = true;
+
 void ShowSortDropdown(AppState& s) {
     if (!EnsureMenu(s)) return;
     auto* tab = ActiveTab(s);
@@ -1334,13 +1623,55 @@ void ShowSortDropdown(AppState& s) {
     options.can_sort = kind != L"starred" && kind != L"recent";
     options.indexed_search = (kind == L"search" || kind == L"saved-search") && !tab->content_results;
     options.show_path = kind == L"search" || kind == L"saved-search" || kind == L"recycle";
+    options.group_virtual = kind == L"search" || kind == L"saved-search" || kind == L"tag" || kind == L"recycle";
+    options.can_group = !tab->content_results &&
+        ((!tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path)) || kind == L"recent" ||
+         options.group_virtual);
+    options.group_by = tab->group_by;
+    if constexpr (kSortWheel) {
+        if (options.can_sort) {       // not sortable: keep the menu with its disabled rows
+            OpenSortWheel(s);
+            return;
+        }
+    }
     const float width = static_cast<float>(s.compositor.Width());
     const float left = s.renderer.EffectiveSidebarWidth(width);
     const auto layout = s.renderer.ToolbarLayoutAt(width,s.renderer.NewButtonWidthPx(width-left < 600*s.scale));
     POINT anchor{static_cast<LONG>(layout.sort.left),static_cast<LONG>(layout.sort.bottom)};
     ClientToScreen(s.hwnd,&anchor);
-    const int cmd = s.menu->TrackPopup(anchor,app::BuildSortMenu(options));
+    // Grouping has its own toolbar button, so the Sort dropdown is sort-only.
+    auto sort_items = app::BuildSortMenu(options);
+    const int cmd = s.menu->TrackPopup(anchor,std::move(sort_items));
     if (cmd != app::CmdNone) DispatchMenuCommand(s,cmd);
+}
+
+// Drum picker (group_wheel_ui.cpp) instead of the popup menu; false restores the menu.
+constexpr bool kGroupWheel = true;
+
+void ShowGroupDropdown(AppState& s) {
+    if (!EnsureMenu(s)) return;
+    auto* tab = ActiveTab(s);
+    if (!tab) return;
+    app::BackgroundViewOptions options;
+    options.can_group = s.renderer.ToolbarGroup() >= 0;
+    options.group_by = tab->group_by;
+    {
+        std::wstring kind;
+        app::ParsePulsePath(tab->current_path, &kind, nullptr);
+        options.group_virtual = kind == L"search" || kind == L"saved-search" || kind == L"tag" || kind == L"recycle";
+    }
+    if (!options.can_group) return;
+    if constexpr (kGroupWheel) {
+        OpenGroupWheel(s);
+    } else {
+        const float width = static_cast<float>(s.compositor.Width());
+        const float left = s.renderer.EffectiveSidebarWidth(width);
+        const auto layout = s.renderer.ToolbarLayoutAt(width, s.renderer.NewButtonWidthPx(width - left < 600 * s.scale));
+        POINT anchor{static_cast<LONG>(layout.group.left), static_cast<LONG>(layout.group.bottom)};
+        ClientToScreen(s.hwnd, &anchor);
+        const int cmd = s.menu->TrackPopup(anchor, app::BuildGroupMenu(options).children);
+        if (cmd != app::CmdNone) DispatchMenuCommand(s, cmd);
+    }
 }
 
 void ShowToolbarMore(AppState& s) {
@@ -1412,7 +1743,21 @@ void ShowAdvancedSearch(AppState& s, bool require_scope) {
     if (spec.location == app::LocationScope::Indexed && !current.empty() &&
         (require_scope || (rest.empty() && !s.addressSearching)))
         spec.location = app::LocationScope::CurrentFolder;
-    const auto result = ui::ShowAdvancedSearchDialog(s.hwnd, spec, s.darkMode, s.accentColor);
+    // Live "about N results" while the form is edited (filename matches only).
+    auto count = [&s](HWND dialog, const std::wstring& query) {
+        const auto split = app::SplitSearchQueryText(query);
+        index::Query q;
+        q.needle = app::ApplyContentSearchGuards(split.filename_needle, split);
+        q.path_prefix = split.path_prefix;
+        q.limit = 1;
+        s.advancedCountHwnd = dialog;
+        s.advancedCountId = ++s.nextIndexReq;
+        q.session_id = s.advancedCountId;
+        DispatchIndexSearch(s, q, s.advancedCountId);
+    };
+    const auto result = ui::ShowAdvancedSearchDialog(s.hwnd, spec, s.darkMode, s.accentColor, count);
+    s.advancedCountId = 0;
+    s.advancedCountHwnd = nullptr;
     if (result.accepted)
         NavigateTo(s, app::MakeSearchPath(result.query));
 }
@@ -1470,6 +1815,8 @@ void ShowSearchFilterMenu(AppState& s, int chip, RECT control_rect) {
             add(3, l10n::Get(l10n::StringId::SizeLt1MB), spec.size == app::SizePreset::Lt1MB);
             add(4, l10n::Get(l10n::StringId::Size1To10MB), spec.size == app::SizePreset::From1To10MB);
             add(5, l10n::Get(l10n::StringId::SizeGt10MB), spec.size == app::SizePreset::Gt10MB);
+            add(6, l10n::Get(l10n::StringId::SizeGt100MB), spec.size == app::SizePreset::Gt100MB);
+            add(7, l10n::Get(l10n::StringId::SizeGt1GB), spec.size == app::SizePreset::Gt1GB);
         }
     }
     s.menu->SetTheme(s.darkMode, s.accentColor);
@@ -1719,7 +2066,11 @@ namespace {
 bool QuickPreviewItemAt(AppState& s, const app::Tab& tab, int index, ui::QuickPreviewItem& item) {
     if (!tab.snapshot || index < 0 || index >= static_cast<int>(tab.EntryCount())) return false;
     const fs::DirEntry& entry = tab.EntryAt(static_cast<size_t>(index));
-    if (entry.is_dir) return false;
+    // Folders preview as a contents listing; not in This PC (whole drives),
+    // the recycle bin or other virtual locations.
+    if (entry.is_dir && (tab.current_path.empty() || IsRecycleTab(&tab) ||
+                         fs::IsVirtualPath(tab.current_path)))
+        return false;
     item.path = EntryFullPath(tab, index);
     item.name = entry.name;
     item.attrs = entry.attrs;
@@ -1935,6 +2286,14 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
             RefreshPath(s, path, RefreshReason::Explicit);
         }
         InvalidateRect(s.hwnd, nullptr, FALSE);
+    }
+    if (app::HasEffect(effects, app::SettingsEffect::TextRendering)) {
+        ui::typography::SetTextRenderMode(static_cast<ui::typography::TextRenderMode>(s.appPrefs.text_render));
+        s.compositor.UpdateTextRenderingParams(nullptr);
+        // Cached widths were measured by the previous rasterizer.
+        ui::typography::InvalidateCaches();
+        s.compositor.RecreateTextFormats(s.scale);
+        s.renderer.InvalidateTypography();
     }
     if (app::HasEffect(effects, app::SettingsEffect::TrayDeckIcon))
         s.renderer.SetTrayIconDip(static_cast<float>(s.appPrefs.tray_icon_size));

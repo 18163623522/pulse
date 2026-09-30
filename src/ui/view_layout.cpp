@@ -63,7 +63,7 @@ D2D1_RECT_F DetailsContentRect(D2D1_RECT_F bounds, float scale) noexcept {
 
 ViewLayout::ViewLayout(ViewMode mode, D2D1_RECT_F viewport, size_t item_count,
                        float scroll_x, float scroll_y, float scale,
-                       float row_height_dip)
+                       float row_height_dip, const ListGroups* groups)
     : mode_(mode), viewport_(viewport), count_(item_count),
       scroll_x_(std::max(0.0f, scroll_x)), scroll_y_(std::max(0.0f, scroll_y)),
       scale_(std::max(0.5f, scale)) {
@@ -117,6 +117,90 @@ ViewLayout::ViewLayout(ViewMode mode, D2D1_RECT_F viewport, size_t item_count,
         content_height_ = static_cast<float>(count_) * metrics_.cell_height;
         break;
     }
+    if (groups && !groups->empty() && count_ > 0 &&
+        (mode_ == ViewMode::Details || mode_ == ViewMode::Content)) {
+        groups_ = groups;
+        header_h_ = kGroupHeaderDip * scale_;
+        group_top_.reserve(groups->size());
+        float y = 0.0f;
+        for (const ListGroup& g : *groups) {
+            group_top_.push_back(y);
+            y += header_h_;
+            if (!g.collapsed) {
+                y += static_cast<float>(g.count) * metrics_.cell_height;
+                visible_rows_ += g.count;
+            }
+        }
+        content_height_ = y;
+    }
+}
+
+int ViewLayout::GroupCount() const noexcept {
+    return groups_ ? static_cast<int>(groups_->size()) : 0;
+}
+
+int ViewLayout::GroupOfIndex(int index) const noexcept {
+    if (!groups_) return -1;
+    const auto it = std::upper_bound(groups_->begin(), groups_->end(), index,
+        [](int v, const ListGroup& g) { return v < g.first; });
+    return it == groups_->begin() ? 0 : static_cast<int>(it - groups_->begin()) - 1;
+}
+
+int ViewLayout::GroupAtY(float local_y) const noexcept {
+    if (!groups_) return -1;
+    const auto it = std::upper_bound(group_top_.begin(), group_top_.end(), local_y);
+    return it == group_top_.begin() ? 0 : static_cast<int>(it - group_top_.begin()) - 1;
+}
+
+int ViewLayout::GroupAtTop() const noexcept { return GroupAtY(scroll_y_); }
+
+D2D1_RECT_F ViewLayout::HeaderRect(int group) const noexcept {
+    if (!groups_ || group < 0 || group >= GroupCount()) return {};
+    const float top = viewport_.top + group_top_[static_cast<size_t>(group)] - scroll_y_;
+    return D2D1_RECT_F{viewport_.left, top, viewport_.right, top + header_h_};
+}
+
+int ViewLayout::StickyHeader(D2D1_RECT_F* out) const noexcept {
+    if (!groups_) return -1;
+    const int g = GroupAtTop();
+    if (g < 0 || group_top_[static_cast<size_t>(g)] >= scroll_y_) return -1;
+    float top = viewport_.top;
+    if (g + 1 < GroupCount()) top = std::min(top, HeaderRect(g + 1).top - header_h_);
+    if (out) *out = D2D1_RECT_F{viewport_.left, top, viewport_.right, top + header_h_};
+    return g;
+}
+
+int ViewLayout::HeaderHitTest(float x, float y) const noexcept {
+    if (!groups_ || x < viewport_.left || x >= viewport_.right || y < viewport_.top ||
+        y >= viewport_.bottom) return -1;
+    const float local_y = y - viewport_.top + scroll_y_;
+    const int g = GroupAtY(local_y);
+    if (g < 0) return -1;
+    return local_y - group_top_[static_cast<size_t>(g)] < header_h_ ? g : -1;
+}
+
+// Position among rows that are not hidden by a collapsed group; a hidden row
+// maps to the slot where its group would start.
+int ViewLayout::VisibleOrdinal(int index) const noexcept {
+    int hidden = 0;
+    for (const ListGroup& g : *groups_) {
+        if (index < g.first + g.count) {
+            if (g.collapsed) return g.first - hidden;
+            return index - hidden;
+        }
+        if (g.collapsed) hidden += g.count;
+    }
+    return index - hidden;
+}
+
+int ViewLayout::IndexFromOrdinal(int ordinal) const noexcept {
+    int seen = 0;
+    for (const ListGroup& g : *groups_) {
+        if (g.collapsed) continue;
+        if (ordinal < seen + g.count) return g.first + (ordinal - seen);
+        seen += g.count;
+    }
+    return -1;
 }
 
 float ViewLayout::MaxScrollX() const noexcept {
@@ -129,6 +213,16 @@ float ViewLayout::MaxScrollY() const noexcept {
 
 D2D1_RECT_F ViewLayout::ItemRect(int index) const noexcept {
     if (index < 0 || static_cast<size_t>(index) >= count_) return {};
+    if (groups_) {
+        // Rows of a collapsed group get a zero-height rect under its header.
+        const int g = GroupOfIndex(index);
+        const ListGroup& grp = (*groups_)[static_cast<size_t>(g)];
+        const float base = viewport_.top + group_top_[static_cast<size_t>(g)] + header_h_ - scroll_y_;
+        const float left = viewport_.left - scroll_x_;
+        if (grp.collapsed) return D2D1_RECT_F{left, base, left + metrics_.cell_width, base};
+        const float top = base + static_cast<float>(index - grp.first) * metrics_.cell_height;
+        return D2D1_RECT_F{left, top, left + metrics_.cell_width, top + metrics_.cell_height};
+    }
     int row = 0;
     int col = 0;
     if (metrics_.column_major) {
@@ -191,6 +285,14 @@ int ViewLayout::HitTest(float x, float y) const noexcept {
         return -1;
     const float local_x = x - viewport_.left + scroll_x_;
     const float local_y = y - viewport_.top + scroll_y_;
+    if (groups_) {
+        const int g = GroupAtY(local_y);
+        const ListGroup& grp = (*groups_)[static_cast<size_t>(g)];
+        const float off = local_y - group_top_[static_cast<size_t>(g)] - header_h_;
+        if (off < 0.0f || grp.collapsed) return -1;
+        const int row = static_cast<int>(off / metrics_.cell_height);
+        return row < grp.count ? grp.first + row : -1;
+    }
     const int col = std::max(0, static_cast<int>(local_x / metrics_.cell_width));
     const int row = std::max(0, static_cast<int>(local_y / metrics_.cell_height));
     const int index = metrics_.column_major
@@ -201,6 +303,19 @@ int ViewLayout::HitTest(float x, float y) const noexcept {
 
 std::pair<int, int> ViewLayout::VisibleRange() const noexcept {
     if (count_ == 0) return {-1, -1};
+    if (groups_) {
+        const float height = viewport_.bottom - viewport_.top;
+        auto index_at = [&](float local_y, bool last) {
+            const int g = GroupAtY(local_y);
+            const ListGroup& grp = (*groups_)[static_cast<size_t>(g)];
+            const float off = local_y - group_top_[static_cast<size_t>(g)] - header_h_;
+            if (grp.collapsed || off < 0.0f) return last ? grp.first + grp.count - 1 : grp.first;
+            return grp.first + std::min(grp.count - 1, static_cast<int>(off / metrics_.cell_height));
+        };
+        const int lo = std::max(0, index_at(scroll_y_, false) - 1);
+        const int hi = std::min(static_cast<int>(count_) - 1, index_at(scroll_y_ + height, true) + 1);
+        return {lo, hi};
+    }
     int first = 0;
     int last = static_cast<int>(count_) - 1;
     if (metrics_.column_major) {
@@ -222,6 +337,12 @@ std::pair<int, int> ViewLayout::VisibleRange() const noexcept {
 int ViewLayout::MoveIndex(int current, int dx, int dy) const noexcept {
     if (count_ == 0) return -1;
     current = std::clamp(current, 0, static_cast<int>(count_) - 1);
+    if (groups_) {
+        if (visible_rows_ == 0) return current;
+        const int ord = std::clamp(VisibleOrdinal(current) + dy + dx, 0, visible_rows_ - 1);
+        const int idx = IndexFromOrdinal(ord);
+        return idx >= 0 ? idx : current;
+    }
     int delta = 0;
     if (metrics_.column_major) delta = dx * metrics_.rows_per_column + dy;
     else delta = dx + dy * metrics_.columns;

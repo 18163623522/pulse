@@ -288,6 +288,12 @@ void SettingsController::FolderSort(int index) {
         SaveAndApply(SettingsEffect::FolderSort);
 }
 
+void SettingsController::TextRendering(int index) {
+    static constexpr int values[] = {0, 1, 2};
+    if (prefs_ && SelectValue(index, values, prefs_->text_render))
+        SaveAndApply(SettingsEffect::TextRendering);
+}
+
 void SettingsController::TrayIconSize(int index) {
     static constexpr int values[] = {40, 48, 56};
     if (prefs_ && SelectValue(index, values, prefs_->tray_icon_size))
@@ -446,6 +452,12 @@ void SettingsController::ToggleUi(int index) {
         SaveAndApply(SettingsEffect::ListStyle);
     } else if (index == 23) {
         prefs_->vertical_tabs = !prefs_->vertical_tabs;
+        SaveAndApply(SettingsEffect::None);
+    } else if (index == 24) {
+        prefs_->show_hints = !prefs_->show_hints;
+        SaveAndApply(SettingsEffect::None);
+    } else if (index == 25) {
+        prefs_->tips_seen = 0;
         SaveAndApply(SettingsEffect::None);
     } else if (index == 15) {
         prefs_->global_search_enabled = !prefs_->global_search_enabled;

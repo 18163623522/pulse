@@ -195,6 +195,7 @@ private:
     void UpdateHover(int row, int swatch = -1);
     float BodyHeightPx() const;
     void UpdateTooltip(int row);
+    bool RenderTip(const std::wstring& text);   // tooltip text -> tip_surf_
     int HitTestSwatch(int row, float client_x) const;
     int HitTestSwatch(const FluentMenuModel& model, int row, float client_x) const;
     int InvokeRow(int row);        // returns command or 0
@@ -259,6 +260,7 @@ private:
     // Flyout (one level, FluentMenuItem::children).
     HWND sub_hwnd_ = nullptr;
     Surface sub_surf_;
+    Surface tip_surf_;             // hover tooltip staging
     FluentMenuModel sub_model_;
     int sub_parent_row_ = -1;      // row in model_ whose children are shown
     int sub_hover_ = -1;

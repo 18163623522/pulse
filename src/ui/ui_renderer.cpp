@@ -152,18 +152,27 @@ D2D1_RECT_F MainRenderer::TitleBarRect(float w) const {
     return D2D1::RectF(0, 0, w, title_bar_height_);
 }
 
+float MainRenderer::ToolbarGroupWidth(float w) const {
+    if (toolbar_group_ < 0) return 0.0f;
+    // Narrow windows: icon only, like Sort and Filter.
+    if (w - EffectiveSidebarWidth(w) < 700.0f * scale_) return 32.0f * scale_;
+    return (toolbar_group_ > 0 ? 212.0f : 108.0f) * scale_;
+}
+
 ToolbarLayout MainRenderer::ToolbarLayoutAt(float w, float create_width, float filter_expand) const {
     const float left = EffectiveSidebarWidth(w);
+    const float group_width = ToolbarGroupWidth(w);
     if (!vertical_tabs_)
-        return MakeToolbarLayout(w, scale_, title_bar_height_, margin_, create_width, left, filter_expand);
+        return MakeToolbarLayout(w, scale_, title_bar_height_, margin_, create_width, left, filter_expand,
+                                 search_min_dip_, group_width);
     // Command row directly under the title bar; address row centered in it,
     // stopping short of the settings button.
     ToolbarLayout out = MakeToolbarLayout(w, scale_, title_bar_height_ - 46.0f * scale_, margin_,
-                                          create_width, left, filter_expand);
+                                          create_width, left, filter_expand, 0.0f, group_width);
     const TitleChrome chrome = MakeTitleChrome(w, scale_, title_bar_height_);
     const float row_top = (title_bar_height_ - 36.0f * scale_) * 0.5f - 4.0f * scale_;
     const ToolbarLayout row = MakeToolbarLayout(chrome.settings_left - 4.0f * scale_, scale_, row_top,
-                                                margin_, create_width, left);
+                                                margin_, create_width, left, 0.0f, search_min_dip_);
     out.navigation = row.navigation;
     out.address = row.address;
     out.search = row.search;
@@ -318,7 +327,13 @@ std::vector<BreadcrumbSegment> SplitBreadcrumb(const std::wstring& path) {
 void MainRenderer::BreadcrumbLayout(const PaneViewModel& vm, float w,
                                     std::vector<BreadcrumbPlaced>& out) const {
     out.clear();
-    auto segments = SplitBreadcrumb(vm.path);
+    auto segments = SplitBreadcrumb(vm.is_query_search && vm.has_search_origin ? vm.search_origin : vm.path);
+    if (vm.is_query_search && vm.has_search_origin) {
+        BreadcrumbSegment search;
+        search.text = vm.search_crumb.empty() ? pulse::l10n::Get(pulse::l10n::StringId::Search) : vm.search_crumb;
+        search.path = vm.path;
+        segments.push_back(std::move(search));
+    }
     if (segments.empty()) return;
     D2D1_RECT_F addr = AddressBarRect(w);
     const float segPad = 8.0f * scale_;
@@ -535,8 +550,17 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         D2D1_RECT_F brc = D2D1::RectF(bx, by, bx + bw, by + bh);
         MakeBrush(dc, theme.surface_flyout, brFillHover_);
         FillRoundedRect(dc, brFillHover_.get(), brc.left, brc.top, bw, bh, 4 * scale_);
-        MakeBrush(dc, theme.stroke_card, brStrokeCard_);
-        dc->DrawRoundedRectangle(D2D1::RoundedRect(brc, 4 * scale_, 4 * scale_), brStrokeCard_.get(), 1.0f);
+        if (vm.drag_badge_move) {
+            // Moving removes the source; make it unmistakable before the drop.
+            const D2D1_COLOR_F amber = D2D1::ColorF(0xD48A1A);
+            MakeBrush(dc, amber, brStrokeCard_);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(brc, 4 * scale_, 4 * scale_), brStrokeCard_.get(), 1.5f * scale_);
+            FillRoundedRect(dc, brStrokeCard_.get(), brc.left + 3 * scale_, brc.top + 5 * scale_,
+                            3 * scale_, bh - 10 * scale_, 1.5f * scale_);
+        } else {
+            MakeBrush(dc, theme.stroke_card, brStrokeCard_);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(brc, 4 * scale_, 4 * scale_), brStrokeCard_.get(), 1.0f);
+        }
         MakeBrush(dc, theme.text, brText_);
         const D2D1_COLOR_F saved_badge_bg = text_background_;
         text_background_ = BlendOver(theme.surface_flyout, theme.bg);
@@ -562,12 +586,25 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         content.top = rc.bottom - 38 * scale_; content.bottom = rc.bottom - 8 * scale_;
         painter_.DrawText(pulse::l10n::Get(pulse::l10n::StringId::ChangeView), content, compositor_->TextFormat(), theme.accent);
     }
-    if (!vm.change_popover.visible && vm.drag_badge.empty() && !vm.tooltip_text.empty()) {
+    if (vm.teach.visible && vm.drag_badge.empty()) DrawTeachBubble(vm, rect, theme);
+    if (!vm.change_popover.visible && vm.drag_badge.empty() && !vm.tooltip_text.empty() &&
+        !group_wheel_.Visible()) {
         IDWriteTextFormat* fmt = compositor_->SmallFormat();
-        const float tw = MeasureLayoutText(compositor_, compositor_->DwriteFactory(), fmt,
-                                           vm.tooltip_text);
+        // Multi-line tooltips ("\n"): one row per line, widest line sets the width.
+        std::vector<std::wstring> tip_lines;
+        for (size_t start = 0;;) {
+            const size_t nl = vm.tooltip_text.find(L'\n', start);
+            tip_lines.push_back(vm.tooltip_text.substr(start, nl == std::wstring::npos ? std::wstring::npos : nl - start));
+            if (nl == std::wstring::npos || tip_lines.size() >= 6) break;
+            start = nl + 1;
+        }
+        float tw = 0.0f;
+        for (const auto& line : tip_lines)
+            tw = std::max(tw, MeasureLayoutText(compositor_, compositor_->DwriteFactory(), fmt, line));
         const float bw = std::min(tw + 20.0f * scale_, rect.right - 16.0f * scale_);
-        const float bh = 28.0f * scale_;
+        const float line_h = 18.0f * scale_;
+        const float bh = tip_lines.size() > 1
+            ? 10.0f * scale_ + line_h * static_cast<float>(tip_lines.size()) : 28.0f * scale_;
         const float bx = std::clamp(vm.tooltip_x + 12.0f * scale_, 8.0f * scale_,
             std::max(8.0f * scale_, rect.right - bw - 8.0f * scale_));
         const float tipY = vm.hover_region == HitTestResult::StatusBarCancelSearch
@@ -583,10 +620,18 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         MakeBrush(dc, theme.text, brText_);
         const D2D1_COLOR_F saved_tip_bg = text_background_;
         text_background_ = BlendOver(theme.surface_flyout, theme.bg);
-        DrawTextRect(dc, fmt, brText_.get(), vm.tooltip_text,
-            bx + 10.0f * scale_, by, bw - 20.0f * scale_, bh);
+        if (tip_lines.size() > 1) {
+            for (size_t li = 0; li < tip_lines.size(); ++li)
+                DrawTextRect(dc, fmt, brText_.get(), tip_lines[li], bx + 10.0f * scale_,
+                    by + 5.0f * scale_ + line_h * static_cast<float>(li), bw - 20.0f * scale_, line_h);
+        } else {
+            DrawTextRect(dc, fmt, brText_.get(), vm.tooltip_text,
+                bx + 10.0f * scale_, by, bw - 20.0f * scale_, bh);
+        }
         text_background_ = saved_tip_bg;
     }
+    if (group_wheel_.Visible())
+        group_wheel_.Draw(dc, compositor_->DwriteFactory(), compositor_->TextFormat(), theme);
 
 }
 
@@ -743,6 +788,10 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
             } else {
                 MakeBrush(dc, hovered ? theme.fill_hover : kTransparent, brFillHover_);
             }
+            FillChromeTab(dc, brFillHover_.get(), tabRc, shape);
+        }
+        if (vm.tabs[i].flash > 0.0f) {
+            MakeBrush(dc, WithAlpha(theme.accent, (vm.dark ? 0.34f : 0.26f) * vm.tabs[i].flash), brFillHover_);
             FillChromeTab(dc, brFillHover_.get(), tabRc, shape);
         }
         // Grouped tabs draw the same top strip as the ungrouped active tab,
@@ -951,6 +1000,53 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
     DrawIconText(minRc.left, minRc.top, ctrlW, ctrlH, kIconMinimize, L"_", theme.text, 0.66f);
 }
 
+void MainRenderer::DrawTeachBubble(const WindowViewModel& vm, const D2D1_RECT_F& rect,
+                                   const Theme& theme) {
+    ID2D1DeviceContext* dc = compositor_->Dc();
+    if (!dc) return;
+    const TeachBubbleLayout t = MakeTeachBubbleLayout(rect, status_height_, scale_);
+    if (t.card.right - t.card.left < 200.0f * scale_) return;
+    const float r = 8.0f * scale_;
+    MakeBrush(dc, theme.surface_flyout, brFillHover_);
+    FillRoundedRect(dc, brFillHover_.get(), t.card.left, t.card.top,
+                    t.card.right - t.card.left, t.card.bottom - t.card.top, r);
+    MakeBrush(dc, WithAlpha(theme.accent, 0.55f), brStrokeCard_);
+    dc->DrawRoundedRectangle(D2D1::RoundedRect(t.card, r, r), brStrokeCard_.get(), 1.0f * scale_);
+    const D2D1_COLOR_F saved_bg = text_background_;
+    text_background_ = BlendOver(theme.surface_flyout, theme.bg);
+    DrawIconText(t.icon.left, t.icon.top, t.icon.right - t.icon.left, t.icon.bottom - t.icon.top,
+                 L"\xE82F", L"!", theme.accent, 0.72f);
+    painter_.DrawText(vm.teach.title, t.title, compositor_->HeaderFormat(), theme.text,
+                      fluent::HorizontalAlignment::Left);
+    ComPtr<IDWriteTextLayout> body;
+    if (!vm.teach.body.empty() && SUCCEEDED(compositor_->DwriteFactory()->CreateTextLayout(
+            vm.teach.body.c_str(), static_cast<UINT32>(vm.teach.body.size()), compositor_->SmallFormat(),
+            t.body.right - t.body.left, t.body.bottom - t.body.top, &body))) {
+        body->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        body->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        body->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+        dc->DrawTextLayout({t.body.left, t.body.top}, body.get(), brTextSecondary_.get(),
+                           D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    fluent::ControlState closeState;
+    closeState.hovered = IsHovered(vm, HitTestResult::TeachDismiss);
+    painter_.DrawButton({ t.close, {}, kIconCloseSmall, fluent::ButtonKind::Transparent, closeState, true });
+    fluent::ButtonSpec never;
+    never.bounds = t.never;
+    never.text = vm.teach.never;
+    never.kind = fluent::ButtonKind::Transparent;
+    never.state.hovered = IsHovered(vm, HitTestResult::TeachNever);
+    painter_.DrawButton(never);
+    fluent::ButtonSpec primary;
+    primary.bounds = t.primary;
+    primary.text = vm.teach.primary;
+    primary.kind = fluent::ButtonKind::Primary;
+    primary.state.hovered = IsHovered(vm, HitTestResult::TeachPrimary);
+    painter_.DrawButton(primary);
+    text_background_ = saved_bg;
+}
+
 void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
     ID2D1DeviceContext* dc = compositor_->Dc();
     IDWriteFactory2* factory = compositor_->DwriteFactory();
@@ -992,11 +1088,26 @@ void MainRenderer::DrawStatusBar(const WindowViewModel& vm, const D2D1_RECT_F& r
         small_fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     } else if (!centered_progress && !vm.status.hint_text.empty()) {
         const float cancelWidth = vm.status.query_cancellable ? sb.cancel_search.right - sb.cancel_search.left + 8.0f * scale_ : 0.0f;
-        const float hintWidth = std::max(0.0f, rightReserved - sb.pad - cancelWidth);
+        const bool hasAction = sb.hint_action.right > sb.hint_action.left;
+        const float actionWidth = hasAction ? sb.hint_action.right - sb.hint_action.left + 8.0f * scale_ : 0.0f;
+        const float hintWidth = std::max(0.0f, rightReserved - sb.pad - cancelWidth - actionWidth);
         small_fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
         DrawTextRect(dc, small_fmt, brTextSecondary_.get(), vm.status.hint_text,
             rect.right - rightReserved, y, hintWidth, status_height_);
         small_fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        if (hasAction) {
+            // A soft accent chip: it reads as "you can click this", not as a warning.
+            const auto& a = sb.hint_action;
+            auto fill = theme.accent;
+            fill.a = IsHovered(vm, HitTestResult::StatusHintAction) ? 0.26f : 0.14f;
+            MakeBrush(dc, fill, brFillHover_);
+            FillRoundedRect(dc, brFillHover_.get(), a.left, a.top, a.right - a.left, a.bottom - a.top, 5.0f * scale_);
+            MakeBrush(dc, theme.accent, brAccentText_);
+            small_fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            DrawTextRect(dc, small_fmt, brAccentText_.get(), vm.status.hint_action_text,
+                a.left, y, a.right - a.left, status_height_);
+            small_fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
     }
 
     // Query/update activity shares the compact status area with operation summaries.

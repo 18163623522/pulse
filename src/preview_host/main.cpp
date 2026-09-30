@@ -85,6 +85,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             response.frame_count = result.frame_count;
             response.frame_delay_ms = result.frame_delay_ms;
             response.loop_count = result.loop_count;
+            response.flags |= (static_cast<uint32_t>(result.text_encoding) <<
+                               ipc::kPreviewFlagEncodingShift) & ipc::kPreviewFlagEncodingMask;
             const bool truncated = result.truncated;
             const uint32_t bytesRead = result.bytes_read;
             response.status = made ? 0 : 1;

@@ -60,6 +60,9 @@ struct SessionSnapshot {
 
 std::wstring GetPulseDataDir();
 bool SaveSession(const SessionSnapshot& snap);
+// Autosave compares the serialized form with the last write and skips unchanged state.
+std::wstring SessionToJson(const SessionSnapshot& snap);
+bool WriteSessionJson(const std::wstring& json);
 bool LoadSession(SessionSnapshot& snap);
 
 std::wstring LayoutTabsToJson(const std::vector<LayoutTabSnapshot>& tabs);

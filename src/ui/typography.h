@@ -35,6 +35,13 @@ HRESULT CreateTextFormat(IDWriteFactory2* factory, const TextFormatSpec& spec,
 HRESULT CreateRenderingParams(IDWriteFactory2* factory, HMONITOR monitor,
                               IDWriteRenderingParams2** params);
 
+// Process-wide text rendering choice (Settings > Text rendering).
+enum class TextRenderMode : int { Auto = 0, Sharp = 1, Smooth = 2 };
+void SetTextRenderMode(TextRenderMode mode) noexcept;
+TextRenderMode CurrentTextRenderMode() noexcept;
+// Auto draws with LumaText; Sharp and Smooth use DirectWrite directly.
+inline bool UseLumaTextForUi() noexcept { return CurrentTextRenderMode() == TextRenderMode::Auto; }
+
 // Invalidate language-dependent fallback and measurement caches.
 void InvalidateCaches();
 std::uint64_t Generation() noexcept;

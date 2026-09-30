@@ -1,7 +1,9 @@
 #include "search_query.h"
 #include "../common/path_utils.h"
 
+#include <algorithm>
 #include <cwctype>
+#include <vector>
 
 namespace pulse::app {
 namespace {
@@ -115,6 +117,39 @@ DatePreset DetectDatePreset(std::wstring_view raw) {
     return found;
 }
 
+// Raw size tokens ("size:>2mb size:<5mb") so a custom range survives a round trip.
+std::wstring CollectSizeTokens(std::wstring_view raw) {
+    std::wstring out;
+    for (const auto& word : SplitWords(raw)) {
+        const std::wstring tok = index::Fold(word);
+        if (!tok.starts_with(L"size:") && !tok.starts_with(L"\u5927\u5c0f:")) continue;
+        if (!out.empty()) out.push_back(L' ');
+        out.append(word);
+    }
+    return out;
+}
+
+bool ParseSmartSize(const std::wstring& tok, AdvancedSearchSpec& spec) {
+    size_t i = 0;
+    if (i < tok.size() && (tok[i] == L'>' || tok[i] == L'<')) ++i; else return false;
+    if (i < tok.size() && tok[i] == L'=') ++i;
+    const size_t digits = i;
+    while (i < tok.size() && (iswdigit(tok[i]) || tok[i] == L'.')) ++i;
+    if (i == digits) return false;
+    const std::wstring unit = tok.substr(i);
+    if (!unit.empty() && unit != L"k" && unit != L"kb" && unit != L"m" && unit != L"mb" &&
+        unit != L"g" && unit != L"gb") return false;
+    if (tok == L">10mb" || tok == L">10m") spec.size = SizePreset::Gt10MB;
+    else if (tok == L">100mb" || tok == L">100m") spec.size = SizePreset::Gt100MB;
+    else if (tok == L">1gb" || tok == L">1g") spec.size = SizePreset::Gt1GB;
+    else if (tok == L"<1mb" || tok == L"<1m") spec.size = SizePreset::Lt1MB;
+    else {
+        spec.size = SizePreset::Custom;
+        spec.size_custom = L"size:" + tok;
+    }
+    return true;
+}
+
 } // namespace
 
 std::wstring QuoteQueryValue(std::wstring_view value) {
@@ -199,6 +234,8 @@ std::wstring CompileSearchQuery(const AdvancedSearchSpec& spec) {
     case SizePreset::Lt1MB: append(L"size:<1mb"); break;
     case SizePreset::From1To10MB: append(L"size:>=1mb") ; append(L"size:<=10mb"); break;
     case SizePreset::Gt10MB: append(L"size:>10mb"); break;
+    case SizePreset::Gt100MB: append(L"size:>100mb"); break;
+    case SizePreset::Gt1GB: append(L"size:>1gb"); break;
     case SizePreset::Custom: {
         std::wstring custom = spec.size_custom;
         Trim(custom);
@@ -286,6 +323,12 @@ AdvancedSearchSpec ParseSearchQuery(std::wstring_view raw, std::wstring_view cur
             else if (term.size_how == index::SizeHow::Gt &&
                      term.size_lo == 10ull * 1024ull * 1024ull)
                 spec.size = SizePreset::Gt10MB;
+            else if (term.size_how == index::SizeHow::Gt &&
+                     term.size_lo == 100ull * 1024ull * 1024ull)
+                spec.size = SizePreset::Gt100MB;
+            else if (term.size_how == index::SizeHow::Gt &&
+                     term.size_lo == 1024ull * 1024ull * 1024ull)
+                spec.size = SizePreset::Gt1GB;
             else if (term.size_how != index::SizeHow::Any && spec.size == SizePreset::Any)
                 spec.size = SizePreset::Custom;
             if (term.name_how != index::NameHow::Any && !term.name_in_path) {
@@ -313,6 +356,7 @@ AdvancedSearchSpec ParseSearchQuery(std::wstring_view raw, std::wstring_view cur
         }
     }
     if (saw_ge_1mb && saw_le_10mb) spec.size = SizePreset::From1To10MB;
+    if (spec.size == SizePreset::Custom) spec.size_custom = CollectSizeTokens(raw);
     spec.date = DetectDatePreset(raw);
     return spec;
 }
@@ -370,6 +414,140 @@ std::wstring NormalizeExtensionList(std::wstring_view raw) {
         i = j;
     }
     return out;
+}
+
+bool ExtractSmartFilters(std::wstring_view text, AdvancedSearchSpec& spec, std::wstring& rest) {
+    using index::SearchKind;
+    static constexpr const wchar_t* kExts[] = {
+        L"pdf", L"doc", L"docx", L"xls", L"xlsx", L"ppt", L"pptx", L"txt", L"md", L"csv",
+        L"rtf", L"jpg", L"jpeg", L"png", L"gif", L"bmp", L"webp", L"heic", L"svg", L"mp4",
+        L"mkv", L"avi", L"mov", L"mp3", L"wav", L"flac", L"m4a", L"zip", L"rar", L"7z",
+        L"iso", L"exe", L"msi", L"dwg", L"psd",
+    };
+    struct KindWord { const wchar_t* word; SearchKind kind; };
+    static constexpr KindWord kKinds[] = {
+        {L"\u6587\u4ef6\u5939", SearchKind::Folder}, {L"folder", SearchKind::Folder},
+        {L"folders", SearchKind::Folder}, {L"\u6587\u6863", SearchKind::Document},
+        {L"document", SearchKind::Document}, {L"documents", SearchKind::Document},
+        {L"docs", SearchKind::Document}, {L"\u56fe\u7247", SearchKind::Image},
+        {L"\u7167\u7247", SearchKind::Image}, {L"image", SearchKind::Image},
+        {L"images", SearchKind::Image}, {L"photo", SearchKind::Image},
+        {L"photos", SearchKind::Image}, {L"pictures", SearchKind::Image},
+        {L"\u89c6\u9891", SearchKind::Video}, {L"video", SearchKind::Video},
+        {L"videos", SearchKind::Video}, {L"\u97f3\u4e50", SearchKind::Audio},
+        {L"\u97f3\u9891", SearchKind::Audio}, {L"music", SearchKind::Audio},
+        {L"audio", SearchKind::Audio}, {L"\u538b\u7f29\u5305", SearchKind::Archive},
+        {L"archive", SearchKind::Archive}, {L"archives", SearchKind::Archive},
+        {L"\u4ee3\u7801", SearchKind::Code},
+    };
+    struct DateWord { const wchar_t* word; DatePreset date; };
+    static constexpr DateWord kDates[] = {
+        {L"\u4eca\u5929", DatePreset::Today}, {L"today", DatePreset::Today},
+        {L"\u6628\u5929", DatePreset::Yesterday}, {L"yesterday", DatePreset::Yesterday},
+        {L"\u672c\u5468", DatePreset::ThisWeek}, {L"\u8fd9\u5468", DatePreset::ThisWeek},
+        {L"\u672c\u6708", DatePreset::ThisMonth}, {L"\u8fd9\u4e2a\u6708", DatePreset::ThisMonth},
+        {L"\u4eca\u5e74", DatePreset::ThisYear},
+    };
+    const auto words = SplitWords(text);
+    std::vector<std::wstring> kept;
+    std::vector<std::wstring> exts;
+    bool found = false;
+    for (size_t i = 0; i < words.size(); ++i) {
+        const std::wstring w = index::Fold(words[i]);
+        if (w.find(L':') != std::wstring::npos || w.find(L'\uff1a') != std::wstring::npos) {
+            kept.push_back(words[i]);  // Already query syntax: leave it alone.
+            continue;
+        }
+        if (w == L"this" && i + 1 < words.size() && spec.date == DatePreset::Any) {
+            const std::wstring next = index::Fold(words[i + 1]);
+            const DatePreset date = next == L"week" ? DatePreset::ThisWeek
+                : next == L"month" ? DatePreset::ThisMonth
+                : next == L"year" ? DatePreset::ThisYear : DatePreset::Any;
+            if (date != DatePreset::Any) {
+                spec.date = date;
+                found = true;
+                ++i;
+                continue;
+            }
+        }
+        bool used = false;
+        const std::wstring bare = !w.empty() && w.front() == L'.' ? w.substr(1) : w;
+        if (spec.kind == SearchKind::Any || spec.kind == SearchKind::Custom) {
+            for (const wchar_t* ext : kExts) {
+                if (bare == ext) {
+                    if (std::find(exts.begin(), exts.end(), bare) == exts.end()) exts.push_back(bare);
+                    used = true;
+                    break;
+                }
+            }
+        }
+        if (!used && spec.kind == SearchKind::Any && exts.empty()) {
+            for (const auto& kind : kKinds) {
+                if (w == kind.word) { spec.kind = kind.kind; used = true; break; }
+            }
+        }
+        if (!used && spec.date == DatePreset::Any) {
+            for (const auto& date : kDates) {
+                if (w == date.word) { spec.date = date.date; used = true; break; }
+            }
+        }
+        if (!used && spec.size == SizePreset::Any) used = ParseSmartSize(w, spec);
+        if (used) found = true;
+        else kept.push_back(words[i]);
+    }
+    if (!exts.empty()) {
+        spec.kind = KindFromExts(exts);
+        spec.custom_exts.clear();
+        if (spec.kind == SearchKind::Custom) {
+            for (const auto& ext : exts) {
+                if (!spec.custom_exts.empty()) spec.custom_exts.push_back(L';');
+                spec.custom_exts.append(ext);
+            }
+        }
+    }
+    rest = JoinWords(kept);
+    return found;
+}
+
+namespace {
+bool SpecHasFilters(const AdvancedSearchSpec& spec) {
+    return spec.kind != index::SearchKind::Any || spec.date != DatePreset::Any ||
+           spec.size != SizePreset::Any;
+}
+} // namespace
+
+int SearchEmptyActions(std::wstring_view raw, SearchEmptyAction out[3]) {
+    const AdvancedSearchSpec spec = ParseSearchQuery(raw);
+    int n = 0;
+    if (SpecHasFilters(spec)) out[n++] = SearchEmptyAction::ClearFilters;
+    if (spec.content.empty() && !spec.name.empty()) out[n++] = SearchEmptyAction::SearchContent;
+    if (spec.location != LocationScope::Indexed) out[n++] = SearchEmptyAction::SearchEverywhere;
+    return n;
+}
+
+std::wstring ApplySearchEmptyAction(std::wstring_view raw, SearchEmptyAction action) {
+    AdvancedSearchSpec spec = ParseSearchQuery(raw);
+    switch (action) {
+    case SearchEmptyAction::ClearFilters:
+        spec.kind = index::SearchKind::Any;
+        spec.custom_exts.clear();
+        spec.date = DatePreset::Any;
+        spec.date_from.clear();
+        spec.date_to.clear();
+        spec.size = SizePreset::Any;
+        spec.size_custom.clear();
+        break;
+    case SearchEmptyAction::SearchContent:
+        spec.content = spec.name;
+        spec.name.clear();
+        break;
+    case SearchEmptyAction::SearchEverywhere:
+        spec.location = LocationScope::Indexed;
+        spec.current_folder.clear();
+        spec.custom_folder.clear();
+        break;
+    }
+    return CompileSearchQuery(spec);
 }
 
 } // namespace pulse::app

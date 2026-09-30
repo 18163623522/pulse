@@ -330,10 +330,12 @@ if(PULSE_APP_SOURCES)
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent/pc_24_color.svg"
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent/tag_24_color.svg")
     target_link_options(pulse PRIVATE /MANIFEST:NO)
+# pulse.map resolves --hang-watch stack RVAs (Release builds carry no PDB).
+target_link_options(pulse PRIVATE /MAP)
     target_link_libraries(pulse PRIVATE
         d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 shell32 uuid comctl32 advapi32 shlwapi version windowscodecs gdi32 netapi32 mpr bcrypt pulse_crash_reporter)
     target_link_libraries(pulse PRIVATE winhttp crypt32 secur32)
-    target_link_libraries(pulse PRIVATE pulse_localization)
+    target_link_libraries(pulse PRIVATE pulse_localization pulse_text)
     pulse_enable_lumatext(pulse)
     pulse_add_version_resource(pulse "Pulse file manager" "pulse" "pulse.exe")
 endif()
@@ -400,10 +402,17 @@ add_executable(pulse_preview WIN32 src/preview_host/main.cpp src/preview_host/vi
     src/preview_host/font_raster.cpp src/preview_host/preview_decoders.cpp
     src/preview_host/preview_properties.cpp src/preview_host/preview_file_utils.cpp
     src/preview_host/zip_entry.cpp src/preview_host/office_model.cpp src/preview_host/office_sketch.cpp
+    src/preview_host/folder_listing.cpp src/preview_host/markdown_document.cpp third_party/md4c/md4c.c
     src/preview_host/office_doc_model.cpp src/preview_host/office_slide_model.cpp
     src/preview_host/office_sheet_model.cpp
-    src/preview_host/content_sniff.cpp)
+    src/preview_host/content_sniff.cpp src/preview_host/table_document.cpp
+    src/preview_host/tree_document.cpp src/preview_host/notebook_document.cpp
+    src/preview_host/doc_payload.cpp src/preview_host/docx_document.cpp src/preview_host/epub_document.cpp
+    src/preview_host/image_frames.cpp)
 set_target_properties(pulse_preview PROPERTIES OUTPUT_NAME "Pulse.Preview")
+# md4c (MIT, third_party/md4c) parses Markdown for Quick Look, on UTF-16 text.
+target_compile_definitions(pulse_preview PRIVATE MD4C_USE_UTF16)
+set_source_files_properties(third_party/md4c/md4c.c PROPERTIES COMPILE_OPTIONS "/W0")
 # PDF / AI previews render with PDFium, loaded on demand (LoadLibraryExW) from
 # the executable's directory - the same pdfium.dll Pulse.Document.exe uses.
 add_custom_command(TARGET pulse_preview POST_BUILD
@@ -468,6 +477,8 @@ add_executable(pulse_app_controllers_test
     src/app/single_instance_coordinator.cpp
     src/app/tray_controller.cpp
     src/app/app_prefs.cpp
+    src/app/entry_group.cpp
+    src/app/entry_sort.cpp
     src/app/folder_view_prefs.cpp
     src/app/context_menu_prefs.cpp
     src/ui/view_layout.cpp

@@ -44,6 +44,10 @@ public:
     bool Contains(float x, float y) const noexcept;
     bool HasSelection() const noexcept { return selected_ >= 0; }
     uint32_t FilterHits() const noexcept { return filter_hits_; }
+    // Quick Look folder contents (payload format DIR, folder_listing.h).
+    bool IsFolderListing() const noexcept { return parsed_ && folder_; }
+    // Selected row as a path relative to the listed folder; empty if none.
+    std::wstring SelectedPath() const;
 
 private:
     struct Node {
@@ -86,6 +90,7 @@ private:
     void ClampScroll();
     void RevealSelection();
     float RowHeight() const noexcept;
+    std::wstring StateNote() const;  // counting / limit note, empty when complete
 
     // Model
     bool parsed_ = false;
@@ -96,6 +101,8 @@ private:
     bool has_packed_ = false;
     uint64_t packed_total_ = 0;
     bool incomplete_ = false;
+    bool folder_ = false;    // folder listing rather than an archive
+    bool counting_ = false;  // folder: quick first pass, full count pending
     std::vector<Node> nodes_;
     std::vector<int> roots_;
     std::vector<int> visible_;

@@ -24,6 +24,8 @@ foreach ($license in @('PDFium', 'LumaText')) {
 }
 New-Item -ItemType Directory -Path (Join-Path $payload 'licenses/ib-pinyin') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $repo 'third_party/ib-pinyin-cpp/LICENSE.txt') -Destination (Join-Path $payload 'licenses/ib-pinyin')
+New-Item -ItemType Directory -Path (Join-Path $payload 'licenses/md4c') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repo 'third_party/md4c/LICENSE.md') -Destination (Join-Path $payload 'licenses/md4c')
 @"
 Pulse $version — Windows 10 / 11 x64 免安装版
 

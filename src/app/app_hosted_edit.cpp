@@ -117,6 +117,7 @@ HWND CreateHostedEdit(AppState& s, SUBCLASSPROC proc) {
 
 void LayoutAddressEditor(AppState& s) {
     if (!s.hwndAddressEdit || !s.hwnd) return;
+    SyncSearchBarWidth(s);
     D2D1_RECT_F addr = s.addressSearching ? s.renderer.SearchBarRect((float)s.compositor.Width()) : s.renderer.AddressBarRect((float)s.compositor.Width());
     if (s.addressSearching) {
         PlaceHostedEdit(s.hwndAddressEdit, s.hwnd, ui::LayoutAddressSearch(addr, s.scale).input,
@@ -574,7 +575,9 @@ LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     switch (msg) {
     case WM_KEYDOWN:
         if (s->addressSearching && wParam == VK_DOWN) {
-            ShowAddressSearchHistory(*s);
+            // On a results page Down moves into the list; otherwise it opens history.
+            if (IsAddressSearchResults(ActiveTab(*s))) FocusSearchResults(*s, true);
+            else ShowAddressSearchHistory(*s);
             return 0;
         }
         if ((GetKeyState(VK_CONTROL) & 0x8000) &&
@@ -592,16 +595,33 @@ LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
         }
         if (wParam == VK_RETURN) {
-            if (s->addressSearching) SubmitAddressSearch(*s);
+            if (s->addressSearching) {
+                // Shift+Enter searches every indexed location.
+                if (GetKeyState(VK_SHIFT) & 0x8000) s->addressSearchCurrent = false;
+                SubmitAddressSearch(*s);
+                FocusSearchResults(*s, false);
+            }
             else HideAddressEditor(*s, true);
             return 0;
         }
         if (wParam == VK_ESCAPE) {
             if (s->menu && s->menu->IsOpen()) s->menu->Dismiss();
-            else if (s->addressSearching) ExitAddressSearch(*s);
+            else if (s->addressSearching) EscapeAddressSearch(*s);
             else HideAddressEditor(*s, false);
             return 0;
         }
+        break;
+    case WM_SYSKEYDOWN:
+        if (s->addressSearching && wParam == VK_RETURN) {
+            // Alt+Enter searches file contents.
+            if (!s->addressSearchContent) SwitchAddressSearchMode(*s, true);
+            SubmitAddressSearch(*s);
+            FocusSearchResults(*s, false);
+            return 0;
+        }
+        break;
+    case WM_SYSCHAR:
+        if (s->addressSearching && wParam == VK_RETURN) return 0;
         break;
     case WM_CHAR:
         if (s->addressSearching && (wParam == VK_RETURN || wParam == VK_ESCAPE || wParam == VK_TAB))

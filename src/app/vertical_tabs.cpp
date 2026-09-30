@@ -50,6 +50,7 @@ void ApplyVerticalTabs(AppState& s, ui::WindowViewModel& vm) {
         item.path = kTabPrefix + std::to_wstring(i);
         item.tab_row = true;
         item.tab_active = tab.active;
+        item.flash = tab.flash;
         item.tab_number = static_cast<int>(i) + 1;
         item.fallback_text = L"Tab";
         if (tab.title == settings_title) {
@@ -292,6 +293,39 @@ bool HandleTabMiddleClick(AppState& s, int x, int y) {
     if (index >= s.window_tabs.items.size()) return true;
     CloseLayoutTab(s, index);
     InvalidateRect(s.hwnd, nullptr, FALSE);
+    return true;
+}
+
+bool HandleFolderMiddleClick(AppState& s, int x, int y) {
+    using R = ui::HitTestResult;
+    const ui::WindowViewModel vm = BuildVm(s, false);
+    const D2D1_RECT_F bounds = D2D1::RectF(0, 0, static_cast<float>(s.compositor.Width()),
+                                           static_cast<float>(s.compositor.Height()));
+    const ui::HitTestResult hit =
+        s.renderer.HitTest(vm, bounds, static_cast<float>(x), static_cast<float>(y));
+    std::wstring path;
+    if (hit.region == R::Row && hit.index >= 0) {
+        app::Pane* pane = PaneAtSlot(s, hit.pane_index);
+        app::Tab* tab = pane ? pane->ActiveTab() : nullptr;
+        if (!tab || !tab->snapshot || hit.index >= static_cast<int>(tab->EntryCount())) return false;
+        if (!tab->EntryAt(static_cast<size_t>(hit.index)).is_dir) return false;
+        path = EntryFullPath(*tab, hit.index);
+    } else if (hit.region == R::BreadcrumbSegment) {
+        path = hit.path;
+    } else if (hit.region == R::SidebarItem) {
+        if (IsVerticalTabPath(hit.path) || hit.path.starts_with(kTabPrefix)) return false;
+        path = hit.path;
+        if (!path.empty() && !fs::IsVirtualPath(path)) {
+            // Starred files and other non-folder places have nothing to browse.
+            const DWORD attrs = GetFileAttributesW(path.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+        }
+    } else {
+        return false;
+    }
+    if (path.empty()) return false;
+    if (GetKeyState(VK_CONTROL) & 0x8000) OpenFolderTab(s, path);
+    else NewBackgroundTab(s, path);
     return true;
 }
 }

@@ -14,18 +14,38 @@ enum class PreviewContentKind : uint32_t {
     // Archive contents: a tab-separated tree (see archive_listing.h) that the
     // UI draws itself - summary, type mix and an expandable folder tree.
     Archive = 5,
+    // Markdown rendered view: block records plus the source (see
+    // preview_host/markdown_document.h), drawn by ui/markdown_view.cpp.
+    Markdown = 6,
+    // CSV/TSV/XLSX grid: sheet and row records (see
+    // preview_host/table_document.h), drawn by ui/table_view.cpp.
+    Table = 7,
+    // JSON/XML tree: node records plus the source (see
+    // preview_host/tree_document.h), drawn by ui/tree_view.cpp.
+    Tree = 8,
 };
 enum class PreviewRequestKind : uint32_t {
     Content = 0,
     Properties = 1,
 };
 constexpr uint32_t kPreviewFlagTruncated = 1u << 0;
+// Source encoding of a Text preview, stored in response flag bits 8..11.
+constexpr uint32_t kPreviewFlagEncodingShift = 8;
+constexpr uint32_t kPreviewFlagEncodingMask = 0xFu << kPreviewFlagEncodingShift;
+enum class PreviewTextEncoding : uint32_t { Unknown = 0, Utf8, Utf8Bom, Utf16Le, Utf16Be, Ansi };
 // PreviewRequest::flags. Grid: a list/grid/sidebar thumbnail (as opposed to
 // the details pane or Quick Look), whatever its pixel size - extra large icons
 // on high-DPI screens ask for more than kGridThumbnailEdge.
 constexpr uint32_t kPreviewRequestFlagGrid = 1u << 0;
+// Quick Look on a folder: its contents listing (folder_listing.h, as an
+// Archive payload) instead of the folder icon. frame_index 0 is a quick pass,
+// 1 the full count.
+constexpr uint32_t kPreviewRequestFlagFolderListing = 1u << 1;
+// Quick Look: rich document payloads (Markdown) instead of plain text.
+constexpr uint32_t kPreviewRequestFlagRichText = 1u << 2;
 constexpr uint32_t kPreviewMaxTextChars = 32768;
 constexpr uint32_t kPreviewMaxArchiveChars = 512u * 1024u;
+constexpr uint32_t kPreviewMaxTableChars = 2u * 1024u * 1024u;
 constexpr uint32_t kPreviewMinPixelSize = 32;
 constexpr uint32_t kPreviewDefaultPixelSize = 512;
 constexpr uint32_t kPreviewMaxPixelSize = 1024;

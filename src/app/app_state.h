@@ -8,6 +8,7 @@
 #include "../ui/drag_drop.h"
 #include "../ui/file_operation_dialog.h"
 #include "../ui/quick_preview_window.h"
+#include "../ui/text_diff_window.h"
 #include "../ui/bloom_accent_picker.h"
 #include "../fs/fs_enum.h"
 #include "../fs/fs_recycle.h"
@@ -16,6 +17,8 @@
 #include "app_model.h"
 #include "frame_pump.h"
 #include <deque>
+#include <atomic>
+#include <memory>
 #include "content_results_ui.h"
 #include "app_worker.h"
 #include "places.h"
@@ -128,6 +131,18 @@ struct Timing {
     double draw_ms = 0.0;
     double present_ms = 0.0;
     bool first_frame_recorded = false;
+};
+
+// Byte-by-byte comparison of the two staged files, run on a worker thread.
+struct TrayCompareJob {
+    std::wstring a, b;
+    std::atomic<int> state{1}; // 1 running, 2 identical, 3 different, 4 unreadable
+};
+
+// Text-or-binary probe (first 8 KB of both files) for the tray compare "view diff" link.
+struct TrayTextProbe {
+    std::wstring a, b;
+    std::atomic<int> state{0}; // 0 running, 1 both text, 2 binary / unreadable
 };
 
 struct AppState {
@@ -248,6 +263,13 @@ struct AppState {
     std::wstring paletteIssuedPrefix;
     bool paletteIssuedFolders = false;
     uint32_t paletteSearchId = 0;
+    // Live match count for the open advanced-search dialog.
+    uint32_t advancedCountId = 0;
+    HWND advancedCountHwnd = nullptr;
+    // Session autosave: last written JSON, so unchanged state is never rewritten.
+    std::wstring sessionSavedJson;
+    std::wstring prefsSavedJson;
+    ULONGLONG sessionAutosaveCheck = 0;
     uint32_t nextIndexReq = 1;
     bool paletteSearching = false;
     app::UncProbeScheduler probe_scheduler;
@@ -259,6 +281,7 @@ struct AppState {
     ui::ThemeMode themeOverride = ui::ThemeMode::Auto;
     bool safeMode = false;
     bool isolatedTest = false;
+    bool isolatedTestPersist = false; // selftest builds: test instance saves into PULSE_TEST_DATA_DIR
     bool contentIndexObserver = false;
     D2D1_COLOR_F accentColor;
     float scale = 1.0f;
@@ -408,6 +431,16 @@ struct AppState {
     std::wstring contentStatusText;
     bool pinyinReadyLast = false;
     std::wstring addressSearchRoot;
+    // Query shown when the search box was opened; the first Esc returns to it.
+    std::wstring addressSearchEntryText;
+    // Middle-click tabs open after the opener, in click order (browser style).
+    const void* backgroundTabOpener = nullptr;
+    size_t backgroundTabRun = 0;
+    // Attention pulse on a tab reused instead of opening a duplicate (key is
+    // only compared, never dereferenced).
+    const app::LayoutTab* tabFlashKey = nullptr;
+    ULONGLONG tabFlashAt = 0;
+    uint64_t tagGroupsRevision = 0;  // tag catalog revision last published for grouping
     float addressSearchAnimation = 0.0f;
     float addressScopeAnimation = 0.0f;
     ULONGLONG addressAnimationTick = 0;
@@ -472,6 +505,19 @@ struct AppState {
     std::wstring dropBadge;
     float dropBadgeX = 0.0f;
     float dropBadgeY = 0.0f;
+    bool dropBadgeMove = false;
+    bool trayDragOut = false;          // tray contents are being dragged out (not a tray target)
+    ULONGLONG trayProbeAt = 0;         // last staging-tray existence probe (UI timer, 2 s)
+    bool trayCompare = false;          // two-file compare table replaces the card stack
+    std::shared_ptr<TrayCompareJob> trayCmpJob; // on-demand byte comparison
+    std::shared_ptr<TrayTextProbe> trayTextProbe; // text/binary probe for "view diff"
+    std::unique_ptr<ui::TextDiffWindow> textDiff; // stand-alone text compare window
+    // One-time teaching bubbles (tips_seen bits in appPrefs).
+    int teachTip = -1;                 // visible tip, -1 = none
+    int teachCandidate = -1;           // trigger currently holding
+    ULONGLONG teachCandidateSince = 0;
+    ULONGLONG teachShownAt = 0;
+    bool teachShownThisSession = false; // at most one tip per launch
     std::wstring dropDestDir;                 // resolved drop destination ("" = none/tray)
 
     // Spring-loaded folder enter during drag-over (ui.md §7.8).

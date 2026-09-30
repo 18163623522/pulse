@@ -85,6 +85,7 @@ void ClearDropFeedback(AppState& s) {
     s.dropTray = false;
     s.dropQuickAccess = false;
     s.dropBadge.clear();
+    s.dropBadgeMove = false;
     s.dropDestDir.clear();
     s.springRow = -1;
     s.springStart = 0;
@@ -150,6 +151,7 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     s.dropQuickAccess = false;
     s.dropDestDir.clear();
     s.dropBadge.clear();
+    s.dropBadgeMove = false;
 
     // Esc after a spring-loaded enter: go back instead of cancelling (self drags).
     if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) && s.springEntered) {
@@ -279,14 +281,19 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     }
     // Tray zone: bottom card of the sidebar = staging, not a move.
     D2D1_RECT_F sb = s.renderer.SidebarRect(rect.right, rect.bottom);
-    if (s.dropDestDir.empty() && pt.x < sb.right) {
+    if (s.dropDestDir.empty() && pt.x < sb.right && !s.trayDragOut) {
         ui::WindowViewModel trayVm = BuildVm(s);
         D2D1_RECT_F trayRc = s.renderer.StagingTrayRect(trayVm, rect.right, rect.bottom);
         if (pt.x >= trayRc.left && pt.x < trayRc.right &&
             pt.y >= trayRc.top && pt.y < trayRc.bottom) {
             s.dropTray = true;
             s.springRow = -1;
-            s.dropBadge = l10n::Get(l10n::StringId::DropStage).c_str();
+            // Staging defaults to a copy batch; Shift stages it as a move.
+            // The source is never touched here, so the OLE effect stays COPY.
+            const bool stage_move = (key_state & MK_SHIFT) != 0;
+            s.dropBadge = l10n::Get(stage_move ? l10n::StringId::DropStageMove
+                                               : l10n::StringId::DropStageCopy).c_str();
+            s.dropBadgeMove = stage_move;
             s.dropBadgeX = (float)pt.x;
             s.dropBadgeY = (float)pt.y;
             InvalidateRect(s.hwnd, nullptr, FALSE);
@@ -300,6 +307,12 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
 
     DWORD effect = ui::ComputeDropEffect(key_state, sources.front(), s.dropDestDir, allowed);
     s.dropBadge = (effect == DROPEFFECT_MOVE ? l10n::Get(l10n::StringId::DropMove).c_str() : l10n::Get(l10n::StringId::DropCopy).c_str()) + destName;
+    // Say how to switch before the drop, not after (Explorer rules: Ctrl copies, Shift moves).
+    if (effect == DROPEFFECT_MOVE && (allowed & DROPEFFECT_COPY))
+        s.dropBadge += l10n::Get(l10n::StringId::DropAltCopy);
+    else if (effect == DROPEFFECT_COPY && (allowed & DROPEFFECT_MOVE))
+        s.dropBadge += l10n::Get(l10n::StringId::DropAltMove);
+    s.dropBadgeMove = effect == DROPEFFECT_MOVE;
     s.dropBadgeX = (float)pt.x;
     s.dropBadgeY = (float)pt.y;
     InvalidateRect(s.hwnd, nullptr, FALSE);
@@ -307,9 +320,12 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
 }
 
 DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
-                         POINT pt, DWORD key_state, DWORD preferred) {
+                         POINT pt, DWORD key_state, DWORD /*preferred*/) {
     // Resolve once more for the final position.
-    DWORD effect = ResolveDropTarget(s, sources, pt, key_state, DROPEFFECT_COPY | DROPEFFECT_MOVE);
+    // Tray drag-out is copy-only: the staged originals stay where they are.
+    const DWORD allowed = s.trayDragOut ? DWORD(DROPEFFECT_COPY)
+                                        : DWORD(DROPEFFECT_COPY | DROPEFFECT_MOVE);
+    DWORD effect = ResolveDropTarget(s, sources, pt, key_state, allowed);
     std::wstring dest = s.dropDestDir;
     bool tray = s.dropTray;
     const bool header = s.dropHeader;
@@ -354,15 +370,15 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
             if (app::Tab* tab = pane->ActiveTab()) dest = tab->current_path;
         }
         if (dest.empty() || fs::IsVirtualPath(dest)) return DROPEFFECT_NONE;
-        effect = ui::ComputeDropEffect(key_state, sources.front(), dest,
-                                       DROPEFFECT_COPY | DROPEFFECT_MOVE);
+        effect = ui::ComputeDropEffect(key_state, sources.front(), dest, allowed);
     }
 
     if (tray) {
         std::vector<std::wstring> paths;
         for (auto& p : sources) paths.push_back(fs::NormalizePath(p));
-        s.tray.Collect(paths, (preferred & DROPEFFECT_MOVE) != 0);
-        ops::WriteClipboard(sources, (preferred & DROPEFFECT_MOVE) != 0);
+        const bool stage_move = (key_state & MK_SHIFT) != 0;
+        s.tray.Collect(paths, stage_move);
+        ops::WriteClipboard(sources, stage_move);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return DROPEFFECT_COPY;
     }
@@ -382,7 +398,9 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     req.type = (effect == DROPEFFECT_MOVE) ? ops::OpType::Move : ops::OpType::Copy;
     req.dest_dir = fs::NormalizePath(dest);
     for (auto& p : sources) req.sources.push_back(fs::NormalizePath(p));
-    return SubmitWithConflictResolution(s, std::move(req)) ? effect : DROPEFFECT_NONE;
+    if (!SubmitWithConflictResolution(s, std::move(req))) return DROPEFFECT_NONE;
+    if (s.trayDragOut) RememberTrayDest(s, dest);
+    return effect;
 }
 
 // Starts the modal OLE drag-out for the selected entries.
@@ -405,6 +423,24 @@ void StartDragOut(AppState& s) {
         s.store.MarkDirty(tab->current_path);
         RefreshActiveTab(s, RefreshReason::OperationCompleted);
     }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+// Drags every staged item that still exists out of the tray (other apps,
+// panes, sidebar folders). Always a copy, so the tray keeps its items.
+static void StartTrayDragOut(AppState& s) {
+    std::vector<std::wstring> paths;
+    for (const auto& batch : s.tray.batches())
+        for (const auto& item : batch.items)
+            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
+                paths.push_back(ClipboardPath(item.path));
+    if (paths.empty()) return;
+    CancelScrollAnimation(s);
+    s.trayDragOut = true;
+    ui::DoFileDragDrop(paths, DROPEFFECT_COPY, [&s] { return s.springEntered; });
+    s.trayDragOut = false;
+    s.springEntered = false;
+    ClearDropFeedback(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
@@ -874,6 +910,23 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             s->trayDrag.last_t = now;
             s->trayDrag.dx = dx;
             s->trayDrag.dy = dy;
+            if (s->trayDrag.active) {
+                // Leaving the sidebar, or pulling well above the tray, turns the
+                // gesture into a real drag-out; the card springs back meanwhile.
+                RECT crc{};
+                GetClientRect(hwnd, &crc);
+                const float w = static_cast<float>(crc.right);
+                const float h = static_cast<float>(crc.bottom);
+                const D2D1_RECT_F sb = s->renderer.SidebarRect(w, h);
+                const D2D1_RECT_F trayRc = s->renderer.StagingTrayRect(BuildVm(*s), w, h);
+                if (static_cast<float>(mx) >= sb.right ||
+                    static_cast<float>(my) < trayRc.top - 16.0f * s->scale) {
+                    ReleaseTrayDrag(*s, false);
+                    if (GetCapture() == hwnd) ReleaseCapture();
+                    StartTrayDragOut(*s);
+                    return 0;
+                }
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1866,6 +1919,46 @@ LRESULT HandleMouseLeave(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return 0;
 }
 
+// "Group by" header: toggle collapse, or select every row of the group.
+static void ClickGroupHeader(AppState& s, int pane_slot, int group, bool select) {
+    app::Pane* pane = PaneAtSlot(s, pane_slot);
+    if (!pane) return;
+    if (pane != s.pane) FocusPane(s, pane);
+    app::Tab* tab = pane->ActiveTab();
+    if (!tab) return;
+    ui::PaneViewModel vm;
+    app::FillPaneViewModel(vm, *pane, &s.places);
+    const ui::ListGroups* groups = vm.Groups();
+    if (!groups || group < 0 || group >= static_cast<int>(groups->size())) return;
+    const ui::ListGroup& g = (*groups)[static_cast<size_t>(group)];
+    if (select) {
+        std::vector<int> indices;
+        indices.reserve(static_cast<size_t>(g.count));
+        for (int row = g.first; row < g.first + g.count; ++row) {
+            const int src = vm.SourceIndex(row);
+            if (src >= 0) indices.push_back(src);
+        }
+        tab->SelectIndices(indices);
+    } else {
+        // A pinned header belongs to a group scrolled above the top; bring its
+        // header to the top first so collapsing keeps the user in place.
+        const D2D1_RECT_F bounds = FocusedPaneRect(s);
+        const D2D1_RECT_F list = s.renderer.PaneListRect(vm, bounds);
+        const float header_top = s.renderer.ItemRectInPane(vm, bounds, g.first).top -
+                                 ui::kGroupHeaderDip * s.scale;
+        if (header_top < list.top - 0.5f) {
+            tab->scroll_y = std::max(0.0f, tab->scroll_y - (list.top - header_top));
+            s.scrollTargetY = tab->scroll_y;
+            s.scrollAnimating = false;
+        }
+        auto& collapsed = tab->collapsed_groups[tab->current_path];
+        if (!collapsed.erase(g.key)) collapsed.insert(g.key);
+        ++tab->group_collapse_rev;
+        ClampScroll(s);
+    }
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
 LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!s) return DefWindowProcW(hwnd, msg, wParam, lParam);
         s->blankDoubleTab = nullptr;
@@ -2124,6 +2217,9 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsDensity) {
             s->settings.RowHeight(hit.index);
             InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (hit.region == ui::HitTestResult::SettingsTextRender) {
+            s->settings.TextRendering(hit.index);
+            InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::SettingsFolderSort) {
             s->settings.FolderSort(hit.index);
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -2237,8 +2333,11 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::NewButton) {
             ShowNewDropdown(*s);
         } else if (hit.region == ui::HitTestResult::BreadcrumbSegment) {
+            // The trailing search segment edits the query instead of reloading it.
+            const app::Tab* active = ActiveTab(*s);
+            if (active && hit.path == active->current_path && IsAddressSearchResults(active)) ShowAddressSearch(*s);
             // Empty path is the This PC segment; NavigateTo handles it.
-            NavigateTo(*s, hit.path);
+            else NavigateTo(*s, hit.path);
         } else if (hit.region == ui::HitTestResult::Copy) {
             CollectToTray(*s, false);
         } else if (hit.region == ui::HitTestResult::Cut) {
@@ -2249,8 +2348,33 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             ShowRenameOverlay(*s);
         } else if (hit.region == ui::HitTestResult::Delete) {
             DeleteSelected(*s, (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+        } else if (hit.region == ui::HitTestResult::GroupHeader ||
+                   hit.region == ui::HitTestResult::GroupSelect) {
+            ClickGroupHeader(*s, hit.pane_index, hit.index,
+                             hit.region == ui::HitTestResult::GroupSelect);
+        } else if (hit.region == ui::HitTestResult::TrayCompare) {
+            if (hit.index == 0) TrayToggleCompare(*s);
+            else if (hit.index == 2) TrayOpenTextDiff(*s);
+            else TrayStartContentCompare(*s);
+        } else if (hit.region == ui::HitTestResult::TrayStale) {
+            if (hit.index == 0) TrayFindStale(*s);
+            else TrayRemoveStale(*s);
+        } else if (hit.region == ui::HitTestResult::TrayDest) {
+            // Recent destination chip: copy the whole tray there; Shift moves.
+            SendTrayToDest(*s, hit.path, (GetKeyState(VK_SHIFT) & 0x8000) != 0);
         } else if (hit.region == ui::HitTestResult::TrayRelease) {
             ReleaseTrayBatch(*s, (size_t)hit.index);
+        } else if (hit.region == ui::HitTestResult::CompareDiffToggle) {
+            ToggleCompareDiffOnly(*s);
+        } else if (hit.region == ui::HitTestResult::CompareExit) {
+            SetFolderCompare(*s, false);
+        } else if (hit.region == ui::HitTestResult::TrayIntent) {
+            const auto& batches = s->tray.batches();
+            if (hit.index >= 0 && hit.index < static_cast<int>(batches.size())) {
+                const bool to_move = !batches[(size_t)hit.index].move_intent;
+                s->tray.SetMoveIntent((size_t)hit.index, to_move);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
         } else if (hit.region == ui::HitTestResult::TrayClose) {
             s->tray.RemoveBatch((size_t)hit.index);
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -2295,7 +2419,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::RowNewTab && hit.index >= 0) {
             if (app::Tab* tab = ActiveTab(*s)) {
                 const std::wstring p = EntryFullPath(*tab, hit.index);
-                if (!p.empty()) NewTab(*s, p);
+                if (!p.empty()) OpenFolderTab(*s, p);
             }
         } else if (hit.region == ui::HitTestResult::RowMore && hit.index >= 0) {
             if (app::Tab* tab = ActiveTab(*s)) {
@@ -2304,6 +2428,19 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 ClientToScreen(hwnd, &point);
                 ShowItemContextMenu(*s, point);
             }
+        } else if (hit.region == ui::HitTestResult::TeachPrimary) {
+            HandleTeachButton(*s, 0);
+        } else if (hit.region == ui::HitTestResult::TeachDismiss) {
+            HandleTeachButton(*s, 1);
+        } else if (hit.region == ui::HitTestResult::TeachNever) {
+            HandleTeachButton(*s, 2);
+        } else if (hit.region == ui::HitTestResult::TeachBubble) {
+        } else if (hit.region == ui::HitTestResult::FilterEmptyAction) {
+            if (hit.index == 0) SearchFilterInSubfolders(*s);
+            else ClearPaneFilter(*s);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (hit.region == ui::HitTestResult::SearchEmptyAction) {
+            if (!hit.path.empty()) NavigateTo(*s, app::MakeSearchPath(hit.path));
         } else if (hit.region == ui::HitTestResult::PaneEmptyNewFolder) {
             CreateNewItem(*s, true);
         } else if (hit.region == ui::HitTestResult::DetailsOpen) {
@@ -2358,17 +2495,16 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (!vm.details.path.empty()) {
                 const std::wstring target = vm.details.path;
                 if (vm.details.is_dir) {
-                    NewTab(*s, target);
+                    OpenFolderTab(*s, target);
                 } else {
-                    NewTab(*s, fs::ParentPath(target));
+                    OpenFolderTab(*s, fs::ParentPath(target));
                     if (app::Tab* tab = ActiveTab(*s)) {
                         std::wstring leaf = target;
                         if (leaf.starts_with(L"\\\\?\\UNC\\")) leaf = L"\\\\" + leaf.substr(8);
                         else if (leaf.starts_with(L"\\\\?\\")) leaf = leaf.substr(4);
                         const auto slash = leaf.find_last_of(L"\\/");
                         if (slash != std::wstring::npos) leaf = leaf.substr(slash + 1);
-                        tab->pending_selected_name = leaf;
-                        tab->pending_selected_names = { leaf };
+                        SelectNameInTab(*s, *tab, leaf);
                     }
                 }
             }
@@ -2425,8 +2561,14 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             SetViewMode(*s, ui::ViewMode::MediumIcons);
         } else if (hit.region == ui::HitTestResult::PaneDetails) {
             SetViewMode(*s, ui::ViewMode::Details);
-        } else if (hit.region == ui::HitTestResult::ToolbarSort) {
-            ShowSortDropdown(*s);
+        } else if (hit.region == ui::HitTestResult::ToolbarSort ||
+                   hit.region == ui::HitTestResult::ToolbarGroup ||
+                   hit.region == ui::HitTestResult::ToolbarGroupClear) {
+            // One branch for the Sort/Group pair: this else-if chain sits at
+            // MSVC's nesting limit (C1061).
+            if (hit.region == ui::HitTestResult::ToolbarSort) ShowSortDropdown(*s);
+            else if (hit.region == ui::HitTestResult::ToolbarGroup) ShowGroupDropdown(*s);
+            else SetGroupBy(*s, 0);
         } else if (hit.region == ui::HitTestResult::ToolbarMore) {
             ShowToolbarMore(*s);
         } else if (hit.region == ui::HitTestResult::PaneViewButton) {
@@ -2442,7 +2584,10 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             ShowAddressSearchScope(*s);
         } else if (hit.region == ui::HitTestResult::AddressSearchMode ||
                    hit.region == ui::HitTestResult::AddressSearchContent) {
-            SwitchAddressSearchMode(*s, hit.region == ui::HitTestResult::AddressSearchContent);
+            // The mode chip toggles; the dedicated content target (if any) forces content.
+            if (!s->addressSearching) ShowAddressSearch(*s);
+            SwitchAddressSearchMode(*s, hit.region == ui::HitTestResult::AddressSearchContent ||
+                                        !s->addressSearchContent);
         } else if (hit.region == ui::HitTestResult::AddressSearchOptions) {
             if (!s->addressSearching) ShowAddressSearch(*s);
             ShowSearchOptions(*s);
@@ -2459,7 +2604,9 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::AddressSearchClose) {
             ExitAddressSearch(*s);
         } else if (hit.region == ui::HitTestResult::AddressSearchInput) {
-            SetFocus(s->hwndAddressEdit);
+            // A results page shows the query without a live editor: open it at the click.
+            if (!s->addressSearching) BeginSearchEditAt(*s, mx, my);
+            else SetFocus(s->hwndAddressEdit);
         } else if (hit.region == ui::HitTestResult::AddressBar) {
             if (s->addressSearching) {
                 SetForegroundWindow(GetAncestor(s->hwndAddressEdit, GA_ROOT));
@@ -2595,6 +2742,20 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             }
         } else if (hit.region == ui::HitTestResult::StatusBarCancelSearch) {
             if (auto* tab = ActiveTab(*s)) CancelActiveContentSearch(*s, *tab);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (hit.region == ui::HitTestResult::StatusHintAction) {
+            // Re-derived at click time, so the action always matches the current state.
+            switch (CurrentStatusHintAction(*s)) {
+            case StatusHintAction::Tray: CollectToTray(*s, false); break;
+            case StatusHintAction::Compare: DispatchMenuCommand(*s, app::CmdCompareToggle); break;
+            case StatusHintAction::DiffOnly:
+            case StatusHintAction::ShowAll: DispatchMenuCommand(*s, app::CmdCompareDiffOnly); break;
+            case StatusHintAction::Advanced: DispatchMenuCommand(*s, app::CmdAdvancedSearch); break;
+            case StatusHintAction::Shortcuts: DispatchMenuCommand(*s, app::CmdShortcutHelp); break;
+            case StatusHintAction::OpenPath: DispatchMenuCommand(*s, app::CmdOpenPath); break;
+            case StatusHintAction::SearchSubfolders: SearchFilterInSubfolders(*s); break;
+            default: break;
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::StatusBarTask) {
             PinAndShowOperationWindow(*s);
@@ -3226,6 +3387,13 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             shown = true;
         } else if (hit.region == ui::HitTestResult::BreadcrumbSegment && !hit.path.empty()) {
             ShowBreadcrumbMenu(*s, hit.path, sp);
+            shown = true;
+        } else if (hit.region == ui::HitTestResult::TrayCard ||
+                   hit.region == ui::HitTestResult::TrayIntent ||
+                   hit.region == ui::HitTestResult::TrayItemRemove ||
+                   hit.region == ui::HitTestResult::TrayPrev ||
+                   hit.region == ui::HitTestResult::TrayNext) {
+            ShowTrayBatchMenu(*s, sp);
             shown = true;
         } else if (hit.region == ui::HitTestResult::Row && hit.index >= 0) {
             app::Tab* tab = ActiveTab(*s);

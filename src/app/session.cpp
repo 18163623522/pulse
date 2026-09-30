@@ -318,10 +318,7 @@ std::wstring GetPulseDataDir() {
     return L"";
 }
 
-bool SaveSession(const SessionSnapshot& snap) {
-    std::wstring dir = GetPulseDataDir();
-    if (dir.empty()) return false;
-
+std::wstring SessionToJson(const SessionSnapshot& snap) {
     std::wstring trayJson;
     snap.tray.ToJson(trayJson);
 
@@ -361,7 +358,17 @@ bool SaveSession(const SessionSnapshot& snap) {
     f << L"  \"tabGroups\":" << TabGroupsToJson(snap.tab_groups) << L",\n";
     f << L"  \"layoutTabs\":" << LayoutTabsToJson(snap.layout_tabs) << L"\n";
     f << L"}\n";
-    return WriteUtf8FileAtomic(dir + L"\\session.json", f.str());
+    return f.str();
+}
+
+bool WriteSessionJson(const std::wstring& json) {
+    const std::wstring dir = GetPulseDataDir();
+    if (dir.empty()) return false;
+    return WriteUtf8FileAtomic(dir + L"\\session.json", json);
+}
+
+bool SaveSession(const SessionSnapshot& snap) {
+    return WriteSessionJson(SessionToJson(snap));
 }
 
 bool LoadSession(SessionSnapshot& snap) {

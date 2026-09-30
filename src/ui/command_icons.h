@@ -21,7 +21,8 @@ enum class Icon {
     File, Image, Drive, Network, Delete, Recycle, Tag, Settings, Sun,
     Cut, Copy, Paste, Rename, Sort, Filter, List, Grid, Split, Columns,
     Panel, PanelClose, Check, Eye, Info, Home, Tray, Pin, Link,
-    Palette, Sliders, Warning, Lock, OpenExternal, StarFilled, More, Count
+    Palette, Sliders, Warning, Lock, OpenExternal, StarFilled, More,
+    SplitSingle, SplitStacked, SplitThree, SplitFour, Count
 };
 
 inline Icon FromGlyph(std::wstring_view glyph) noexcept {
@@ -281,6 +282,10 @@ inline ID2D1PathGeometry* BuildGeometry(ID2D1Factory* factory, Icon icon) noexce
     case Icon::List: line(9,5,21,5); line(9,12,21,12); line(9,19,21,19); dot(4,5); dot(4,12); dot(4,19); break;
     case Icon::Grid: box(3,3,10,10,1.5f); box(14,3,21,10,1.5f); box(3,14,10,21,1.5f); box(14,14,21,21,1.5f); break;
     case Icon::Split: box(3,4,21,20); line(12,4,12,20); break;
+    case Icon::SplitSingle: box(3,4,21,20); break;
+    case Icon::SplitStacked: box(3,4,21,20); line(3,12,21,12); break;
+    case Icon::SplitThree: box(3,4,21,20); line(12,4,12,20); line(12,12,21,12); break;
+    case Icon::SplitFour: box(3,4,21,20); line(12,4,12,20); line(3,12,21,12); break;
     case Icon::Columns: box(3,4,21,20); line(9,4,9,20); line(15,4,15,20); break;
     case Icon::Panel: case Icon::PanelClose:
         box(3,4,21,20); line(15,4,15,20);

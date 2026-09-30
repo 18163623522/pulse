@@ -17,6 +17,7 @@
 #include <vector>
 #include <stack>
 #include <optional>
+#include <set>
 #include <cstdint>
 #include <unordered_set>
 
@@ -48,6 +49,17 @@ struct Tab {
     uint64_t view_generation = 1;
     ui::SortColumn sort_column = ui::SortColumn::Name;
     ui::SortDirection sort_direction = ui::SortDirection::Asc;
+    // "Group by" (app::GroupBy value) for current_path. Only list-like views
+    // draw group headers, so the worker sorts by EffectiveGroup() and icon
+    // views keep the plain order.
+    int group_by = 0;
+    int EffectiveGroup() const {
+        return view_mode == ui::ViewMode::Details || view_mode == ui::ViewMode::Content
+            ? group_by : 0;
+    }
+    // Collapsed group keys per folder (session only).
+    std::map<std::wstring, std::set<std::wstring>> collapsed_groups;
+    uint64_t group_collapse_rev = 0;
     std::array<float, 3> details_column_dividers{};
     std::array<float, 4> search_column_dividers{};
     std::wstring filter_text;
@@ -155,6 +167,23 @@ struct Tab {
     mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> view_filter_map;
     mutable std::shared_ptr<const ui::PaneViewModel::TagDots> view_tag_dots;
     mutable std::shared_ptr<ui::RowPresentationCache> view_row_cache;
+    // Group spans over view rows; rebuilt when any input below changes.
+    mutable std::shared_ptr<const ui::ListGroups> view_groups;
+    mutable fs::SnapshotPtr view_groups_snapshot;
+    mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> view_groups_filter;
+    mutable int view_groups_by = 0;
+    mutable int view_groups_sort = -1;
+    mutable uint64_t view_groups_day = 0;
+    mutable uint64_t view_groups_rev = UINT64_MAX;
+
+    // Folder compare (set by UpdateFolderCompare while two panes compare).
+    // compare_counts is indexed by ui::CompareMark.
+    std::shared_ptr<const std::vector<uint8_t>> compare_marks;
+    std::array<int, 5> compare_counts{};
+    bool compare_diff_only = false;
+    mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> view_compare_base;
+    mutable std::shared_ptr<const std::vector<uint8_t>> view_compare_marks;
+    mutable std::shared_ptr<const ui::PaneViewModel::FilterMap> view_compare_map;
 
     void ClearSelection();
     bool EntryVisible(int index) const;
@@ -300,6 +329,14 @@ void ApplySplitRatio(SplitContainer& node, const D2D1_RECT_F& parent_bounds, flo
                      float pointer_x, float pointer_y);
 void CollectSplitRatios(const SplitContainer& node, std::vector<float>& out);
 void ApplySplitRatios(SplitContainer& node, const std::vector<float>& ratios);
+
+// Browse-level folder compare: top level only, names matched case-insensitively,
+// files compared by modified time (2 s tolerance) and then size.
+struct FolderCompareResult {
+    std::shared_ptr<const std::vector<uint8_t>> marks_a, marks_b;
+    std::array<int, 5> counts_a{}, counts_b{};
+};
+FolderCompareResult CompareFolderTabs(const Tab& a, const Tab& b);
 void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane,
                        const PlacesCatalog* places = nullptr);
 
@@ -314,6 +351,11 @@ struct LayoutTab {
     std::unique_ptr<SplitContainer> root;
     int focused_index = 0;
     int target_index = -1;
+    // Two-pane folder compare. Inputs of the last pass decide when to redo it.
+    bool compare = false;
+    bool compare_diff_only = false;
+    fs::SnapshotPtr compare_snap_a, compare_snap_b;
+    int compare_visibility = -1;
 
     Pane* FocusedPane();
     const Pane* FocusedPane() const;
@@ -375,6 +417,14 @@ public:
     // Collect selected full paths. move_intent = true for Ctrl+X.
     void Collect(const std::vector<std::wstring>& paths, bool move_intent);
     void RemoveBatch(size_t idx);
+    // Follow a rename done from the tray (batch rename) so the card stays live.
+    void ReplacePath(const std::wstring& from, const std::wstring& to);
+    // Re-probe local items (moved/deleted outside Pulse); true when any flag flipped.
+    bool RefreshExists();
+    // Drop every item whose file is gone; returns how many were removed.
+    size_t RemoveMissing();
+    // Flip a batch between copy and move on release (tray intent chip).
+    void SetMoveIntent(size_t idx, bool move_intent);
     void RemoveItem(size_t batch_idx, size_t item_idx);
     void RemoveDeleted(const std::vector<std::wstring>& paths);
     void Clear();

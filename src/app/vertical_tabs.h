@@ -28,4 +28,7 @@ bool TickSidebarPeek(AppState& s, ULONGLONG now);
 void CloseSidebarPeek(AppState& s);
 // Middle click closes a tab (title strip or sidebar row).
 bool HandleTabMiddleClick(AppState& s, int x, int y);
+// Middle click on a folder (list row, sidebar place, breadcrumb) opens it in a
+// background tab; Ctrl+middle click opens it in the foreground.
+bool HandleFolderMiddleClick(AppState& s, int x, int y);
 }

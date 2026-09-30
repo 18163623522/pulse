@@ -80,6 +80,7 @@ void FillAddressSearchView(AppState& s, ui::WindowViewModel& vm) {
         current = s.appPrefs.address_search_current;
     }
     const auto scope = current && !root.empty() ? app::TabTitle(root) : l10n::Get(l10n::StringId::SearchScopeAll);
+    vm.address_search_scope_label = scope;
     vm.address_search_placeholder = l10n::Get(l10n::StringId::Search) +
         (std::wstring(l10n::LocaleName()).starts_with(L"zh") ? L"" : L" ") + scope;
 }
@@ -129,12 +130,76 @@ void ShowAddressSearch(AppState& s) {
     s.addressAnimationTick = GetTickCount64();
     SetWindowTextW(s.hwndAddressEdit, query.c_str());
     SendMessageW(s.hwndAddressEdit, EM_SETSEL, 0, -1);
+    s.addressSearchEntryText = query;
     const auto cue = l10n::Get(s.addressSearchContent ? l10n::StringId::SearchContentHint : l10n::StringId::SearchNameHint);
     SendMessageW(s.hwndAddressEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(cue.c_str()));
     LayoutAddressEditor(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
     if (query.empty() && !s.searchHistoryOpen)
         PostMessageW(s.hwnd, WM_SEARCH_HISTORY, 0, 0);
+}
+
+void SyncSearchBarWidth(AppState& s) {
+    // Editing gets room to read the whole query; a results page keeps a wider,
+    // clearly active field so the query stays visible and clickable.
+    const float dip = s.addressSearching ? 520.0f : IsAddressSearchResults(ActiveTab(s)) ? 360.0f : 0.0f;
+    s.renderer.SetSearchBarMinWidth(dip);
+}
+
+static std::wstring AddressEditText(const AppState& s) {
+    if (!s.hwndAddressEdit) return {};
+    const int length = GetWindowTextLengthW(s.hwndAddressEdit);
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    text.resize(GetWindowTextW(s.hwndAddressEdit, text.data(), length + 1));
+    return text;
+}
+
+void EscapeAddressSearch(AppState& s) {
+    auto* tab = ActiveTab(s);
+    const auto text = AddressEditText(s);
+    if (!tab || text == s.addressSearchEntryText) {
+        ExitAddressSearch(s);
+        return;
+    }
+    if (s.addressSearchEntryText.empty()) {
+        // A new search that already produced live results: undoing means leaving it.
+        if (IsAddressSearchResults(tab)) {
+            ExitAddressSearch(s);
+            return;
+        }
+        SetWindowTextW(s.hwndAddressEdit, L"");
+        s.addressLiveDue = 0;
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return;
+    }
+    // First Esc undoes this edit and restores the results it replaced.
+    SetWindowTextW(s.hwndAddressEdit, s.addressSearchEntryText.c_str());
+    const auto end = static_cast<WPARAM>(s.addressSearchEntryText.size());
+    SendMessageW(s.hwndAddressEdit, EM_SETSEL, end, static_cast<LPARAM>(end));
+    if (IsAddressSearchResults(tab)) SubmitAddressSearch(s, true);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void FocusSearchResults(AppState& s, bool select_first) {
+    if (!IsAddressSearchResults(ActiveTab(s))) return;
+    HideAddressEditor(s, false);
+    if (select_first && s.hwnd) SendMessageW(s.hwnd, WM_KEYDOWN, VK_HOME, 0);
+}
+
+void BeginSearchEditAt(AppState& s, int x, int y) {
+    ShowAddressSearch(s);
+    if (!s.addressSearching || !s.hwndAddressEdit) return;
+    POINT point{x, y};
+    MapWindowPoints(s.hwnd, s.hwndAddressEdit, &point, 1);
+    RECT client{};
+    GetClientRect(s.hwndAddressEdit, &client);
+    point.x = std::clamp<LONG>(point.x, 0, std::max<LONG>(0, client.right - 1));
+    point.y = client.bottom / 2;
+    // Put the caret where the user clicked instead of selecting the whole query.
+    SendMessageW(s.hwndAddressEdit, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(point.x, point.y));
+    SendMessageW(s.hwndAddressEdit, WM_LBUTTONUP, 0, MAKELPARAM(point.x, point.y));
+    MSG pending{};
+    while (PeekMessageW(&pending, s.hwnd, WM_SEARCH_HISTORY, WM_SEARCH_HISTORY, PM_REMOVE)) {}
 }
 
 void SwitchAddressSearchMode(AppState& s, bool content) {
@@ -246,7 +311,10 @@ void SubmitAddressSearch(AppState& s, bool live) {
         }
         return;
     }
-    const auto previous_results = continuing ? tab->snapshot : fs::SnapshotPtr{};
+    // Rows from the other mode answer a different question: never keep them on screen
+    // under a "Searching…" header for the new mode.
+    const bool mode_changed = continuing && tab->search_input_content != s.addressSearchContent;
+    const auto previous_results = continuing && !mode_changed ? tab->snapshot : fs::SnapshotPtr{};
     if (continuing) {
         ++tab->view_generation;
         tab->current_path = path;
@@ -264,6 +332,15 @@ void SubmitAddressSearch(AppState& s, bool live) {
     if (previous_results && !previous_results->empty() && tab->loading) {
         tab->SetSnapshot(previous_results);
         tab->search_retaining_results = true;
+    } else if (mode_changed && tab->snapshot && !tab->snapshot->empty()) {
+        // The live toggle can land before the tab is marked loading; clear regardless, and
+        // never reuse a list that may still hold the other mode's rows.
+        if (!tab->search_entries || !tab->search_entries->empty())
+            tab->search_entries = std::make_shared<std::vector<fs::DirEntry>>();
+        tab->SetSnapshot(tab->search_entries);
+        tab->search_retaining_results = false;
+        tab->search_total = 0;
+        tab->loading = true;
     }
     tab->search_input_path = tab->current_path;
     tab->search_input_text = query;

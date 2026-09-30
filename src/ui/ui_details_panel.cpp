@@ -207,6 +207,7 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
         uint32_t bytesRead = 0;
         std::wstring previewError;
         PreviewDrawResult previewResult = PreviewDrawResult::Failed;
+        uint32_t pageCount = 1, pageDelay = 0;  // paged document: count > 1, delay 0
         if (preview_on && !d.is_dir && d.multi_count <= 1) {
             std::vector<PreviewProperty> ignored;
             details_cache_.Properties(d.path, d.attrs, d.view_generation,
@@ -215,7 +216,7 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
                 previewResult = details_cache_.Draw(dc, contentRc, d.path, d.attrs, 2048u,
                     d.view_generation, d.modified_value, d.size_value, 1.0f,
                     &previewText, &truncated, &bytesRead, true, &previewError,
-                    nullptr, nullptr, nullptr, nullptr, 0, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr, nullptr, 0, &pageCount, &pageDelay, nullptr,
                     nullptr, nullptr, nullptr, nullptr, &details_viewport_);
             }
         }
@@ -237,6 +238,45 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
             } else {
                 previewResult = PreviewDrawResult::Failed;
                 previewError = L"handler-failed";
+            }
+        }
+
+        if (!handlerPreview && previewResult == PreviewDrawResult::Bitmap && pageCount > 1 &&
+            pageDelay == 0 && compositor_->DwriteFactory() && compositor_->SmallFormat()) {
+            // PDF: the pane keeps its fast first page; the badge tells how many
+            // pages Space opens.
+            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+            const std::wstring label = zh
+                ? L"\x5171 " + std::to_wstring(pageCount) + L" \x9875"
+                : std::to_wstring(pageCount) + L" pages";
+            ComPtr<IDWriteTextLayout> badgeLayout;
+            compositor_->DwriteFactory()->CreateTextLayout(label.data(),
+                static_cast<UINT32>(label.size()), compositor_->SmallFormat(), 1000.0f, 100.0f,
+                &badgeLayout);
+            if (badgeLayout.get()) {
+                badgeLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                badgeLayout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                badgeLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                DWRITE_TEXT_METRICS metrics{};
+                badgeLayout->GetMetrics(&metrics);
+                D2D1_RECT_F page = details_viewport_.ContentRect();
+                page.right = std::min(page.right, contentRc.right);
+                page.bottom = std::min(page.bottom, contentRc.bottom);
+                const float padX = 8.0f * s, margin = 8.0f * s;
+                const float badgeH = metrics.height + 6.0f * s;
+                const float badgeW = metrics.width + padX * 2.0f;
+                const D2D1_RECT_F badge = D2D1::RectF(page.right - margin - badgeW,
+                    page.bottom - margin - badgeH, page.right - margin, page.bottom - margin);
+                ComPtr<ID2D1SolidColorBrush> badgeFill, badgeText;
+                dc->CreateSolidColorBrush(D2D1::ColorF(0x000000, 0.58f), &badgeFill);
+                dc->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF), &badgeText);
+                if (badgeFill.get() && badgeText.get()) {
+                    dc->FillRoundedRectangle(D2D1::RoundedRect(badge, badgeH * 0.5f, badgeH * 0.5f),
+                                             badgeFill.get());
+                    dc->DrawTextLayout(D2D1::Point2F(badge.left + padX,
+                                                     badge.top + (badgeH - metrics.height) * 0.5f),
+                                       badgeLayout.get(), badgeText.get());
+                }
             }
         }
 

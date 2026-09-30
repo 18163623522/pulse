@@ -84,6 +84,7 @@ Source: "{#BuildDir}\lumatext.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\pdfium.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\licenses\PDFium\*"; DestDir: "{app}\licenses\PDFium"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "third_party\ib-pinyin-cpp\LICENSE.txt"; DestDir: "{app}\licenses\ib-pinyin"; Flags: ignoreversion
+Source: "third_party\md4c\LICENSE.md"; DestDir: "{app}\licenses\md4c"; Flags: ignoreversion
 Source: "{#BuildDir}\licenses\LumaText\*"; DestDir: "{app}\licenses\LumaText"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#BuildDir}\Pulse.Index.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\Pulse.Document.exe"; DestDir: "{app}"; Flags: ignoreversion

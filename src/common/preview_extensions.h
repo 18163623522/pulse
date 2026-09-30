@@ -44,7 +44,7 @@ inline constexpr std::wstring_view kText[] = {
 
 inline constexpr std::wstring_view kImage[] = {
     L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".tif", L".tiff",
-    L".webp", L".heic", L".ico"
+    L".webp", L".heic", L".heif", L".hif", L".avif", L".ico", L".cur"
 };
 
 // Vector documents WIC cannot decode but Direct2D renders natively. They are

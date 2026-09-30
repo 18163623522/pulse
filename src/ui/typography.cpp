@@ -19,6 +19,7 @@ std::mutex g_fallback_mutex;
 IDWriteFactory2* g_fallback_factory = nullptr;
 IDWriteFontFallback* g_fallback = nullptr;
 std::atomic_uint64_t g_generation{1};
+std::atomic_int g_text_render_mode{0};
 
 template <typename T>
 void Release(T*& value) noexcept {
@@ -163,13 +164,17 @@ HRESULT CreateRenderingParams(IDWriteFactory2* factory, HMONITOR monitor,
         base3->Release();
     }
 
+    // Sharp hints glyphs to the pixel grid (GDI-style stems) so small UI text
+    // stays crisp at 100-125% scaling; the default keeps symmetric smoothing.
+    const bool sharp = CurrentTextRenderMode() == TextRenderMode::Sharp;
     IDWriteFactory3* modern = nullptr;
     if (!compat::LegacyMode() && SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&modern)))) {
         IDWriteRenderingParams3* modern_params = nullptr;
         result = modern->CreateCustomRenderingParams(
             base->GetGamma(), base->GetEnhancedContrast(), grayscale_contrast,
             base->GetClearTypeLevel(), DWRITE_PIXEL_GEOMETRY_FLAT,
-            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DISABLED,
+            sharp ? DWRITE_RENDERING_MODE1_GDI_CLASSIC : DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+            sharp ? DWRITE_GRID_FIT_MODE_ENABLED : DWRITE_GRID_FIT_MODE_DISABLED,
             &modern_params);
         modern->Release();
         if (SUCCEEDED(result) && modern_params) {
@@ -181,10 +186,20 @@ HRESULT CreateRenderingParams(IDWriteFactory2* factory, HMONITOR monitor,
     result = factory->CreateCustomRenderingParams(
         base->GetGamma(), base->GetEnhancedContrast(), grayscale_contrast,
         base->GetClearTypeLevel(), DWRITE_PIXEL_GEOMETRY_FLAT,
-        DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
-        DWRITE_GRID_FIT_MODE_DISABLED, params);
+        sharp ? DWRITE_RENDERING_MODE_GDI_CLASSIC : DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+        sharp ? DWRITE_GRID_FIT_MODE_ENABLED : DWRITE_GRID_FIT_MODE_DISABLED, params);
     base->Release();
     return result;
+}
+
+void SetTextRenderMode(TextRenderMode mode) noexcept {
+    const int value = std::clamp(static_cast<int>(mode), 0, 2);
+    if (g_text_render_mode.exchange(value, std::memory_order_relaxed) != value)
+        g_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+TextRenderMode CurrentTextRenderMode() noexcept {
+    return static_cast<TextRenderMode>(g_text_render_mode.load(std::memory_order_relaxed));
 }
 
 void InvalidateCaches() {

@@ -1,4 +1,5 @@
 #include "entry_sort.h"
+#include "entry_group.h"
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 #include <algorithm>
@@ -49,6 +50,10 @@ FolderSortMode CurrentFolderSortMode() noexcept {
 
 bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
                ui::SortColumn col, ui::SortDirection dir) {
+    if (const EntryGrouping* grouping = CurrentEntryGrouping()) {
+        if (const int c = GroupCompare(a, b, grouping->by, grouping->clock, col, dir))
+            return c < 0;
+    }
     return EntryLess(a, b, col, dir, CurrentFolderSortMode());
 }
 

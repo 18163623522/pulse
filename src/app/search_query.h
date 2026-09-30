@@ -9,7 +9,7 @@ namespace pulse::app {
 
 enum class NameMatchHow : uint8_t { Contains, StartsWith, Exact };
 enum class LocationScope : uint8_t { Indexed, CurrentFolder, CustomFolder };
-enum class SizePreset : uint8_t { Any, Empty, Lt1MB, From1To10MB, Gt10MB, Custom };
+enum class SizePreset : uint8_t { Any, Empty, Lt1MB, From1To10MB, Gt10MB, Gt100MB, Gt1GB, Custom };
 enum class DatePreset : uint8_t { Any, Today, Yesterday, ThisWeek, ThisMonth, ThisYear, Custom };
 
 struct AdvancedSearchSpec {
@@ -53,5 +53,16 @@ std::wstring ApplyContentSearchGuards(std::wstring filename_needle, const SplitS
 std::wstring SearchDisplayNeedle(std::wstring_view raw);
 // " .log , md " -> "log;md". Empty if nothing usable remains.
 std::wstring NormalizeExtensionList(std::wstring_view raw);
+// Recognises filter words typed into the search box ("pdf", "图片", "本周", ">10mb").
+// Recognised words are applied to `spec` (only where it has no value yet) and the
+// remaining words are returned in `rest`. Returns false when nothing was recognised.
+bool ExtractSmartFilters(std::wstring_view text, AdvancedSearchSpec& spec, std::wstring& rest);
+
+// Follow-up suggestions shown on an empty search result page.
+enum class SearchEmptyAction : uint8_t { ClearFilters, SearchContent, SearchEverywhere };
+// Fills `out` (up to 3) with the suggestions that would change `raw`; returns the count.
+int SearchEmptyActions(std::wstring_view raw, SearchEmptyAction out[3]);
+// The query `raw` rewritten by `action`.
+std::wstring ApplySearchEmptyAction(std::wstring_view raw, SearchEmptyAction action);
 
 } // namespace pulse::app

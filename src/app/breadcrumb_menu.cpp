@@ -15,7 +15,7 @@ void ShowBreadcrumbMenu(AppState& s, std::wstring path, POINT screen_pt) {
     const std::wstring shell_path = ClipboardPath(path);
     switch (command) {
     case app::CmdOpenInNewTab:
-        NewTab(s, path);
+        OpenFolderTab(s, path);
         break;
     case app::CmdOpen:
         NavigateTo(s, path);

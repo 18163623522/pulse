@@ -7,6 +7,7 @@
 #include "about_info.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
+#include "../ui/preview_format_catalog.h"
 #include "../ui/drag_drop.h"
 #include "../ui/file_operation_dialog.h"
 #include "../ui/batch_rename_dialog.h"
@@ -19,11 +20,13 @@
 #include "../common/display_path.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
+#include "text_diff.h"
 #include "session.h"
 #include "context_menu.h"
 #include "batch_rename.h"
 #include "link_resolve.h"
 #include "duplicate_scan.h"
+#include "search_query.h"
 #include "resource.h"
 #include "pulse_version.h"
 #include "../ops/clipboard.h"
@@ -379,6 +382,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_global_search_error = s.settings.global_search_error();
             vm.settings_content_status = ContentIndexStatusText(s);
             vm.settings_expanded = s.settingsExpanded;
+            if (vm.settings_page == 0) vm.settings_preview_codecs = ui::DetectPreviewCodecs(false);
             vm.settings_theme = s.themeOverride == ui::ThemeMode::Light ? 1 : s.themeOverride == ui::ThemeMode::Dark ? 2 : 0;
             const auto content_config = s.contentSearch.GetConfig();
             const auto content_status = s.contentSearch.GetStatus();
@@ -782,6 +786,8 @@ std::wstring TrayItemName(const std::wstring& path) {
 int TrayDeckHoverIndex(const AppState& s) {
     if (s.hoverRegion == static_cast<int>(ui::HitTestResult::TrayCard))
         return s.hoverControlIndex;
+    if (s.hoverRegion == static_cast<int>(ui::HitTestResult::TrayIntent))
+        return s.hoverSubIndex;
     if (s.hoverRegion == static_cast<int>(ui::HitTestResult::TrayItemRemove)) {
         const auto entries = TrayDeckEntries(s.tray, static_cast<size_t>(TrayStackTop(s)),
                                              static_cast<size_t>(TrayDeckCap(s)));
@@ -1399,29 +1405,297 @@ static bool HoverHintIsCommand(ui::HitTestResult::Region region) {
     case R::ColumnHeader:
     case R::StatusBar:
     case R::StatusBarTask:
+    case R::StatusHintAction:
         return false;
     default:
         return true;
     }
 }
 
-static std::wstring ContextStatusHint(const app::Tab* tab) {
+// The status-bar hint answers "what can I do right now?". Priority follows the
+// approved mockup: drag > compare > multi-select > read-only > selection >
+// search > two panes > idle. `action` receives an optional clickable follow-up.
+static std::wstring ContextStatusHint(AppState& s, StatusHintAction& action) {
+    using I = l10n::StringId;
+    action = StatusHintAction::None;
+    const app::Tab* tab = ActiveTab(s);
     if (!tab) return {};
-    if (IsSettingsTab(tab)) return l10n::Get(l10n::StringId::Settings);
-    if (IsRecycleTab(tab)) return l10n::Get(l10n::StringId::StatusHintRecycle);
+    if (IsSettingsTab(tab)) return l10n::Get(I::Settings);
+    if (!s.appPrefs.show_hints) return {};
+    if (!s.dropBadge.empty())
+        return l10n::Get(s.trayDragOut ? I::HintTrayDragOut : I::HintDrag);
+    if (s.addressSearching) {
+        // Typing a search: surface the keys the search box understands.
+        const auto sep = L"  \u00B7  ";
+        std::wstring hint = l10n::Get(I::HintKeyEnterSearch);
+        if (s.addressSearchCurrent) hint += sep + l10n::Get(I::HintKeyShiftEnter);
+        if (!s.addressSearchContent) hint += sep + l10n::Get(I::HintKeyAltEnter);
+        hint += sep + l10n::Get(I::HintKeyTabScope);
+        hint += sep + l10n::Get(IsAddressSearchResults(tab) ? I::HintKeyDownResults : I::HintKeyDownHistory);
+        action = StatusHintAction::Advanced;
+        return hint;
+    }
+    {
+        using R = ui::HitTestResult;
+        const int hr = s.hoverRegion;
+        if (hr == static_cast<int>(R::TrayCard) || hr == static_cast<int>(R::TrayIntent) ||
+            hr == static_cast<int>(R::TrayItemRemove) || hr == static_cast<int>(R::TrayPrev) ||
+            hr == static_cast<int>(R::TrayNext))
+            return l10n::Get(I::HintTrayMenu);
+        if (hr == static_cast<int>(R::TrayDest)) return l10n::Get(I::HintTrayDest);
+    }
+    if (IsRecycleTab(tab)) return l10n::Get(I::StatusHintRecycle);
+    const app::LayoutTab* layout = s.window_tabs.Active();
+    if (layout && layout->compare) {
+        action = layout->compare_diff_only ? StatusHintAction::ShowAll : StatusHintAction::DiffOnly;
+        return l10n::Get(I::HintCompare);
+    }
     std::wstring kind;
     app::ParsePulsePath(tab->current_path, &kind, nullptr);
-    if (kind == L"search") return l10n::Get(l10n::StringId::StatusHintSearch);
-    if (tab->net_readonly) return l10n::Get(l10n::StringId::StatusHintReadonly);
-    if (tab->SelectedCount() > 0) return l10n::Get(l10n::StringId::StatusHintSelected);
-    return l10n::Get(l10n::StringId::StatusHintIdle);
+    const int selected = tab->SelectedCount();
+    if (s.filterEditing && !s.filterSelectMode) {
+        // While typing a filter the selection may be hidden; explain the filter instead.
+        if (!tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path))
+            action = StatusHintAction::SearchSubfolders;
+        return l10n::Get(I::HintFiltering);
+    }
+    if (selected >= 2) {
+        action = StatusHintAction::Tray;
+        return l10n::Get(I::HintMultiSel);
+    }
+    if (tab->net_readonly) return l10n::Get(I::HintReadonly2);
+    if (selected == 1) {
+        const int index = tab->selected_index;
+        const bool folder = tab->snapshot && index >= 0 &&
+            static_cast<size_t>(index) < tab->snapshot->size() && (*tab->snapshot)[index].is_dir;
+        if (kind == L"search") {
+            action = StatusHintAction::OpenPath;
+            return l10n::Get(I::HintSearchResultSel);
+        }
+        return l10n::Get(folder ? I::HintFolderSel : I::StatusHintSelected);
+    }
+    if (!tab->filter_text.empty() && !s.filterSelectMode) {
+        // Pane filter vs. search: say that subfolders are not included.
+        if (!tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path))
+            action = StatusHintAction::SearchSubfolders;
+        return l10n::Get(I::HintFiltering);
+    }
+    if (kind == L"search") {
+        action = StatusHintAction::Advanced;
+        return l10n::Get(I::HintSearchSmart);
+    }
+    if (layout && layout->panes.size() >= 2) {
+        action = StatusHintAction::Compare;
+        return l10n::Get(I::HintSplit);
+    }
+    action = StatusHintAction::Shortcuts;
+    return l10n::Get(I::StatusHintIdle);
+}
+
+static const std::wstring& StatusHintActionText(StatusHintAction action) {
+    using I = l10n::StringId;
+    switch (action) {
+    case StatusHintAction::Tray: return l10n::Get(I::HintActTray);
+    case StatusHintAction::Compare: return l10n::Get(I::HintActCompare);
+    case StatusHintAction::DiffOnly: return l10n::Get(I::HintActDiffOnly);
+    case StatusHintAction::ShowAll: return l10n::Get(I::HintActShowAll);
+    case StatusHintAction::Advanced: return l10n::Get(I::HintActAdvanced);
+    case StatusHintAction::Shortcuts: return l10n::Get(I::HintActShortcuts);
+    case StatusHintAction::OpenPath: return l10n::Get(I::HintActOpenPath);
+    case StatusHintAction::SearchSubfolders: return l10n::Get(I::HintActSearchSub);
+    default: break;
+    }
+    static const std::wstring kEmpty;
+    return kEmpty;
+}
+
+// ---- One-time teaching bubbles -------------------------------------------
+// Tip ids double as tips_seen bits: 0 middle-click, 1 tray, 2 compare,
+// 3 smart search, 4 collapsed sidebar, 5 quick preview.
+namespace {
+constexpr int kTeachCount = 6;
+constexpr ULONGLONG kTeachHoldMs = 700;      // trigger must hold this long
+constexpr ULONGLONG kTeachMinShowMs = 3000;  // before "moved on" dismissal
+constexpr ULONGLONG kTeachMaxShowMs = 15000;
+
+bool TeachBusy(const AppState& s) {
+    return !s.dropBadge.empty() || s.renameIndex >= 0 || s.addressEditing || s.addressSearching ||
+           s.filterEditing || !s.tagRenameId.empty() || s.marqueeActive || GetCapture() != nullptr ||
+           GetForegroundWindow() != s.hwnd;
+}
+
+int TeachTrigger(AppState& s) {
+    const app::Tab* tab = ActiveTab(s);
+    if (!tab || IsSettingsTab(tab)) return -1;
+    const app::LayoutTab* layout = s.window_tabs.Active();
+    const int selected = tab->SelectedCount();
+    std::wstring kind;
+    app::ParsePulsePath(tab->current_path, &kind, nullptr);
+    const bool compare = layout && layout->compare;
+    if (selected >= 5) return 1;
+    if (layout && layout->panes.size() >= 2 && !compare) return 2;
+    // Only with results: on an empty page the bubble would cover the suggestion buttons.
+    if (kind == L"search") return tab->snapshot && tab->snapshot->size() > 0 ? 3 : -1;
+    if (s.appPrefs.sidebar_collapsed) return 4;
+    if (selected == 1 && tab->snapshot && tab->selected_index >= 0 &&
+        static_cast<size_t>(tab->selected_index) < tab->snapshot->size())
+        return (*tab->snapshot)[tab->selected_index].is_dir ? 0 : 5;
+    return -1;
+}
+
+void HideTeachTip(AppState& s) {
+    s.teachTip = -1;
+    s.teachCandidate = -1;
+}
+} // namespace
+
+bool UpdateTeachTip(AppState& s) {
+    const ULONGLONG now = GetTickCount64();
+    if (s.teachTip >= 0) {
+        const ULONGLONG shown = now - s.teachShownAt;
+        const bool movedOn = shown >= kTeachMinShowMs && TeachTrigger(s) != s.teachTip;
+        if (!s.appPrefs.show_hints || movedOn || shown >= kTeachMaxShowMs || !s.dropBadge.empty()) {
+            HideTeachTip(s);
+            return true;
+        }
+        return false;
+    }
+    if (!s.appPrefs.show_hints || s.teachShownThisSession || TeachBusy(s)) {
+        s.teachCandidate = -1;
+        return false;
+    }
+    const int tip = TeachTrigger(s);
+    if (tip < 0 || tip >= kTeachCount || (s.appPrefs.tips_seen & (1u << tip))) {
+        s.teachCandidate = -1;
+        return false;
+    }
+    if (tip != s.teachCandidate) {
+        s.teachCandidate = tip;
+        s.teachCandidateSince = now;
+        return false;
+    }
+    if (now - s.teachCandidateSince < kTeachHoldMs) return false;
+    // Shown = seen: each tip appears once, even if the user just moves on.
+    s.teachTip = tip;
+    s.teachShownAt = now;
+    s.teachShownThisSession = true;
+    s.appPrefs.tips_seen |= 1u << tip;
+    s.appPrefs.Save();
+    return true;
+}
+
+void HandleTeachButton(AppState& s, int button) {
+    const int tip = s.teachTip;
+    HideTeachTip(s);
+    if (button == 2) {
+        s.appPrefs.show_hints = false;
+        s.appPrefs.Save();
+    } else if (button == 0 && tip == 2) {
+        DispatchMenuCommand(s, app::CmdCompareToggle);
+    }
+    if (s.hwnd) InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void SearchFilterInSubfolders(AppState& s) {
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return;
+    std::wstring text = tab->filter_text;
+    if (s.filterEditing && s.hwndFilterEdit) {
+        wchar_t buf[512]{};
+        GetWindowTextW(s.hwndFilterEdit, buf, ARRAYSIZE(buf));
+        text = buf;
+    }
+    if (text.empty()) return;
+    app::AdvancedSearchSpec spec;
+    spec.name = text;
+    spec.location = app::LocationScope::CurrentFolder;
+    spec.current_folder = path::StripExtendedPathPrefix(tab->current_path);
+    ClearPaneFilter(s);
+    NavigateTo(s, app::MakeSearchPath(app::CompileSearchQuery(spec)));
+}
+
+StatusHintAction CurrentStatusHintAction(AppState& s) {
+    StatusHintAction action = StatusHintAction::None;
+    ContextStatusHint(s, action);
+    return action;
 }
 
 // View-model wrapper: builds the base VM and layers ops-layer status on top.
 // probe_details=false: hit-test / input paths must not kick off selection
 // probes (or mutate detailsSelPath); paint owns those side effects.
+// Compact local time for the tray compare table ("09-30 14:02", other years by date).
+static std::wstring TrayCmpTime(const FILETIME& ft) {
+    FILETIME local{};
+    SYSTEMTIME st{}, now{};
+    if (!FileTimeToLocalFileTime(&ft, &local) || !FileTimeToSystemTime(&local, &st)) return L"";
+    GetLocalTime(&now);
+    wchar_t buf[32]{};
+    if (st.wYear == now.wYear)
+        swprintf_s(buf, L"%02u-%02u %02u:%02u", st.wMonth, st.wDay, st.wHour, st.wMinute);
+    else
+        swprintf_s(buf, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    return buf;
+}
+
+// Two staged files: same rules as the dual-pane compare (mtime 2 s tolerance,
+// then size); content only after the user asks (TrayStartContentCompare).
+static void FillTrayCompare(AppState& s, const std::wstring (&paths)[2],
+                            ui::TrayCompareView& v) {
+    uint64_t t[2]{}, sz[2]{};
+    std::wstring dir[2];
+    for (int i = 0; i < 2; ++i) {
+        const std::wstring shown = ClipboardPath(paths[i]);
+        const size_t slash = shown.find_last_of(L"\\/");
+        v.name[i] = slash == std::wstring::npos ? shown : shown.substr(slash + 1);
+        dir[i] = slash == std::wstring::npos ? std::wstring() : shown.substr(0, slash);
+        const size_t up = dir[i].find_last_of(L"\\/");
+        v.where[i] = up == std::wstring::npos ? dir[i] : dir[i].substr(up + 1);
+        WIN32_FILE_ATTRIBUTE_DATA d{};
+        if (GetFileAttributesExW(paths[i].c_str(), GetFileExInfoStandard, &d)) {
+            t[i] = (static_cast<uint64_t>(d.ftLastWriteTime.dwHighDateTime) << 32) |
+                   d.ftLastWriteTime.dwLowDateTime;
+            sz[i] = (static_cast<uint64_t>(d.nFileSizeHigh) << 32) | d.nFileSizeLow;
+            v.time[i] = TrayCmpTime(d.ftLastWriteTime);
+            v.size[i] = format::ByteSize(sz[i]);
+        }
+    }
+    // Same leaf folder name in different places: show the full folders.
+    if (v.where[0] == v.where[1] && dir[0] != dir[1]) {
+        v.where[0] = dir[0];
+        v.where[1] = dir[1];
+    }
+    constexpr uint64_t kTolerance = 2ull * 10000000ull; // 2 s in FILETIME units
+    v.newer = t[0] > t[1] + kTolerance ? 0 : (t[1] > t[0] + kTolerance ? 1 : -1);
+    v.size_differs = sz[0] != sz[1];
+    if (v.size_differs)
+        v.content = 3;
+    else if (s.trayCmpJob && s.trayCmpJob->a == paths[0] && s.trayCmpJob->b == paths[1])
+        v.content = s.trayCmpJob->state.load();
+    else
+        v.content = 0;
+    if (v.content != 3) return;
+    // Different: find out (once per pair, off the UI thread) whether both are text.
+    const auto& probe = s.trayTextProbe;
+    if (probe && probe->a == paths[0] && probe->b == paths[1]) {
+        const int state = probe->state.load();
+        v.text = state == 1 ? 1 : (state == 2 ? 0 : -1);
+        return;
+    }
+    auto job = std::make_shared<TrayTextProbe>();
+    job->a = paths[0];
+    job->b = paths[1];
+    s.trayTextProbe = job;
+    const HWND hwnd = s.hwnd;
+    std::thread([job, hwnd] {
+        const bool text = diff::ProbeLooksText(job->a) && diff::ProbeLooksText(job->b);
+        job->state.store(text ? 1 : 2);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }).detach();
+}
+
 ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     if (!s.pane) return {};
+    UpdateFolderCompare(s);
     s.changes.visible_paths.clear();
     ForEachPane(s, [&](app::Pane& pane) {
         if (auto* tab = pane.ActiveTab()) {
@@ -1441,7 +1715,10 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_list_size_bar = s.appPrefs.list_size_bar;
     vm.settings_list_tag_names = s.appPrefs.list_tag_name_color;
     vm.settings_vertical_tabs = s.appPrefs.vertical_tabs;
+    vm.settings_show_hints = s.appPrefs.show_hints;
+    vm.settings_tips_seen = s.appPrefs.tips_seen != 0;
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
+    vm.settings_text_render = s.appPrefs.text_render;
     vm.sidebar_scroll = s.sidebarScroll;
     if (s.groupDragActive) {
         vm.sidebar_group_drag_id = s.groupDragId;
@@ -1511,10 +1788,20 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         vm.status.performance_compact_text = compactPerf;
     } else {
         const auto region = static_cast<ui::HitTestResult::Region>(s.hoverRegion);
-        if (HoverHintIsCommand(region))
+        if (HoverHintIsCommand(region) && !s.addressSearching && !s.filterEditing) {
+            // Tooltips may carry extra lines; the status bar only has room for the first.
             vm.status.hint_text = TooltipForHover(s);
-        if (vm.status.hint_text.empty())
-            vm.status.hint_text = ContextStatusHint(ActiveTab(s));
+            const size_t nl = vm.status.hint_text.find(L'\n');
+            if (nl != std::wstring::npos) vm.status.hint_text.resize(nl);
+        }
+        if (vm.status.hint_text.empty()) {
+            StatusHintAction action = StatusHintAction::None;
+            vm.status.hint_text = ContextStatusHint(s, action);
+            if (action != StatusHintAction::None) {
+                vm.status.hint_action = static_cast<int>(action);
+                vm.status.hint_action_text = StatusHintActionText(action) + L" \u2192";
+            }
+        }
     }
     // 1B-2 overlays: cut rows, drag feedback, breadcrumb hover.
     if (!s.cutPaths.empty()) {
@@ -1530,6 +1817,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     }
     vm.pane.drop_target_index = s.dropRow;
     vm.pane.rename_index = s.renameIndex;
+    SyncSearchBarWidth(s);
     vm.address_editing = s.addressEditing;
     vm.address_searching = s.addressSearching;
     vm.address_search_current = s.addressSearchCurrent;
@@ -1612,6 +1900,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             const auto off = s.tabOffsets.find(key);
             if (off != s.tabOffsets.end())
                 vm.tabs[static_cast<size_t>(pos)].x_offset = off->second;
+            vm.tabs[static_cast<size_t>(pos)].flash = TabFlashAmount(s, key);
         }
         for (size_t gi = 0; gi < vm.tab_groups.size(); ++gi) {
             const auto off = s.chipOffsets.find(vm.tab_groups[gi].id);
@@ -1629,10 +1918,39 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         deck.offset = TrayStackTop(s);
         deck.total_count = TrayItemTotalCount(s.tray);
         deck.batch_count = static_cast<int>(s.tray.batches().size());
+        deck.release_move = !s.tray.batches().empty() && s.tray.batches().back().move_intent;
         uint64_t total_size = 0;
         for (const auto& b : s.tray.batches()) total_size += b.total_size;
         deck.total_size = total_size;
         deck.live_count = static_cast<int>(entries.size());
+        for (const auto& b : s.tray.batches())
+            for (const auto& item : b.items)
+                if (!item.exists) ++deck.stale_count;
+        {
+            // Two-file compare: exactly two staged items, both existing files.
+            std::wstring pair[2];
+            int n = 0;
+            bool files = true;
+            for (const auto& b : s.tray.batches()) {
+                for (const auto& item : b.items) {
+                    if (n < 2) pair[n] = item.path;
+                    ++n;
+                    files = files && item.exists && !item.is_dir;
+                }
+            }
+            deck.can_compare = n == 2 && files;
+            deck.comparing = deck.can_compare && s.trayCompare;
+            if (deck.comparing) FillTrayCompare(s, pair, deck.compare);
+        }
+        for (const auto& dir : TrayDestList(s)) {
+            ui::TrayDestView d;
+            d.path = dir;
+            d.label = BaseName(dir);
+            if (d.label.empty()) d.label = dir;
+            // Network folders are not probed per frame (a dead share would stall).
+            d.missing = !fs::IsUncPath(dir) && GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES;
+            deck.dests.push_back(std::move(d));
+        }
         const int hover_index = TrayDeckHoverIndex(s);
         deck.hovered = hover_index >= 0 && hover_index < deck.live_count ? hover_index : -1;
         auto fill = [&s](ui::TrayCardView& card, const AppState::TrayCardAnim& anim) {
@@ -1710,6 +2028,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.sidebar_scroll = s.sidebarScroll;
     // Right details panel: selection info + size walk + tag chips.
     vm.details_visible = s.showDetailsPanel;
+    vm.layout_preset = static_cast<int>(LayoutOf(s));
     std::wstring sizeTarget; // folder that should be walking ("" = none)
     if (s.showDetailsPanel) {
         ui::DetailsPanelView& dv = vm.details;
@@ -1856,12 +2175,25 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.drag_badge = s.dropBadge;
     vm.drag_badge_x = s.dropBadgeX;
     vm.drag_badge_y = s.dropBadgeY;
+    vm.drag_badge_move = s.dropBadgeMove && !s.dropBadge.empty();
     vm.hover_region = s.hoverRegion;
     vm.hover_control_index = s.hoverControlIndex;
     vm.hover_sub_index = s.hoverSubIndex;
     vm.hover_pane_index = s.hoverPaneIndex;
     vm.column_resize_pressed = s.columnResizing;
     vm.tooltip_text = s.tooltipText;
+    if (s.teachTip >= 0) {
+        using I = l10n::StringId;
+        static constexpr I kTitles[] = {I::TeachMiddleTitle, I::TeachTrayTitle, I::TeachCompareTitle,
+                                        I::TeachSearchTitle, I::TeachSidebarTitle, I::TeachPreviewTitle};
+        static constexpr I kBodies[] = {I::TeachMiddleBody, I::TeachTrayBody, I::TeachCompareBody,
+                                        I::TeachSearchBody, I::TeachSidebarBody, I::TeachPreviewBody};
+        vm.teach.visible = true;
+        vm.teach.title = l10n::Get(kTitles[s.teachTip]);
+        vm.teach.body = l10n::Get(kBodies[s.teachTip]);
+        vm.teach.primary = s.teachTip == 2 ? l10n::Get(I::TeachTry) + L" \u2192" : l10n::Get(I::TeachGotIt);
+        vm.teach.never = l10n::Get(I::TeachNever);
+    }
     vm.tooltip_x = static_cast<float>(s.hoverPoint.x);
     vm.tooltip_y = static_cast<float>(s.hoverPoint.y);
     FillPaneSlots(s, vm);
@@ -1872,6 +2204,22 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.wallpaper_look = s.appPrefs.wallpaper_look;
     vm.wallpaper_blur = s.appPrefs.wallpaper_blur;
     vm.safe_mode = s.safeMode;
+    {
+        // Toolbar "Group" button: list-like views of groupable places only
+        // (same rule as the Sort menu's group section).
+        int toolbar_group = -1;
+        if (const app::Tab* gt = ActiveTab(s)) {
+            std::wstring kind;
+            app::ParsePulsePath(gt->current_path, &kind, nullptr);
+            const bool can_group = !gt->content_results &&
+                ((!gt->current_path.empty() && !fs::IsVirtualPath(gt->current_path)) || kind == L"recent" ||
+                 kind == L"search" || kind == L"saved-search" || kind == L"tag" || kind == L"recycle");
+            const bool list_like = gt->view_mode == ui::ViewMode::Details ||
+                                   gt->view_mode == ui::ViewMode::Content;
+            if (can_group && list_like && !vm.pane.compare_active) toolbar_group = gt->group_by;
+        }
+        s.renderer.SetToolbarGroup(toolbar_group);
+    }
     return vm;
 }
 
@@ -1900,14 +2248,20 @@ std::wstring TooltipForHover(AppState& s) {
     using I = l10n::StringId;
     auto text = [](I id) -> const std::wstring& { return l10n::Get(id); };
     switch (static_cast<R::Region>(s.hoverRegion)) {
-    case R::AddressSearch: return text(I::Search);
+    case R::AddressSearch: return text(s.appPrefs.show_hints ? I::TipxSearch : I::Search);
     case R::AddressSearchScope: {
         const auto* tab = ActiveTab(s);
         const bool current = !s.addressSearching && IsAddressSearchResults(tab)
             ? tab->search_input_current : s.addressSearchCurrent;
         return text(current ? I::LocationCurrent : I::LocationIndexed);
     }
-    case R::AddressSearchMode: return text(I::SearchModeName);
+    case R::AddressSearchMode: {
+        // Say both the current state and what a click will do.
+        const auto* tab = ActiveTab(s);
+        const bool content = !s.addressEditing && IsAddressSearchResults(tab)
+            ? tab->search_input_content : s.addressSearchContent;
+        return text(content ? I::TipSearchModeContent : I::TipSearchModeName);
+    }
     case R::AddressSearchContent: return text(I::SearchModeContent);
     case R::AddressSearchOptions: return text(I::SearchOptions);
     case R::ContentIndexManage:
@@ -1930,7 +2284,7 @@ std::wstring TooltipForHover(AppState& s) {
             label += L" — " + pulse::path::StripExtendedPathPrefix(folder->current_path);
         return label;
     }
-    case R::TabNew: return text(I::TooltipNewTab);
+    case R::TabNew: return text(s.appPrefs.show_hints ? I::TipxNewTab : I::TooltipNewTab);
     case R::ThemeToggle: return text(I::TooltipToggleTheme);
     case R::SettingsButton: return text(I::Settings);
     case R::SettingsFind: return text(I::SettingsFind);
@@ -1955,6 +2309,7 @@ std::wstring TooltipForHover(AppState& s) {
             ? I::TooltipClearBackground : I::TooltipChooseBackground);
     case R::SettingsDensity: return text(I::SettingsRowHeight);
     case R::SettingsFolderSort: return text(I::SettingsFolderSort);
+    case R::SettingsTextRender: return text(I::SettingsTextRender);
     case R::SettingsTrayIcon: return text(I::SettingsTrayIcon);
     case R::SettingsWallpaperLook: return text(I::SettingsWallpaperLook);
     case R::SettingsWallpaperBlur: return text(I::SettingsWallpaperBlur);
@@ -1988,15 +2343,17 @@ std::wstring TooltipForHover(AppState& s) {
     case R::Paste: return text(I::PasteShortcut);
     case R::Rename: return text(I::RenameShortcut);
     case R::Delete: return text(I::DeleteShortcut);
-    case R::SplitButton: return text(I::SplitLayout);
+    case R::SplitButton: return text(s.appPrefs.show_hints ? I::TipxSplit : I::SplitLayout);
     case R::DetailsToggle: return text(s.showDetailsPanel ? I::CollapseDetails : I::ExpandDetails);
     case R::PaneMediumIcons: return text(I::MediumIcons);
     case R::PaneDetails: return text(I::ViewDetails);
     case R::ToolbarSort: return text(I::SortBy);
+    case R::ToolbarGroup: return text(I::GroupBy);
+    case R::ToolbarGroupClear: return text(I::GroupClear);
     case R::ToolbarMore: return text(I::More);
     case R::PaneColumnLayout: return text(I::ColumnLayout);
     case R::PaneViewButton: return text(I::More);
-    case R::FilterBox: return text(I::FilterCurrent);
+    case R::FilterBox: return text(s.appPrefs.show_hints ? I::TipxFilter : I::FilterCurrent);
     case R::FilterClear: return text(I::Clear);
     case R::Splitter: return text(I::ResizeSplit);
     case R::DetailsOpen: return text(I::Open);
@@ -2023,12 +2380,14 @@ std::wstring TooltipForHover(AppState& s) {
         default: return L"";
         }
     case R::DetailsSecurityChange: return text(I::SystemAttributes);
-    case R::RowStar: return text(I::Star);
-    case R::RowNewTab: return text(I::OpenNewTab);
+    case R::RowStar: return text(s.appPrefs.show_hints ? I::TipxStar : I::Star);
+    case R::RowNewTab: return text(s.appPrefs.show_hints ? I::TipxRowNewTab : I::OpenNewTab);
     case R::RowMore: return text(I::MoreActions);
     case R::SidebarItemAction:
         return text(IsVerticalTabPath(s.hoverPath) ? I::TooltipCloseTab : I::Unpin);
-    case R::SidebarToggle: return text(I::ToggleSidebar);
+    case R::SidebarToggle:
+        // The extra line only describes collapsing; an expanded-from-rail state keeps the plain name.
+        return text(s.appPrefs.show_hints && !s.appPrefs.sidebar_collapsed ? I::TipxSidebar : I::ToggleSidebar);
     // On the icon rail there is no text to read, so every row (and every folded
     // section's icon) names itself on hover.
     case R::SidebarHeader: return SidebarRailActive(s) ? s.hoverLabel : L"";
@@ -2090,9 +2449,31 @@ std::wstring TooltipForHover(AppState& s) {
                 starred && !starred->badge.empty()) {
                 tooltip += pulse::l10n::Get(pulse::l10n::StringId::TooltipBadge).c_str() + starred->badge;
             }
+            if (tab->compare_marks &&
+                static_cast<size_t>(s.hoverControlIndex) < tab->compare_marks->size()) {
+                using CM = ui::CompareMark;
+                using I = pulse::l10n::StringId;
+                switch (static_cast<CM>((*tab->compare_marks)[static_cast<size_t>(s.hoverControlIndex)])) {
+                case CM::OnlyHere: tooltip += L" \xB7 " + pulse::l10n::Get(I::CompareOnlyHere); break;
+                case CM::Newer: tooltip += L" \xB7 " + pulse::l10n::Get(I::CompareNewer); break;
+                case CM::Older: tooltip += L" \xB7 " + pulse::l10n::Get(I::CompareOlder); break;
+                case CM::Differs: tooltip += L" \xB7 " + pulse::l10n::Get(I::CompareDiffers); break;
+                default: break;
+                }
+            }
             return tooltip;
         }
         return L"";
+    }
+    case R::TrayCompare:
+        return text(s.hoverControlIndex == 0   ? I::HintTrayCompare
+                    : s.hoverControlIndex == 2 ? I::TrayCompareTwo
+                                               : I::HintTrayCmpCheck);
+    case R::TrayStale:
+        return text(s.hoverControlIndex == 0 ? I::HintTrayStaleFind : I::HintTrayStaleRemove);
+    case R::TrayDest: {
+        const bool gone = GetFileAttributesW(s.hoverPath.c_str()) == INVALID_FILE_ATTRIBUTES;
+        return s.hoverPath + L"\n" + text(gone ? I::TrayDestMissing : I::HintTrayDest);
     }
     case R::TrayCard: {
         const auto entries = TrayDeckEntries(s.tray, static_cast<size_t>(TrayStackTop(s)),
@@ -2107,6 +2488,11 @@ std::wstring TooltipForHover(AppState& s) {
         }
         return L"";
     }
+    case R::TrayIntent: return pulse::l10n::Get(pulse::l10n::StringId::TipTrayIntent);
+    case R::TrayRelease:
+        return pulse::l10n::Get(!s.tray.batches().empty() && s.tray.batches().back().move_intent
+            ? pulse::l10n::StringId::TipTrayReleaseMove
+            : pulse::l10n::StringId::TipTrayReleaseCopy);
     case R::TrayPrev: return pulse::l10n::Get(pulse::l10n::StringId::TrayPrev);
     case R::TrayNext: return pulse::l10n::Get(pulse::l10n::StringId::TrayNext);
     default: return L"";

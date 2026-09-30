@@ -133,6 +133,7 @@ private:
     ComPtr<IDWriteTextFormat> iconFormat_;
     std::unique_ptr<LumaTextRenderer> lumaText_;
     HMONITOR text_params_monitor_ = nullptr;
+    int text_params_mode_ = 0;
     bool transparentComposition_ = false;
     bool device_lost_ = false;
 };

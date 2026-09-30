@@ -13,7 +13,7 @@
 
 namespace pulse::ui {
 // Archive: `text` carries the archive tree payload for ArchivePreview.
-enum class PreviewDrawResult { Pending, Bitmap, Text, Hex, Failed, Archive };
+enum class PreviewDrawResult { Pending, Bitmap, Text, Hex, Failed, Archive, Markdown, Table, Tree };
 
 struct PreviewProperty {
     std::wstring label;
@@ -32,6 +32,9 @@ public:
     ~ThumbnailCache();
     void SetDeviceContext(ID2D1DeviceContext* dc);
     void SetNotifyWindow(HWND hwnd) { hwnd_ = hwnd; }
+    // Quick Look's cache: folders come as contents listings and Markdown as
+    // rendered documents.
+    void SetQuickLookContent(bool on) { quick_look_content_ = on; }
     void Reset();
     void Evict();
     // pan_x/pan_y non-null: cover mode (fill dest, crop overflow) with a
@@ -49,7 +52,8 @@ public:
                            uint32_t* frame_delay_ms = nullptr, uint32_t* loop_count = nullptr,
                            uint32_t* decoded_width = nullptr, uint32_t* decoded_height = nullptr,
                            uint32_t* source_width = nullptr, uint32_t* source_height = nullptr,
-                           PreviewViewport* viewport = nullptr);
+                           PreviewViewport* viewport = nullptr,
+                           uint32_t* text_encoding = nullptr);
     bool Properties(const std::wstring& path, DWORD attrs, uint64_t generation,
                     uint64_t modified, uint64_t size,
                     std::vector<PreviewProperty>& properties);
@@ -68,6 +72,7 @@ private:
         uint32_t frame_count = 1;
         uint32_t frame_delay_ms = 0;
         uint32_t loop_count = 0;
+        uint32_t text_encoding = 0;  // ipc::PreviewTextEncoding of Text previews
         uint32_t frame_index = 0;
         uint32_t source_width = 0;
         uint32_t source_height = 0;
@@ -108,6 +113,7 @@ private:
                      uint64_t size, uint32_t frame_index = 0) const;
     ID2D1DeviceContext* dc_ = nullptr;
     std::atomic<HWND> hwnd_{nullptr};
+    std::atomic<bool> quick_look_content_{false};
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION child_{};
     std::atomic<bool> running_{false};

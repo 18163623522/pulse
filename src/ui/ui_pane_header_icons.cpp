@@ -19,6 +19,10 @@ void MainRenderer::DrawPaneHeaderIcon(const D2D1_RECT_F& rc, PaneHeaderIcon icon
     case PaneHeaderIcon::MediumIcons: command = I::Grid; break;
     case PaneHeaderIcon::More: command = I::More; break;
     case PaneHeaderIcon::Split: command = I::Split; break;
+    case PaneHeaderIcon::SplitSingle: command = I::SplitSingle; break;
+    case PaneHeaderIcon::SplitStacked: command = I::SplitStacked; break;
+    case PaneHeaderIcon::SplitThree: command = I::SplitThree; break;
+    case PaneHeaderIcon::SplitFour: command = I::SplitFour; break;
     case PaneHeaderIcon::View: command = I::List; break;
     case PaneHeaderIcon::Filter: command = I::Filter; break;
     }

@@ -228,6 +228,8 @@ FluentMenu::~FluentMenu() {
     if (surf_.mem_dc) DeleteDC(surf_.mem_dc);
     if (sub_surf_.dib) DeleteObject(sub_surf_.dib);
     if (sub_surf_.mem_dc) DeleteDC(sub_surf_.mem_dc);
+    if (tip_surf_.dib) DeleteObject(tip_surf_.dib);
+    if (tip_surf_.mem_dc) DeleteDC(tip_surf_.mem_dc);
 }
 
 bool FluentMenu::Create(HWND owner, Compositor* compositor, float scale) {
@@ -781,38 +783,145 @@ void FluentMenu::OnMouse(POINT client_pt, bool button_up) {
 }
 
 void FluentMenu::UpdateTooltip(int row) {
+    // Drawn like the main window's tooltip (flyout fill, card stroke, 4 dip
+    // radius, small text) instead of the system tooltip control.
     const auto* item = model_.At(row);
     const std::wstring text = item ? item->tooltip : std::wstring{};
     if (text == tooltip_text_) return;
-    if (!tooltip_ && !text.empty() && hwnd_) {
-        tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW,
-            nullptr, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, CW_USEDEFAULT,
-            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd_, nullptr,
-            GetModuleHandleW(nullptr), nullptr);
-        if (tooltip_) {
-            TOOLINFOW ti{sizeof(ti)};
-            ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
-            ti.hwnd = hwnd_;
-            ti.uId = 1;
-            ti.lpszText = const_cast<wchar_t*>(L"");
-            SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-            SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, static_cast<LPARAM>(480 * scale_));
+    tooltip_text_ = text;
+    if (text.empty()) {
+        if (tooltip_) ShowWindow(tooltip_, SW_HIDE);
+        return;
+    }
+    if (!tooltip_ && hwnd_) {
+        // No create param: the shared wndproc treats it as a plain window.
+        tooltip_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE |
+                                   WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                                   kMenuClass, L"PulseMenuTip", WS_POPUP, 0, 0, 1, 1, hwnd_,
+                                   nullptr, GetModuleHandleW(nullptr), nullptr);
+    }
+    if (!tooltip_ || !RenderTip(text)) return;
+    POINT pt{};
+    GetCursorPos(&pt);
+    HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{sizeof(mi)};
+    GetMonitorInfoW(mon, &mi);
+    int x = pt.x + static_cast<int>(12.0f * scale_);
+    int y = pt.y + static_cast<int>(18.0f * scale_);
+    x = (std::min)(x, static_cast<int>(mi.rcWork.right) - tip_surf_.w);
+    if (y + tip_surf_.h > mi.rcWork.bottom) y = pt.y - tip_surf_.h - static_cast<int>(8.0f * scale_);
+    x = (std::max)(x, static_cast<int>(mi.rcWork.left));
+    HGDIOBJ old = SelectObject(tip_surf_.mem_dc, tip_surf_.dib);
+    POINT dst{x, y};
+    POINT src{0, 0};
+    SIZE sz{tip_surf_.w, tip_surf_.h};
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    UpdateLayeredWindow(tooltip_, nullptr, &dst, &sz, tip_surf_.mem_dc, &src, 0, &blend, ULW_ALPHA);
+    SelectObject(tip_surf_.mem_dc, old);
+    SetWindowPos(tooltip_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+bool FluentMenu::RenderTip(const std::wstring& text) {
+    ID2D1DeviceContext* dc = compositor_ ? compositor_->Dc() : nullptr;
+    IDWriteFactory2* dwrite = compositor_ ? compositor_->DwriteFactory() : nullptr;
+    IDWriteTextFormat* fmt = compositor_ ? compositor_->SmallFormat() : nullptr;
+    if (!dc || !dwrite || !fmt || text.empty()) return false;
+    std::vector<std::wstring> lines;
+    for (size_t start = 0;;) {
+        const size_t nl = text.find(L'\n', start);
+        lines.push_back(text.substr(start, nl == std::wstring::npos ? std::wstring::npos : nl - start));
+        if (nl == std::wstring::npos || lines.size() >= 6) break;
+        start = nl + 1;
+    }
+    float tw = 0.0f;
+    for (const auto& line : lines) tw = (std::max)(tw, MeasureWidth(dwrite, fmt, line));
+    const float line_h = 18.0f * scale_;
+    const bool multi = lines.size() > 1;
+    const int w = static_cast<int>(std::ceil((std::min)(tw + 20.0f * scale_, 480.0f * scale_)));
+    const int h = static_cast<int>(std::ceil(multi ? 10.0f * scale_ + line_h * lines.size() : 28.0f * scale_));
+    if (w <= 0 || h <= 0) return false;
+
+    D2D1_SIZE_U size{static_cast<UINT32>(w), static_cast<UINT32>(h)};
+    auto props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+    ComPtr<ID2D1Bitmap1> bmp;
+    if (FAILED(dc->CreateBitmap(size, nullptr, 0, props, &bmp))) return false;
+    ComPtr<ID2D1Image> old_target;
+    dc->GetTarget(&old_target);
+    dc->SetTarget(bmp.get());
+    const D2D1_TEXT_ANTIALIAS_MODE old_text_aa = dc->GetTextAntialiasMode();
+    dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    dc->BeginDraw();
+    dc->Clear(D2D1::ColorF(0, 0, 0, 0));
+    const Theme theme = IsHighContrast() ? MakeHighContrastTheme() : MakeTheme(dark_, accent_);
+    // The layered window has nothing behind it: flatten the flyout colour onto bg.
+    D2D1_COLOR_F fill = theme.surface_flyout;
+    const float a = fill.a;
+    fill = D2D1::ColorF(fill.r * a + theme.bg.r * (1.0f - a), fill.g * a + theme.bg.g * (1.0f - a),
+                        fill.b * a + theme.bg.b * (1.0f - a), 1.0f);
+    const float r = 4.0f * scale_;
+    const D2D1_RECT_F card = D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f);
+    ComPtr<ID2D1SolidColorBrush> brush;
+    dc->CreateSolidColorBrush(fill, &brush);
+    if (brush.get()) {
+        dc->FillRoundedRectangle(D2D1::RoundedRect(card, r, r), brush.get());
+        brush->SetColor(theme.stroke_card);
+        dc->DrawRoundedRectangle(D2D1::RoundedRect(card, r, r), brush.get(), 1.0f);
+        brush->SetColor(theme.text);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const float top = multi ? 5.0f * scale_ + line_h * i : 0.0f;
+            const float row_h = multi ? line_h : static_cast<float>(h);
+            ComPtr<IDWriteTextLayout> layout;
+            if (FAILED(dwrite->CreateTextLayout(lines[i].c_str(), static_cast<UINT32>(lines[i].size()), fmt,
+                    (std::max)(1.0f, w - 20.0f * scale_), row_h, &layout)) || !layout.get()) continue;
+            layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            dc->DrawTextLayout(D2D1::Point2F(10.0f * scale_, top), layout.get(), brush.get(),
+                               D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
     }
-    tooltip_text_ = text;
-    if (!tooltip_) return;
-    TOOLINFOW ti{sizeof(ti)};
-    ti.hwnd = hwnd_;
-    ti.uId = 1;
-    ti.lpszText = tooltip_text_.data();
-    SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&ti));
-    SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
-    if (!text.empty()) {
-        POINT pt{};
-        GetCursorPos(&pt);
-        SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x + 16, pt.y + 20));
-        SendMessageW(tooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&ti));
+    const HRESULT hr = dc->EndDraw();
+    dc->SetTextAntialiasMode(old_text_aa);
+    dc->SetTarget(old_target.get());
+    if (FAILED(hr)) return false;
+
+    auto cpu_props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+    ComPtr<ID2D1Bitmap1> cpu;
+    if (FAILED(dc->CreateBitmap(size, nullptr, 0, cpu_props, &cpu))) return false;
+    if (FAILED(cpu->CopyFromBitmap(nullptr, bmp.get(), nullptr))) return false;
+    D2D1_MAPPED_RECT mapped{};
+    if (FAILED(cpu->Map(D2D1_MAP_OPTIONS_READ, &mapped))) return false;
+    Surface& s = tip_surf_;
+    if (!s.mem_dc) s.mem_dc = CreateCompatibleDC(nullptr);
+    if (s.dib && (s.w != w || s.h != h)) {
+        DeleteObject(s.dib);
+        s.dib = nullptr;
     }
+    if (!s.dib) {
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        s.dib = CreateDIBSection(s.mem_dc, &bmi, DIB_RGB_COLORS, &s.bits, nullptr, 0);
+        if (!s.dib) {
+            cpu->Unmap();
+            return false;
+        }
+        s.w = w;
+        s.h = h;
+    }
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(static_cast<uint8_t*>(s.bits) + static_cast<size_t>(y) * w * 4,
+                    static_cast<const uint8_t*>(mapped.bits) + static_cast<size_t>(y) * mapped.pitch,
+                    static_cast<size_t>(w) * 4);
+    }
+    cpu->Unmap();
+    return true;
 }
 
 void FluentMenu::UpdateHover(int row, int swatch) {

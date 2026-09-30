@@ -30,6 +30,7 @@ enum class SettingsEffect : uint32_t {
     GlobalSearch = 1u << 9,
     ListStyle = 1u << 10,
     FolderSort = 1u << 11,
+    TextRendering = 1u << 12,
 };
 
 constexpr SettingsEffect operator|(SettingsEffect left, SettingsEffect right) noexcept {
@@ -134,6 +135,7 @@ public:
     void AccentChoice(bool system_choice, uint32_t rgb);
     void RowHeight(int index);
     void FolderSort(int index);
+    void TextRendering(int index);
     void TrayIconSize(int index);
     // Settings sliders: 0 interface transparency (0..90), 1 wallpaper blur (0..40).
     // Values apply live while dragging; EndSlider saves once.

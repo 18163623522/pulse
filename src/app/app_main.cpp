@@ -95,8 +95,10 @@
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "psapi.lib")
 #include "app_internal.h"
+#include "group_wheel_ui.h"
 #include "duplicate_scan.h"
 #include "shell_tag_menu.h"
+#include "hang_watch.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -240,6 +242,70 @@ void Render(AppState& s) {
     if (s.framePump.Running() && s.renderer.TickMotion(GetTickCount64())) s.framePump.Arm();
 }
 
+// The session used to be written only in WM_DESTROY, so a Windows shutdown,
+// logoff, crash or forced exit lost every layout change of that run.
+static bool SessionWritable(const AppState& s) {
+    return !s.shot.active && !s.menushot && (!s.isolatedTest || s.isolatedTestPersist) &&
+        !ShellTagHeadlessLaunch();
+}
+
+static app::SessionSnapshot CaptureWindowSession(AppState& s, HWND hwnd) {
+    app::SessionSnapshot snap;
+    WINDOWPLACEMENT wp{ sizeof(wp) };
+    if (GetWindowPlacement(hwnd, &wp)) {
+        snap.window_rect = wp.rcNormalPosition;
+        snap.maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
+    }
+    snap.dark = s.darkMode;
+    app::Tab* tab = ActiveTab(s);
+    if (tab) snap.active_path = tab->current_path;
+    RememberLayoutFocus(s);
+    snap.active_layout_tab = static_cast<int>(s.window_tabs.active);
+    for (const auto& group : s.window_tabs.tab_groups)
+        snap.tab_groups.push_back({group.id, group.name, group.color_rgb, group.collapsed});
+    for (const auto& layout : s.window_tabs.items)
+        snap.layout_tabs.push_back(app::CaptureLayoutTab(*layout));
+    snap.tray = s.tray;
+    snap.undo_json = s.ops.UndoToJson();
+    snap.sidebar_collapsed = static_cast<int>(s.sidebarCollapsedMask);
+    snap.sidebar_hidden = static_cast<int>(s.sidebarHiddenMask);
+    snap.sidebar_order = app::NormalizeSidebarOrder(s.sidebarOrder);
+    snap.quick_access_hidden = static_cast<int>(s.sidebarQuickAccessHiddenMask);
+    snap.starred_expanded = s.starredExpanded;
+    snap.details_panel = s.showDetailsPanel;
+    snap.details_preview_only = s.detailsPreviewOnly;
+    snap.details_preview = s.detailsPreviewEnabled;
+    snap.details_panel_width = static_cast<int>(std::lround(s.detailsPanelWidth));
+    return snap;
+}
+
+// Writes session.json and app.json when they differ from the last write (or always
+// when forced). Both writes are atomic, so a kill mid-save keeps the old file.
+static void SaveWindowSession(AppState& s, HWND hwnd, bool force) {
+    if (!SessionWritable(s)) return;
+    auto json = app::SessionToJson(CaptureWindowSession(s, hwnd));
+    if (force || json != s.sessionSavedJson) {
+        if (app::WriteSessionJson(json)) s.sessionSavedJson = std::move(json);
+    }
+    auto prefs = s.appPrefs.ToJson();
+    if (force || prefs != s.prefsSavedJson) {
+        if (s.appPrefs.Save()) s.prefsSavedJson = std::move(prefs);
+    }
+}
+
+// Checked from the UI timer; skipped while a mouse drag (splitter, sidebar,
+// column, window move) is in progress so a half-finished resize is not stored.
+constexpr ULONGLONG kSessionAutosaveMs = 3000;
+static void TickSessionAutosave(AppState& s, HWND hwnd, ULONGLONG now) {
+    if (now < s.sessionAutosaveCheck) return;
+    s.sessionAutosaveCheck = now + kSessionAutosaveMs;
+    // A drag (splitter, sidebar, column, system move/size loop) holds mouse capture.
+    // GetKeyState is not used: its queued button state can stay "down" after a click
+    // whose button-up a drag-detect loop consumed, which silently stopped autosave.
+    if (GetCapture() != nullptr || s.sidebarResizing) return;
+    SaveWindowSession(s, hwnd, false);
+}
+
 // kTimerUi drives animations and light polling. Minimized or hidden to the
 // tray nothing animates, so poll gently instead of 60 wakeups per second.
 constexpr UINT kUiTimerVisibleMs = 16;
@@ -256,8 +322,14 @@ static void SyncUiTimerRate(HWND hwnd, bool visible) {
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
     if (s && s->notification_toast.HandleMessage(hwnd, msg, wParam, lParam)) return 0;
+    if (s && GroupWheelMessage(*s, hwnd, msg, wParam, lParam)) return 0;
 
     switch (msg) {
+    case WM_NCACTIVATE:
+        // lParam -1: update the activation state without repainting a
+        // non-client caption (the window has WS_CAPTION for DWM animations).
+        return DefWindowProcW(hwnd, msg, wParam, -1);
+
     case WM_NCCALCSIZE: {
         if (wParam && IsZoomed(hwnd)) {
             auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
@@ -315,7 +387,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         });
         if (s->isolatedTest) {
             s->places.persist = false;
-            s->appPrefs.persist = false;
+            s->appPrefs.persist = s->isolatedTestPersist; // only into PULSE_TEST_DATA_DIR
         }
         s->savedSearches.Load();
         SyncSavedSearchSidebar(*s);
@@ -365,6 +437,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->renderer.SetListStyle(s->appPrefs.list_smart_date, s->appPrefs.list_zebra_rows,
                                  s->appPrefs.list_size_bar, s->appPrefs.list_tag_name_color);
         app::SetFolderSortMode(app::FolderSortModeFromInt(s->appPrefs.folder_sort_mode));
+        ui::typography::SetTextRenderMode(static_cast<ui::typography::TextRenderMode>(s->appPrefs.text_render));
+        s->compositor.UpdateTextRenderingParams(nullptr);
         s->renderer.SetSidebarWidthDip(static_cast<float>(s->appPrefs.sidebar_width));
         s->renderer.SetVerticalTabs(s->appPrefs.vertical_tabs);
         s->renderer.SetSidebarCollapsed(s->appPrefs.sidebar_collapsed);
@@ -901,6 +975,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             DrainDirNotifies(*s);
             const ULONGLONG now = GetTickCount64();
             TickUpdates(*s, now);
+            TickSessionAutosave(*s, hwnd, now);
             if (s->renderer.TickDetailsPreview(now)) dirty = true;
             if (s->renderer.TickMotion(now)) {
                 // Paced by the frame pump when it runs; the timer only
@@ -994,6 +1069,14 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 dirty = true;
             }
             if (TickTrayDeck(*s)) dirty = true;
+            if (TickTabFlash(*s)) dirty = true;
+            if (SyncTagGroups(*s)) {
+                // Tags changed: a tag-grouped folder re-sorts into its new groups.
+                if (app::Tab* tab = ActiveTab(*s); tab && tab->EffectiveGroup() ==
+                        static_cast<int>(app::GroupBy::Tag))
+                    RefreshActiveTab(*s);
+                dirty = true;
+            }
             if (app::Tab* tab = ActiveTab(*s)) {
                 std::wstring kind, rest;
                 if (app::ParsePulsePath(tab->current_path, &kind, &rest) &&
@@ -1005,10 +1088,18 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             }
             // 150 ms: the icon rail relies on the hint to name each row, and the
             // old 400 ms delay read as "no tooltip at all".
+            // No hover tooltip under an open popup menu (it would sit beneath it).
             if (s->hoverRegion != 0 && s->tooltipText.empty() && s->hoverSince != 0 &&
+                !(s->menu && s->menu->IsOpen()) &&
                 GetTickCount64() - s->hoverSince >= 150) {
                 s->tooltipText = TooltipForHover(*s);
                 dirty = !s->tooltipText.empty() || dirty;
+            }
+            if (UpdateTeachTip(*s)) dirty = true;
+            // Staging tray: notice items moved or deleted outside Pulse.
+            if (!s->tray.batches().empty() && GetTickCount64() - s->trayProbeAt >= 2000) {
+                s->trayProbeAt = GetTickCount64();
+                if (s->tray.RefreshExists()) dirty = true;
             }
             QueueVisibleTagDiscovery(*s);
             UpdateOperationWindow(*s, false);
@@ -1067,7 +1158,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             hit.region == ui::HitTestResult::AddressSearch ||
             hit.region == ui::HitTestResult::AddressSearchScope ||
             hit.region == ui::HitTestResult::AddressSearchClear ||
-            hit.region == ui::HitTestResult::AddressSearchClose) {
+            hit.region == ui::HitTestResult::AddressSearchClose ||
+            hit.region == ui::HitTestResult::StatusHintAction ||
+            hit.region == ui::HitTestResult::SearchEmptyAction ||
+            hit.region == ui::HitTestResult::TeachPrimary ||
+            hit.region == ui::HitTestResult::TeachDismiss ||
+            hit.region == ui::HitTestResult::TeachNever ||
+            hit.region == ui::HitTestResult::FilterEmptyAction) {
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
         }
@@ -1130,6 +1227,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_MBUTTONUP:
         if (s && pulse::HandleTabMiddleClick(*s, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) return 0;
+        if (s && pulse::HandleFolderMiddleClick(*s, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) return 0;
         break;
 
     case WM_RBUTTONUP:
@@ -1523,7 +1621,12 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_QUICK_PREVIEW_OPEN:
-        if (s) OpenSelected(*s);
+        if (s) {
+            // wParam 1: an item inside the previewed folder (Quick Look list).
+            const std::wstring inner = wParam == 1 ? s->quickPreview.TakeOpenPath() : std::wstring();
+            if (!inner.empty()) OpenPath(*s, inner);
+            else OpenSelected(*s);
+        }
         return 0;
 
     case WM_QUICK_PREVIEW_COMMAND:
@@ -1603,6 +1706,18 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_QUERYENDSESSION:
+        // Shutdown/logoff ends the process without WM_DESTROY; store the layout now.
+        if (s) SaveWindowSession(*s, hwnd, true);
+        return TRUE;
+    case WM_ENDSESSION:
+        if (s && wParam && !s->shot.active && !s->menushot && !s->isolatedTest) {
+            SaveWindowSession(*s, hwnd, true);
+            s->places.Save();
+            s->ctxMenuPrefs.Save();
+        }
+        return 0;
+
     case WM_DESTROY: {
         if (s) {
             s->framePump.Stop();
@@ -1656,36 +1771,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             // Visual-regression runs must never overwrite the user's real
             // window, path, tray, or undo session.
             if (!s->shot.active && !s->menushot && !s->isolatedTest) {
-                app::SessionSnapshot snap;
-                WINDOWPLACEMENT wp{ sizeof(wp) };
-                if (GetWindowPlacement(hwnd, &wp)) {
-                    snap.window_rect = wp.rcNormalPosition;
-                    snap.maximized = (wp.showCmd == SW_SHOWMAXIMIZED);
-                }
-                snap.dark = s->darkMode;
-                app::Tab* tab = ActiveTab(*s);
-                if (tab) snap.active_path = tab->current_path;
-                RememberLayoutFocus(*s);
-                snap.active_layout_tab = static_cast<int>(s->window_tabs.active);
-                for (const auto& group : s->window_tabs.tab_groups)
-                    snap.tab_groups.push_back(
-                        {group.id, group.name, group.color_rgb, group.collapsed});
-                for (const auto& layout : s->window_tabs.items)
-                    snap.layout_tabs.push_back(app::CaptureLayoutTab(*layout));
-                snap.tray = s->tray;
-                snap.undo_json = s->ops.UndoToJson();
-                snap.sidebar_collapsed = static_cast<int>(s->sidebarCollapsedMask);
-                snap.sidebar_hidden = static_cast<int>(s->sidebarHiddenMask);
-                snap.sidebar_order = app::NormalizeSidebarOrder(s->sidebarOrder);
-                snap.quick_access_hidden = static_cast<int>(s->sidebarQuickAccessHiddenMask);
-                snap.starred_expanded = s->starredExpanded;
-                snap.details_panel = s->showDetailsPanel;
-                snap.details_preview_only = s->detailsPreviewOnly;
-                snap.details_preview = s->detailsPreviewEnabled;
-                snap.details_panel_width = static_cast<int>(std::lround(s->detailsPanelWidth));
                 // A hidden tag-only launch must not overwrite the real
-                // window/tab session; tags and places still save below.
-                if (!ShellTagHeadlessLaunch()) app::SaveSession(snap);
+                // window/tab session (SessionWritable); tags and places still save below.
+                SaveWindowSession(*s, hwnd, true);
                 s->places.Save();
                 s->ctxMenuPrefs.Save();
                 s->appPrefs.Save();
@@ -1937,6 +2025,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     state.safeMode = pulse::crash::SafeModeRequested();
     for (int i = 1; i < __argc; ++i)
         if (wcscmp(__wargv[i], L"--test-instance") == 0) state.isolatedTest = true;
+#ifdef PULSE_WITH_SELFTEST
+    // Persistence checks: a test instance may save, but only into its own data dir.
+    if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_DATA_DIR", nullptr, 0) > 0 &&
+        GetEnvironmentVariableW(L"PULSE_TEST_PERSIST", nullptr, 0) > 0)
+        state.isolatedTestPersist = true;
+#endif
     for (int i = 1; i < __argc; ++i)
         if (state.isolatedTest && wcscmp(__wargv[i], L"--content-index-observer") == 0) state.contentIndexObserver = true;
 
@@ -1954,7 +2048,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
     // Load previous session before parsing overrides.
     app::SessionSnapshot session;
-    if (!state.isolatedTest && app::LoadSession(session)) {
+    if ((!state.isolatedTest || state.isolatedTestPersist) && app::LoadSession(session)) {
         state.session_path = session.active_path;
         state.session_layout_tabs = std::move(session.layout_tabs);
         state.session_tab_groups = std::move(session.tab_groups);
@@ -2044,7 +2138,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         } else if (wcscmp(__wargv[i], L"--light") == 0) {
             state.shot.force_dark = false;
             state.themeOverride = ui::ThemeMode::Light;
-        } else if (wcscmp(__wargv[i], L"--test-instance") == 0 || wcscmp(__wargv[i], L"--content-index-observer") == 0) {
+        } else if (wcscmp(__wargv[i], L"--test-instance") == 0 || wcscmp(__wargv[i], L"--content-index-observer") == 0 ||
+                   wcscmp(__wargv[i], L"--hang-watch") == 0) {
             continue;
         } else if (wcscmp(__wargv[i], L"--fps") == 0) {
             state.forceStatusPerformance = true;
@@ -2116,14 +2211,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         WS_EX_NOREDIRECTIONBITMAP,
         wc.lpszClassName,
         L"Pulse",
-        // Pulse paints the entire title bar. WS_POPUP prevents Win32 from
-        // restoring an overlapped caption, while the remaining styles retain
+        // Pulse paints the entire title bar (WM_NCCALCSIZE makes the whole
+        // window client area). WS_CAPTION is what makes DWM play the system
+        // minimize / maximize / restore animations; WM_NCACTIVATE keeps the
+        // classic caption from being repainted. The remaining styles retain
         // resizing, the system menu, min/max and Snap Layout behavior.
-        WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+        WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
         x, y, w, h,
         nullptr, nullptr, hInstance, &state);
 
     if (!hwnd) return 1;
+    // Diagnostics: sample thread stacks while the UI thread is stalled.
+    for (int i = 1; i < __argc; ++i) {
+        if (wcscmp(__wargv[i], L"--hang-watch") != 0) continue;
+        wchar_t exe[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring log = exe;
+        log = log.substr(0, log.find_last_of(L'\\') + 1) + L"pulse_hang.log";
+        pulse::app::hang::Start(hwnd, log);
+        break;
+    }
     if (wc.hIcon) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(wc.hIcon));
     if (wc.hIconSm) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(wc.hIconSm));
 
@@ -2206,7 +2313,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (state.shot.active) {
         wchar_t settings_fixture[32]{};
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_EXPANDED",settings_fixture,ARRAYSIZE(settings_fixture)))
-            state.settingsExpanded=static_cast<unsigned>(wcstoul(settings_fixture,nullptr,10)) & 0x1f03u;
+            state.settingsExpanded=static_cast<unsigned>(wcstoul(settings_fixture,nullptr,10)) & 0x1f07u;
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_SCROLL",settings_fixture,ARRAYSIZE(settings_fixture))) {
             auto vm=BuildVm(state,false);
             state.settings.SetScroll(static_cast<float>(_wtof(settings_fixture))*state.scale,
@@ -2302,6 +2409,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    pulse::app::hang::Stop();
     OleUninitialize();
     return (int)msg.wParam;
 }

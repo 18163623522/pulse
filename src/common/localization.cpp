@@ -10,11 +10,17 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_ARC_FAM_OTHER;
+constexpr UINT kLastString = IDS_SORT_HINT_PATH;
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
               static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
               static_cast<UINT>(StringId::FolderSortMixed) <= kLastString &&
-              static_cast<UINT>(StringId::WallpaperBlurStrong) <= kLastString);
+              static_cast<UINT>(StringId::WallpaperBlurStrong) <= kLastString &&
+              static_cast<UINT>(StringId::TextRenderSmooth) <= kLastString &&
+              static_cast<UINT>(StringId::TipTrayReleaseMove) <= kLastString &&
+              static_cast<UINT>(StringId::CompareDiffers) <= kLastString &&
+              static_cast<UINT>(StringId::CompareChipDiffers) <= kLastString &&
+              static_cast<UINT>(StringId::AdvSumKeywordNeeded) <= kLastString &&
+              static_cast<UINT>(StringId::HintsResetDone) <= kLastString);
 
 HINSTANCE g_module = nullptr;
 std::atomic<Language> g_preference{Language::System};

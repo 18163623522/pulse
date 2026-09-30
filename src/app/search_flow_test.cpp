@@ -256,6 +256,13 @@ int RunSearchExitTest(AppState& s, const wchar_t* output) {
     const auto bounds = D2D1::RectF(0, 0, static_cast<float>(s.compositor.Width()), static_cast<float>(s.compositor.Height()));
     const int x = static_cast<int>((layout.close.left + layout.close.right) * 0.5f);
     const int y = static_cast<int>((layout.close.top + layout.close.bottom) * 0.5f);
+    // One trailing button: it clears a typed query first, then exits search.
+    check(s.renderer.HitTest(vm, bounds, static_cast<float>(x), static_cast<float>(y)).region == ui::HitTestResult::AddressSearchClear,
+        "trailing button clears a typed query");
+    HandleLButtonDown(&s, s.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+    HandleLButtonUp(&s, s.hwnd, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+    check(s.addressSearching && GetWindowTextLengthW(s.hwndAddressEdit) == 0, "first click clears the query and keeps editing");
+    vm = BuildVm(s, false);
     check(s.renderer.HitTest(vm, bounds, static_cast<float>(x), static_cast<float>(y)).region == ui::HitTestResult::AddressSearchClose,
         "exit button hit target matches visible search toolbar");
     HandleLButtonDown(&s, s.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
@@ -646,7 +653,8 @@ int RunToolbarLayoutTest(AppState& s, const wchar_t* output) {
             check(bar.left == sidebar.right && sidebar.top < bar.bottom && address.left > sidebar.right,
                 "toolbar starts after full-height sidebar");
             const auto toolbar = ui::MakeToolbarLayout(w,scale,s.renderer.TitleBarHeight(),s.renderer.Margin(),
-                s.renderer.NewCommandRect(w).right-s.renderer.NewCommandRect(w).left,sidebar.right);
+                s.renderer.NewCommandRect(w).right-s.renderer.NewCommandRect(w).left,sidebar.right,
+                0.0f,s.renderer.SearchBarMinWidth());
             const ui::HitTestResult::Region navigation[]={ui::HitTestResult::NavBack,ui::HitTestResult::NavForward,
                 ui::HitTestResult::NavUp,ui::HitTestResult::NavRefresh};
             bool navigation_ok=true;
@@ -660,7 +668,7 @@ int RunToolbarLayoutTest(AppState& s, const wchar_t* output) {
                   region(controls.input) == ui::HitTestResult::AddressSearchInput,
                 "address and search input have independent hit targets");
             check(region(controls.name) == ui::HitTestResult::AddressSearchMode &&
-                  region(controls.content) == ui::HitTestResult::AddressSearchContent &&
+                  controls.content.right <= controls.content.left &&
                   region(controls.close) == ui::HitTestResult::AddressSearchClose,
                 "search controls remain reachable across window sizes");
             const auto create = s.renderer.NewCommandRect(w);
@@ -774,8 +782,18 @@ int RunSearchFlowTest(AppState& s, const wchar_t* output) {
     auto hit = [&](D2D1_RECT_F rect) {
         return s.renderer.HitTest(vm, window, (rect.left + rect.right) * 0.5f, (rect.top + rect.bottom) * 0.5f).region;
     };
-    check(hit(layout.name) == ui::HitTestResult::AddressSearchMode, "name segment hit target");
-    check(hit(layout.content) == ui::HitTestResult::AddressSearchContent, "content segment hit target");
+    check(hit(layout.name) == ui::HitTestResult::AddressSearchMode, "mode chip hit target");
+    check(layout.content.right <= layout.content.left, "mode is one toggle chip, not two segments");
+    {
+        const bool before = s.addressSearchContent;
+        const int mx = static_cast<int>((layout.name.left + layout.name.right) * 0.5f);
+        const int my = static_cast<int>((layout.name.top + layout.name.bottom) * 0.5f);
+        HandleLButtonDown(&s, s.hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(mx, my));
+        HandleLButtonUp(&s, s.hwnd, WM_LBUTTONUP, 0, MAKELPARAM(mx, my));
+        check(s.addressSearchContent != before, "mode chip toggles name/content");
+        SwitchAddressSearchMode(s, before);
+        vm = BuildVm(s, false);
+    }
     check(hit(layout.options) == ui::HitTestResult::AddressSearchOptions, "separate options hit target");
     log << "failures=" << failures << '\n';
     return failures ? 1 : 0;

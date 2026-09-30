@@ -67,34 +67,72 @@ void MainRenderer::DrawAddressSearchChrome(const WindowViewModel& vm, float w, c
             if (brush.get()) compositor_->Dc()->FillRoundedRectangle(
                 D2D1::RoundedRect(layout.scope, 4.0f * scale_, 4.0f * scale_), brush.get());
         }
-        const auto label = l10n::Get(vm.address_search_current
-            ? l10n::StringId::SearchScopeHere : l10n::StringId::SearchScopeAll);
-        if (layout.scope.right > layout.scope.left)
-            button(layout.scope, layout.scope_label ? label : L"", L"\xE721",
-                   HitTestResult::AddressSearchScope, layout.scope_label);
-        painter_.DrawSegmentedTrack(layout.mode);
-        auto segment = [&](D2D1_RECT_F bounds, bool content) {
-            fluent::ButtonSpec spec;
-            spec.bounds = D2D1::RectF(bounds.left + scale_, bounds.top + scale_, bounds.right - scale_, bounds.bottom - scale_);
-            spec.text = layout.mode_label ? l10n::Get(content ? l10n::StringId::SearchModeContent : l10n::StringId::SearchModeName) : L"";
-            spec.glyph = layout.mode_label ? L"" : content ? L"\xE8A5" : L"\xE8B7";
-            spec.icon_only = !layout.mode_label;
-            spec.skip_glyph = !layout.mode_label;
-            spec.kind = fluent::ButtonKind::TransparentToggle;
-            spec.state.checked = vm.address_search_content == content;
-            spec.state.hovered = IsHovered(vm, content ? HitTestResult::AddressSearchContent : HitTestResult::AddressSearchMode);
-            painter_.DrawButton(spec);
-            if (!layout.mode_label) DrawIconText(bounds.left, bounds.top,
-                bounds.right-bounds.left, bounds.bottom-bounds.top, content ? L"\xE8A5" : L"\xE8B7", L"",
-                theme.text, 0.8f);
+        auto* dc = compositor_->Dc();
+        auto chip = [&](D2D1_RECT_F bounds, bool accent, HitTestResult::Region region) {
+            auto fill = accent ? theme.accent : theme.text;
+            fill.a *= accent ? 0.18f : 0.07f;
+            if (IsHovered(vm, region)) fill.a = std::min(1.0f, fill.a + 0.06f);
+            ComPtr<ID2D1SolidColorBrush> brush;
+            dc->CreateSolidColorBrush(fill, &brush);
+            if (brush.get()) dc->FillRoundedRectangle(D2D1::RoundedRect(bounds, 4.0f * scale_, 4.0f * scale_), brush.get());
         };
-        segment(layout.name, false);
-        segment(layout.content, true);
-        button(layout.options, L"", L"\xE9E9", HitTestResult::AddressSearchOptions);
-        if (vm.address_search_has_text && layout.clear.right > layout.clear.left)
-            button(layout.clear, L"", L"\xE711", HitTestResult::AddressSearchClear);
-        if (layout.close.right > layout.close.left)
-            button(layout.close, L"", L"\xE72B", HitTestResult::AddressSearchClose);
+        // Scope chip: where the search runs, labelled with the folder name.
+        if (layout.scope.right > layout.scope.left) {
+            const auto& scope = layout.scope;
+            const float h = scope.bottom - scope.top;
+            const wchar_t* glyph = vm.address_search_current ? L"\xE8B7" : L"\xE774";
+            chip(scope, vm.address_search_current, HitTestResult::AddressSearchScope);
+            if (layout.scope_label) {
+                DrawIconText(scope.left + 3.0f * scale_, scope.top, 18.0f * scale_, h, glyph, L"",
+                             vm.address_search_current ? theme.accent : theme.text_secondary, 0.7f);
+                DrawIconText(scope.right - 16.0f * scale_, scope.top, 14.0f * scale_, h, L"\xE70D", L"v",
+                             theme.text_secondary, 0.45f);
+                const auto label = vm.address_search_scope_label.empty()
+                    ? l10n::Get(vm.address_search_current ? l10n::StringId::SearchScopeHere : l10n::StringId::SearchScopeAll)
+                    : vm.address_search_scope_label;
+                MakeBrush(dc, theme.text, brText_);
+                const float text_left = scope.left + 23.0f * scale_;
+                DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->SmallFormat(), brText_.get(),
+                    label, text_left, scope.top, std::max(0.0f, scope.right - 18.0f * scale_ - text_left), h);
+            } else {
+                DrawIconText(scope.left, scope.top, scope.right - scope.left, h, glyph, L"",
+                             vm.address_search_current ? theme.accent : theme.text_secondary, 0.7f);
+            }
+        }
+        // Mode chip: one click toggles between name and content search.
+        if (layout.mode.right > layout.mode.left) {
+            const auto& mode = layout.mode;
+            const float h = mode.bottom - mode.top;
+            // Content mode is lit so it never looks like the default name search.
+            chip(mode, vm.address_search_content, HitTestResult::AddressSearchMode);
+            if (layout.mode_label) {
+                const auto& text = l10n::Get(vm.address_search_content
+                    ? l10n::StringId::SearchModeContent : l10n::StringId::SearchModeName);
+                const float text_w = MeasureTextWidth(compositor_->DwriteFactory(), compositor_->SmallFormat(), text);
+                const float icon_w = 14.0f * scale_;
+                const float gap = 3.0f * scale_;
+                const float x0 = std::max(mode.left + 4.0f * scale_,
+                                          (mode.left + mode.right - text_w - icon_w - gap) * 0.5f);
+                DrawIconText(x0, mode.top, icon_w, h, vm.address_search_content ? L"\xE8A5" : L"\xE8D2", L"",
+                             vm.address_search_content ? theme.accent : theme.text_secondary, 0.6f);
+                MakeBrush(dc, theme.text, brText_);
+                DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->SmallFormat(), brText_.get(),
+                    text, x0 + icon_w + gap, mode.top, std::max(0.0f, mode.right - (x0 + icon_w + gap)), h);
+            } else {
+                DrawIconText(mode.left, mode.top, mode.right - mode.left, h,
+                             vm.address_search_content ? L"\xE8A5" : L"\xE8D2", L"",
+                             vm.address_search_content ? theme.accent : theme.text, 0.8f);
+            }
+        }
+        if (layout.options.right > layout.options.left)
+            button(layout.options, L"", L"\xE9E9", HitTestResult::AddressSearchOptions);
+        // A single trailing button: clears the draft while editing, otherwise exits search.
+        if (layout.close.right > layout.close.left) {
+            const bool clears = vm.address_editing && vm.address_search_has_text;
+            button(layout.close, L"", L"\xE711",
+                   clears ? HitTestResult::AddressSearchClear : HitTestResult::AddressSearchClose);
+        }
+
     } else {
         fluent::TextFieldSpec search;
         search.bounds = field;
