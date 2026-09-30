@@ -140,6 +140,9 @@ bool RunAddressEditorTest() {
     auto state = std::make_unique<AppState>();
     state->isolatedTest = true;
     state->places.persist = state->appPrefs.persist = state->searchHistory.persist = false;
+    // The outside clicks below land on the status bar. Its context hint can put an
+    // action button there (Shortcuts opens a modal window), so keep hints off here.
+    state->appPrefs.show_hints = false;
     wchar_t option[8]{};
     const bool capture = GetEnvironmentVariableW(L"PULSE_ADDRESS_EDITOR_CAPTURE", option, ARRAYSIZE(option)) > 0;
     if (GetEnvironmentVariableW(L"PULSE_ADDRESS_EDITOR_DARK", option, ARRAYSIZE(option)))
