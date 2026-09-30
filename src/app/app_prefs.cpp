@@ -57,6 +57,7 @@ void AppPrefs::ResetToDefaults() {
     folder_sort_mode = 0;
     text_render = 0;
     folder_views.Clear();
+    folder_sorts.Clear();
     folder_groups.Clear();
     search_pinyin = true;
     global_search_enabled = false;
@@ -211,6 +212,7 @@ std::wstring AppPrefs::ToJson() const {
     }
     out += L"\"";
     folder_views.AppendJson(out);
+    folder_sorts.AppendJson(out);
     folder_groups.AppendJson(out);
     out += L"\n}\n";
     return out;
@@ -219,6 +221,7 @@ std::wstring AppPrefs::ToJson() const {
 bool AppPrefs::FromJson(const std::wstring& json) {
     if (json.empty()) return false;
     folder_views.ReadJson(json);
+    folder_sorts.ReadJson(json);
     folder_groups.ReadJson(json);
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);

@@ -1942,8 +1942,11 @@ void TestMenuModel() {
     options.sort_direction = ui::SortDirection::Desc;
     options.details_panel = true;
     AppendBackgroundViewCommands(bg, options);
-    Check(bg[0].children.size() == 9 && bg[0].children[1].radio &&
-          bg[0].children.back().checked, L"menu: background reflects view and details pane");
+    // Real folders end the view submenu with "apply to all folders".
+    Check(bg[0].children.size() == 10 && bg[0].children[1].radio &&
+          bg[0].children[8].command == CmdDetailsPanel && bg[0].children[8].checked &&
+          bg[0].children.back().command == CmdApplyViewToAllFolders,
+          L"menu: background reflects view and details pane");
     const auto& sort = bg[1].children;
     Check(sort.size() == 9 && sort[3].command == CmdSortSize && sort[3].radio &&
           !sort[4].radio && sort[5].radio && sort[5].separator_after &&
@@ -2793,6 +2796,137 @@ void TestFolderViews() {
         NewTab(*state, parent);
         Check(ActiveTab(*state)->view_mode == ViewMode::LargeIcons,
               L"folder views: opening a new tab restores saved mode");
+    }
+    state->watches.Stop();
+    DestroyWindow(hwnd);
+    state->hwnd = nullptr;
+}
+
+void TestFolderSorts() {
+    using ui::SortColumn;
+    using ui::SortDirection;
+    using ui::ViewMode;
+    const FolderSort by_name{};
+    const FolderSort newest{ SortColumn::Mtime, SortDirection::Desc };
+    const FolderSort biggest{ SortColumn::Size, SortDirection::Desc };
+    AppPrefs prefs;
+    prefs.persist = false;
+    Check(prefs.folder_sorts.Default() == by_name && !prefs.folder_sorts.Find(L"C:\\A"),
+          L"folder sorts: fresh preferences default to name ascending");
+    prefs.folder_sorts.Set(L"C:\\A", by_name);
+    prefs.folder_sorts.Set(L"C:\\B", newest);
+    Check(prefs.folder_sorts.Find(L"C:\\A") == by_name &&
+          prefs.folder_sorts.Find(L"C:\\B") == newest &&
+          !prefs.folder_sorts.Find(L"C:\\B\\child"),
+          L"folder sorts: folders keep independent choices and children do not inherit");
+    Check(prefs.folder_sorts.Find(L"\\\\?\\c:\\b\\") == newest &&
+          prefs.folder_sorts.Find(L"C:/B/") == newest,
+          L"folder sorts: case, separators, trailing slash and extended prefix agree");
+    Check(!prefs.folder_sorts.Set(L"pulse:search:x", newest) &&
+          !prefs.folder_sorts.Set(L"", newest) &&
+          !prefs.folder_sorts.Set(L"relative", newest) &&
+          !prefs.folder_sorts.Set(L"C:\\Bad", { static_cast<SortColumn>(9), SortDirection::Asc }),
+          L"folder sorts: virtual, nonabsolute and invalid values are rejected");
+    const std::wstring unc = L"\\\\server\\share\\照片";
+    prefs.folder_sorts.Set(unc, biggest);
+    AppPrefs reloaded;
+    reloaded.persist = false;
+    reloaded.FromJson(prefs.ToJson());
+    Check(reloaded.folder_sorts.Find(L"C:\\B") == newest &&
+          reloaded.folder_sorts.Find(unc) == biggest &&
+          reloaded.folder_sorts.Find(L"C:\\A") == by_name,
+          L"folder sorts: preferences round trip including UNC and Unicode");
+    bool every_survives = true;
+    for (int c = 0; c < 5; ++c) {
+        for (int d = 0; d < 2; ++d) {
+            const FolderSort each{ static_cast<SortColumn>(c), static_cast<SortDirection>(d) };
+            prefs.folder_sorts.Set(L"C:\\Every", each);
+            reloaded.FromJson(prefs.ToJson());
+            every_survives = every_survives && reloaded.folder_sorts.Find(L"C:\\Every") == each;
+        }
+    }
+    Check(every_survives, L"folder sorts: every column and direction survives reload");
+    prefs.folder_views.Set(L"C:\\B", ViewMode::LargeIcons);
+    prefs.folder_views.ApplyToAll(ViewMode::List);
+    prefs.folder_sorts.ApplyToAll(biggest);
+    Check(!prefs.folder_sorts.Find(L"C:\\B") && !prefs.folder_views.Find(L"C:\\B") &&
+          prefs.folder_sorts.Default() == biggest && prefs.folder_views.Default() == ViewMode::List,
+          L"folder sorts: apply to all replaces defaults and forgets per-folder choices");
+    reloaded.FromJson(prefs.ToJson());
+    Check(reloaded.folder_sorts.Default() == biggest &&
+          reloaded.folder_views.Default() == ViewMode::List,
+          L"folder sorts: applied defaults survive reload");
+    reloaded.FromJson(L"{}");
+    Check(reloaded.folder_sorts.Default() == by_name &&
+          reloaded.folder_views.Default() == ViewMode::Details && !reloaded.folder_sorts.Find(unc),
+          L"folder sorts: old preferences load with name order and details view");
+    prefs.ResetToDefaults();
+    Check(prefs.folder_sorts.Default() == by_name &&
+          prefs.folder_views.Default() == ViewMode::Details,
+          L"folder sorts: reset restores defaults");
+
+    auto state = std::make_unique<AppState>();
+    state->places.persist = false;
+    state->appPrefs.persist = false;
+    state->isolatedTest = true;
+    HWND hwnd = CreateWindowExW(0, L"STATIC", L"", WS_POPUP,
+        0, 0, 1000, 700, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(hwnd != nullptr, L"folder sorts: isolated owner created");
+    if (!hwnd) return;
+    state->hwnd = hwnd;
+    const bool ready = state->compositor.Init(hwnd);
+    Check(ready, L"folder sorts: renderer initialized");
+    if (ready) {
+        state->renderer.SetCompositor(&state->compositor);
+        const auto a = WorkspacePath(L"bench_data/folder-sort-fixture/a");
+        const auto b = WorkspacePath(L"bench_data/folder-sort-fixture/b");
+        const auto c = WorkspacePath(L"bench_data/folder-sort-fixture/c");
+        const auto sort_of = [](const app::Tab* t) {
+            return t ? FolderSort{ t->sort_column, t->sort_direction } : FolderSort{};
+        };
+        state->window_tabs.NewTab(a);
+        state->pane = state->window_tabs.Active()->panes.front().get();
+        auto* tab = state->pane->ActiveTab();
+        StartLoadingPath(*state, *tab, a);
+        Check(sort_of(tab) == by_name, L"folder sorts: unsaved folder opens by name");
+        tab->NavigateTo(b);
+        StartLoadingPath(*state, *tab, b);
+        SetSort(*state, SortColumn::Mtime, SortDirection::Desc);
+        Check(state->appPrefs.folder_sorts.Find(b) == newest, L"folder sorts: choosing an order saves it");
+        tab->NavigateTo(a);
+        StartLoadingPath(*state, *tab, a);
+        Check(sort_of(tab) == by_name, L"folder sorts: leaving a date-sorted folder does not carry its order");
+        tab->NavigateTo(b);
+        StartLoadingPath(*state, *tab, b);
+        Check(sort_of(tab) == newest, L"folder sorts: reopening a folder restores its saved order (#26)");
+        StartLoadingPath(*state, *tab, tab->GoBack());
+        Check(sort_of(tab) == by_name, L"folder sorts: back restores the previous folder's order");
+        StartLoadingPath(*state, *tab, tab->GoForward());
+        Check(sort_of(tab) == newest, L"folder sorts: forward restores the saved order");
+        tab->search_content_active = true;
+        SetSort(*state, SortColumn::Size, SortDirection::Asc);
+        tab->search_content_active = false;
+        tab->content_sort_override = false;
+        Check(state->appPrefs.folder_sorts.Find(b) == newest,
+              L"folder sorts: sorting search results does not change the folder's order");
+        NewTab(*state, b);
+        Check(sort_of(ActiveTab(*state)) == newest, L"folder sorts: a new tab restores the saved order");
+
+        auto* active = ActiveTab(*state);
+        SetViewMode(*state, ViewMode::Tiles);
+        Check(ApplyViewToAllFolders(*state, false), L"folder sorts: apply to all runs on a real folder");
+        active->NavigateTo(c);
+        StartLoadingPath(*state, *active, c);
+        Check(sort_of(active) == newest && active->view_mode == ViewMode::Tiles,
+              L"folder sorts: apply to all makes unsaved folders match (#31)");
+        active->NavigateTo(a);
+        StartLoadingPath(*state, *active, a);
+        Check(sort_of(active) == newest && active->view_mode == ViewMode::Tiles,
+              L"folder sorts: apply to all overrides earlier per-folder choices");
+        const std::wstring real_path = active->current_path;
+        active->current_path = L"pulse:recent";
+        Check(!ApplyViewToAllFolders(*state, false), L"folder sorts: apply to all ignores virtual views");
+        active->current_path = real_path;
     }
     state->watches.Stop();
     DestroyWindow(hwnd);
@@ -4546,6 +4680,10 @@ void TestViewLayouts() {
     Check(menu.size() == 9 && menu[5].radio && !menu[0].radio &&
           menu[8].command == CmdDetailsPanel,
           L"view: menu has eight view choices plus details panel");
+    const auto folder_menu = BuildViewMenu(ui::ViewMode::Details, false, true);
+    Check(folder_menu.size() == 10 && folder_menu.back().command == CmdApplyViewToAllFolders &&
+          folder_menu[8].separator_after,
+          L"view: real folders offer apply view and sort to all folders");
     Check(menu[0].glyph_scale > menu[1].glyph_scale &&
           menu[1].glyph_scale > menu[2].glyph_scale,
           L"view: icon menu communicates extra-large, large, and medium scale");
@@ -5735,6 +5873,7 @@ int RunSelfTest1B2() {
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"folder-views") == 0) {
         TestFolderViews();
+        TestFolderSorts();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -5883,6 +6022,7 @@ int RunSelfTest1B2() {
     TestCtrlDragSelection();
     TestDirWatch();
     TestFolderViews();
+    TestFolderSorts();
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();

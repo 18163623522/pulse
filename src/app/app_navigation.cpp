@@ -864,7 +864,7 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     if (!s.shot.active) {
         const auto saved = s.appPrefs.folder_views.Find(normalized);
         const auto mode = saved.value_or(reason == PathLoadReason::RestoreSession
-            ? tab.view_mode : ui::ViewMode::Details);
+            ? tab.view_mode : s.appPrefs.folder_views.Default());
         // Migrate older sessions/workspaces so returning later keeps their mode.
         if (!saved && reason == PathLoadReason::RestoreSession)
             s.appPrefs.folder_views.Set(normalized, mode);
@@ -873,6 +873,12 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
             ++tab.view_generation;
         }
         tab.scroll_x = 0.0f;
+        // Sort order is remembered per folder (#26); sessions never stored it,
+        // so there is nothing to migrate. Set before the load request below.
+        const app::FolderSort sort = s.appPrefs.folder_sorts.Find(normalized)
+            .value_or(s.appPrefs.folder_sorts.Default());
+        tab.sort_column = sort.column;
+        tab.sort_direction = sort.direction;
     }
     tab.net_readonly = false;
     tab.cache_unix = 0;
@@ -1709,6 +1715,11 @@ void SetSort(AppState& s, ui::SortColumn col, ui::SortDirection direction) {
     if (!was_relevance && tab->sort_column == col && tab->sort_direction == direction) return;
     tab->sort_column = col;
     tab->sort_direction = direction;
+    // Real folders remember the choice; virtual views are rejected by the key
+    // and search result orders never become a folder preference.
+    if (!tab->content_results && !tab->search_content_active &&
+        s.appPrefs.folder_sorts.Set(tab->current_path, { col, direction }))
+        s.appPrefs.Save();
     if(tab->content_results) {
         if(tab->selected_index>=0 && static_cast<size_t>(tab->selected_index)<tab->EntryCount())
             tab->search_preserve_selection=tab->EntryAt(static_cast<size_t>(tab->selected_index)).full_path;

@@ -2589,6 +2589,10 @@ BEGIN
   IDS_SORT_HINT_TYPE "按文件种类，如 PDF、图片"
   IDS_SORT_HINT_SIZE "按文件占用空间的大小"
   IDS_SORT_HINT_PATH "按所在的文件夹"
+  IDS_APPLY_VIEW_ALL_FOLDERS "将视图和排序应用到所有文件夹…"
+  IDS_APPLY_VIEW_ALL_TITLE "应用到所有文件夹"
+  IDS_APPLY_VIEW_ALL_MESSAGE "所有文件夹都将使用此文件夹当前的视图和排序方式。之前为各个文件夹单独保存的视图和排序会被清除，分组方式不受影响。"
+  IDS_APPLY_VIEW_ALL_CONFIRM "应用"
 END
 
 LANGUAGE 0x09, 0x01
@@ -2763,4 +2767,8 @@ BEGIN
   IDS_SORT_HINT_TYPE "By kind of file, like PDF"
   IDS_SORT_HINT_SIZE "By how big the file is"
   IDS_SORT_HINT_PATH "By the folder it is in"
+  IDS_APPLY_VIEW_ALL_FOLDERS "Apply view and sort to all folders…"
+  IDS_APPLY_VIEW_ALL_TITLE "Apply to all folders"
+  IDS_APPLY_VIEW_ALL_MESSAGE "All folders will use this folder's current view and sort order. View and sort choices saved for individual folders will be cleared. Grouping is not changed."
+  IDS_APPLY_VIEW_ALL_CONFIRM "Apply"
 END

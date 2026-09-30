@@ -678,6 +678,9 @@ void DispatchMenuCommand(AppState& s, int cmd) {
         return;
     }
     switch (cmd) {
+    case app::CmdApplyViewToAllFolders:
+        ApplyViewToAllFolders(s);
+        break;
     case app::CmdRefresh:
         if (const auto* tab = ActiveTab(s)) {
             s.store.MarkDirty(tab->current_path);
@@ -1562,6 +1565,26 @@ void ShowCuratedItemMenu(AppState& s, const std::wstring& path,
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
+bool ApplyViewToAllFolders(AppState& s, bool confirm) {
+    const app::Tab* tab = ActiveTab(s);
+    if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return false;
+    if (confirm) {
+        ui::ConfirmDialogSpec spec;
+        spec.title = l10n::Get(l10n::StringId::ApplyViewAllTitle);
+        spec.message = l10n::Get(l10n::StringId::ApplyViewAllMessage);
+        spec.confirm_text = l10n::Get(l10n::StringId::ApplyViewAllConfirm);
+        spec.cancel_text = l10n::Get(l10n::StringId::Cancel);
+        if (!ui::ShowConfirmDialog(s.hwnd, spec, s.darkMode, s.accentColor)) return false;
+        tab = ActiveTab(s);  // the modal dialog pumps messages
+        if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return false;
+    }
+    // Grouping keeps its own per-folder memory (Downloads defaults to Date).
+    s.appPrefs.folder_views.ApplyToAll(tab->view_mode);
+    s.appPrefs.folder_sorts.ApplyToAll({ tab->sort_column, tab->sort_direction });
+    s.appPrefs.Save();
+    return true;
+}
+
 // Drop groups with no remaining members (after mass closes / leave operations).
 void SetViewMode(AppState& s, ui::ViewMode mode) {
     app::Tab* tab = ActiveTab(s);
@@ -1599,7 +1622,8 @@ void ShowViewDropdown(AppState& s, int pane_index) {
     const D2D1_RECT_F button = s.renderer.PaneViewButtonRect(paneRect, filterExpand);
     POINT anchor{ static_cast<LONG>(button.left), static_cast<LONG>(button.bottom) };
     ClientToScreen(s.hwnd, &anchor);
-    auto items = app::BuildViewMenu(tab->view_mode, s.showDetailsPanel);
+    auto items = app::BuildViewMenu(tab->view_mode, s.showDetailsPanel,
+        !tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path));
     items.back().separator_after=true;
     items.push_back(app::BuildShortcutHints());
     const int cmd = s.menu->TrackPopup(anchor, items);
