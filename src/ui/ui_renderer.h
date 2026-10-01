@@ -555,6 +555,9 @@ struct WindowViewModel {
     std::vector<SplitterView> splitters;
     std::vector<SidebarGroup> sidebar;
     float sidebar_scroll = 0.0f;
+    // Sidebar scrollbar fade (#44): 0 hidden .. 1 shown; expand 0 thin thumb .. 1 thumb + track.
+    float sidebar_scrollbar_opacity = 1.0f;
+    float sidebar_scrollbar_expand = 1.0f;
     TrayDeckView tray_deck;
     bool details_visible = false;   // right details panel toggle (view menu)
     int layout_preset = 0;          // app::LayoutPreset of the active tab (toolbar split icon)

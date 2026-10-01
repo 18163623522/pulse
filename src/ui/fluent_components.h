@@ -124,6 +124,7 @@ struct ScrollbarSpec {
     float viewport_extent = 0.0f;
     float content_extent = 0.0f;
     float expand_progress = 0.0f;
+    float opacity = 1.0f;  // fades the whole bar; high contrast always draws it opaque
     bool enabled = true;
 };
 

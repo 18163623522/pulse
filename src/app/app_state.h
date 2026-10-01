@@ -31,6 +31,7 @@
 #include "saved_search.h"
 #include "search_history.h"
 #include "settings_controller.h"
+#include "sidebar_scrollbar_fade.h"
 #include "single_instance_coordinator.h"
 #include "tray_controller.h"
 #include "global_search_hotkey.h"
@@ -315,6 +316,10 @@ struct AppState {
     float scrollbarGrabOffset = 0.0f;
     float scrollbarDragStartScroll = 0.0f;
     float scrollbarHoverWidth = 0.0f;
+    // Sidebar scrollbar shows while scrolling or hovered, then fades (#44).
+    bool sidebarScrollbarHot = false;
+    float sidebarScrollSeen = 0.0f;
+    app::ScrollbarFade sidebarScrollbarFade;
 
     bool splitterDragging = false;
     int splitterDragIndex = -1;

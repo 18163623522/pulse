@@ -29,6 +29,7 @@
 #include "entry_sort.h"
 #include "snapshot_patch.h"
 #include "entry_order_hold.h"
+#include "sidebar_scrollbar_fade.h"
 #include "session.h"
 #include "app_prefs.h"
 #include "startup_location.h"
@@ -3659,6 +3660,51 @@ void TestEntryOrderHold() {
           L"order hold: renames the listing already reflects are dropped");
 }
 
+// #44: the sidebar scrollbar appears while scrolling or hovered, then fades.
+void TestSidebarScrollbarFade() {
+    const auto close_to = [](float a, float b) { return std::abs(a - b) < 0.001f; };
+    ScrollbarFade fade;
+    Check(!fade.Tick(1000) && fade.Opacity() == 0.0f && fade.Expand() == 0.0f &&
+              !fade.Moving(1000),
+          L"sidebar scrollbar: hidden and idle until something happens");
+    fade.Reveal(1000);
+    Check(fade.Moving(1000) && fade.Tick(1050) && close_to(fade.Opacity(), 0.5f),
+          L"sidebar scrollbar: scrolling fades it in");
+    fade.Tick(1100);
+    Check(close_to(fade.Opacity(), 1.0f) && fade.Expand() == 0.0f,
+          L"sidebar scrollbar: scrolling shows the thin thumb, not the track");
+    Check(!fade.Tick(1900) && close_to(fade.Opacity(), 1.0f) && !fade.Moving(1500) &&
+              fade.Moving(1900),
+          L"sidebar scrollbar: holds for a moment after the last scroll");
+    fade.Tick(2000);
+    Check(close_to(fade.Opacity(), 0.75f), L"sidebar scrollbar: then fades out");
+    fade.Tick(2400);
+    Check(fade.Opacity() == 0.0f && !fade.Moving(2400),
+          L"sidebar scrollbar: fully hidden after the fade");
+    fade.Reveal(2500);
+    fade.Tick(2550);
+    fade.Reveal(3200);  // scrolling again restarts the hold
+    fade.Tick(3500);
+    Check(close_to(fade.Opacity(), 1.0f), L"sidebar scrollbar: each scroll restarts the hold");
+
+    fade.SetHot(true, 5000);
+    fade.Tick(5000);
+    fade.Tick(5200);
+    Check(close_to(fade.Opacity(), 1.0f) && close_to(fade.Expand(), 1.0f) && !fade.Moving(5200),
+          L"sidebar scrollbar: hovering shows the full thumb and track");
+    fade.Tick(9000);
+    Check(close_to(fade.Opacity(), 1.0f) && close_to(fade.Expand(), 1.0f),
+          L"sidebar scrollbar: stays while the pointer rests on it");
+    fade.SetHot(false, 9000);
+    fade.Tick(9060);
+    Check(close_to(fade.Opacity(), 1.0f) && close_to(fade.Expand(), 0.5f),
+          L"sidebar scrollbar: leaving collapses the track first");
+    fade.Tick(10000);
+    fade.Tick(10400);
+    Check(fade.Opacity() == 0.0f && fade.Expand() == 0.0f,
+          L"sidebar scrollbar: and fades out after the hold");
+}
+
 void TestSnapshotStorePutKeepsWorkerGeneration() {
     fs::SnapshotStore store(8);
     auto first = std::make_shared<std::vector<fs::DirEntry>>();
@@ -6709,6 +6755,7 @@ int RunSelfTest1B2() {
     TestSnapshotPatchBatch();
     TestSnapshotPatchHoldsRows();
     TestEntryOrderHold();
+    TestSidebarScrollbarFade();
     TestSnapshotStorePutKeepsWorkerGeneration();
     TestDataObject();
     TestClipboardText();
