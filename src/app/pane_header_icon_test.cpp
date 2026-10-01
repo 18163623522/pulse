@@ -108,6 +108,17 @@ struct PaneHeaderIconTest {
                 ((chinese ? std::wstring(L"shortcuts-zh") : std::wstring(L"shortcuts-en"))+(dark ? L"-dark.png" : L"-light.png"));
             check(drawn && compositor.SaveSnapshot(path.c_str()),"shortcut hints render in both languages and themes");
         }
+        {
+            const auto roomy=LayoutShortcutHelp(884,945,1);
+            check(roomy.max_scroll==0 && roomy.card.bottom-roomy.card.top<600 &&
+                  roomy.card.right-roomy.card.left<=560,
+                  "shortcut help card hugs its content in a normal window");
+            const auto short_window=LayoutShortcutHelp(600,360,1.5f);
+            check(short_window.max_scroll>0 && short_window.card.top>=0 &&
+                  short_window.close.left>short_window.card.left &&
+                  short_window.close.right<=short_window.card.right,
+                  "shortcut help scrolls when the window is short");
+        }
         l10n::SetLanguage(L"zh-CN");
         return ok;
     }

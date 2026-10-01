@@ -6,18 +6,36 @@
 #include <array>
 
 namespace pulse::ui {
+namespace {
+// Compact card metrics in DIPs. Layout and drawing share them so the scroll
+// extent always matches what is painted.
+struct HelpMetrics {
+    float pad, header, desc_h, desc_gap, row_h, tip_gap, tip_h, bottom;
+};
+constexpr int kHelpRows = 8;
+HelpMetrics MetricsFor(bool narrow) {
+    return narrow ? HelpMetrics{20, 84, 60, 10, 54, 14, 72, 18}
+                  : HelpMetrics{28, 88, 40, 10, 40, 16, 56, 22};
+}
+float ContentHeightDip(const HelpMetrics& m) {
+    return m.desc_h + m.desc_gap + m.row_h * kHelpRows + m.tip_gap + m.tip_h;
+}
+}
+
 ShortcutHelpLayout LayoutShortcutHelp(float width, float height, float scale) {
     ShortcutHelpLayout l;
-    const float w = std::max(0.0f, std::min(750.0f * scale, width - 32 * scale));
-    const float h = std::max(0.0f, std::min(860.0f * scale, height - 32 * scale));
+    const float w = std::max(0.0f, std::min(560.0f * scale, width - 32 * scale));
+    l.narrow = w < 440 * scale;
+    const HelpMetrics m = MetricsFor(l.narrow);
+    l.content_height = ContentHeightDip(m) * scale;
+    // The card hugs its content and only scrolls when the window is short.
+    const float wanted = (m.header + ContentHeightDip(m) + m.bottom) * scale;
+    const float h = std::max(0.0f, std::min(wanted, height - 32 * scale));
     l.card = D2D1::RectF((width-w)/2, (height-h)/2, (width+w)/2, (height+h)/2);
-    const float pad = (w < 480 * scale ? 24.0f : 42.0f) * scale;
-    l.narrow = w < 480 * scale;
-    l.close = D2D1::RectF(l.card.right-56*scale, l.card.top+24*scale,
-                         l.card.right-20*scale, l.card.top+60*scale);
-    l.body = D2D1::RectF(l.card.left+pad, l.card.top+(l.narrow?116:136)*scale,
-                        l.card.right-pad, l.card.bottom-26*scale);
-    l.content_height = (l.narrow ? 846.0f : 680.0f) * scale;
+    l.close = D2D1::RectF(l.card.right-48*scale, l.card.top+18*scale,
+                         l.card.right-16*scale, l.card.top+50*scale);
+    l.body = D2D1::RectF(l.card.left+m.pad*scale, l.card.top+m.header*scale,
+                        l.card.right-m.pad*scale, l.card.bottom-m.bottom*scale);
     l.max_scroll = std::max(0.0f, l.content_height-(l.body.bottom-l.body.top));
     return l;
 }
@@ -28,6 +46,7 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
     if (!dc) return;
     const auto l = LayoutShortcutHelp(static_cast<float>(compositor.Width()),
                                       static_cast<float>(compositor.Height()), scale);
+    const HelpMetrics m = MetricsFor(l.narrow);
     const auto theme = MakeTheme(dark, accent);
     const auto surface = dark ? HexColor(0x20242E) : HexColor(0xFFFFFF);
     const auto ink = dark ? HexColor(0xE7EAF5) : HexColor(0x303C54);
@@ -41,79 +60,97 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
         brush->SetColor(color);
         dc->FillRoundedRectangle(D2D1::RoundedRect(r, radius*scale, radius*scale), brush.get());
     };
-    auto text = [&](std::wstring_view value, D2D1_RECT_F r, float size,
-                    D2D1_COLOR_F color, bool bold = false) {
+    auto make_format = [&](float size, bool bold) {
         ComPtr<IDWriteTextFormat> format;
         compositor.DwriteFactory()->CreateTextFormat(L"Microsoft YaHei", nullptr,
             bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size*scale, L"", &format);
+        return format;
+    };
+    auto text = [&](std::wstring_view value, D2D1_RECT_F r, float size,
+                    D2D1_COLOR_F color, bool bold = false) {
+        const auto format = make_format(size, bold);
         if (!format.get()) return;
         brush->SetColor(color);
         dc->DrawTextW(value.data(), static_cast<UINT32>(value.size()), format.get(), r,
                       brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     };
+    // Key captions mix Latin and CJK, so measure them instead of guessing.
+    const auto key_format = make_format(12, false);
+    auto text_width = [&](std::wstring_view value) {
+        ComPtr<IDWriteTextLayout> layout;
+        DWRITE_TEXT_METRICS metrics{};
+        if (key_format.get() && SUCCEEDED(compositor.DwriteFactory()->CreateTextLayout(
+                value.data(), static_cast<UINT32>(value.size()), key_format.get(),
+                10000.0f, 100.0f, &layout)) && layout.get() &&
+            SUCCEEDED(layout->GetMetrics(&metrics))) {
+            return metrics.widthIncludingTrailingWhitespace;
+        }
+        return static_cast<float>(value.size()) * 7.2f * scale;
+    };
     auto rect = [&](float x, float y, float w, float h) {
         return D2D1::RectF(x, y, x+w*scale, y+h*scale);
     };
     // Soft layered shadow keeps the card distinct from the dimmed owner.
-    for (int i=12; i>0; --i) {
+    for (int i=10; i>0; --i) {
         auto r=l.card;
-        r.left-=i*scale; r.right+=i*scale; r.top-=(i-5)*scale; r.bottom+=(i+5)*scale;
-        fill(r, D2D1::ColorF(0,0,0,0.012f), 22);
+        r.left-=i*scale; r.right+=i*scale; r.top-=(i-4)*scale; r.bottom+=(i+4)*scale;
+        fill(r, D2D1::ColorF(0,0,0,0.012f), 18);
     }
-    fill(l.card, surface, 20);
+    fill(l.card, surface, 14);
     const bool zh = l10n::effective_language() != l10n::Language::EnUS;
-    text(L"A LITTLE HELP", rect(l.body.left,l.card.top+30*scale,260,20),12,
+    text(L"A LITTLE HELP", rect(l.body.left,l.card.top+20*scale,260,18),11,
          dark ? HexColor(0xA5AEFF) : HexColor(0x6269CD),true);
     text(l10n::Get(l10n::StringId::HelpTitle),
-         D2D1::RectF(l.body.left,l.card.top+62*scale,l.close.left,l.card.top+104*scale),
-         l.narrow ? 24.0f : 30.0f,ink,true);
-    if (close_hover) fill(l.close,tint,8);
+         D2D1::RectF(l.body.left,l.card.top+40*scale,l.close.left-8*scale,l.card.top+74*scale),
+         l.narrow ? 20.0f : 22.0f,ink,true);
+    if (close_hover) fill(l.close,tint,6);
     brush->SetColor(muted);
     const float cx=(l.close.left+l.close.right)/2, cy=(l.close.top+l.close.bottom)/2;
-    dc->DrawLine({cx-6*scale,cy-6*scale},{cx+6*scale,cy+6*scale},brush.get(),1.6f*scale);
-    dc->DrawLine({cx+6*scale,cy-6*scale},{cx-6*scale,cy+6*scale},brush.get(),1.6f*scale);
+    dc->DrawLine({cx-5*scale,cy-5*scale},{cx+5*scale,cy+5*scale},brush.get(),1.5f*scale);
+    dc->DrawLine({cx+5*scale,cy-5*scale},{cx-5*scale,cy+5*scale},brush.get(),1.5f*scale);
     dc->PushAxisAlignedClip(l.body,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     float y=l.body.top-std::clamp(scroll,0.0f,l.max_scroll);
     text(l10n::Get(l10n::StringId::HelpDescription),
-         D2D1::RectF(l.body.left,y,l.body.right,y+(l.narrow?112:76)*scale),l.narrow?15.0f:17.0f,muted);
-    y+=(l.narrow?126:96)*scale;
+         D2D1::RectF(l.body.left,y,l.body.right,y+m.desc_h*scale),13,muted);
+    y+=(m.desc_h+m.desc_gap)*scale;
     using Id=l10n::StringId;
-    const std::array<std::pair<Id,std::wstring>,8> rows{{
+    const std::array<std::pair<Id,std::wstring>,kHelpRows> rows{{
         {Id::Search,L"Ctrl K"}, {Id::HelpOpen,zh?L"Enter / 双击":L"Enter / Double-click"},
         {Id::QuickPreview,L"Space"}, {Id::HelpClipboard,L"Ctrl C / X / V"},
         {Id::Rename,L"F2"}, {Id::Delete,L"Delete"}, {Id::SelectAll,L"Ctrl A"},
         {Id::SelectionHint,l10n::Get(Id::SelectionKeys)}
     }};
+    const float row_h=m.row_h*scale;
     for (const auto& row:rows) {
-        const float row_h=(l.narrow?76.0f:58.0f)*scale;
         const float key_w=std::min(l.body.right-l.body.left,
-            (static_cast<float>(row.second.size())*7.2f+18)*scale);
-        const float key_y=y+(l.narrow?36:12)*scale;
+            text_width(row.second)+16*scale);
+        const float key_y=l.narrow ? y+26*scale : y+(m.row_h-24)/2*scale;
         const float key_x=l.narrow?l.body.left:l.body.right-key_w;
-        const auto key=D2D1::RectF(key_x,key_y,key_x+key_w,key_y+26*scale);
-        text(l10n::Get(row.first),D2D1::RectF(l.body.left,y+12*scale,
-             l.narrow?l.body.right:key.left-12*scale,y+38*scale),l.narrow?14.0f:16.0f,muted);
+        const auto key=D2D1::RectF(key_x,key_y,key_x+key_w,key_y+24*scale);
+        const float label_y=l.narrow ? y+4*scale : y+(m.row_h-22)/2*scale;
+        text(l10n::Get(row.first),D2D1::RectF(l.body.left,label_y,
+             l.narrow?l.body.right:key.left-12*scale,label_y+22*scale),14,ink);
         fill(key,dark?HexColor(0x282E3B):HexColor(0xF7F8FC),5);
         brush->SetColor(line);
         dc->DrawRoundedRectangle(D2D1::RoundedRect(key,5*scale,5*scale),brush.get(),scale);
-        text(row.second,D2D1::RectF(key.left+8*scale,key.top+5*scale,key.right-4*scale,key.bottom),12,muted);
+        text(row.second,D2D1::RectF(key.left+8*scale,key.top+4*scale,key.right-2*scale,key.bottom),12,muted);
         brush->SetColor(line);
         dc->DrawLine({l.body.left,y+row_h},{l.body.right,y+row_h},brush.get(),scale);
         y+=row_h;
     }
-    y+=28*scale;
-    const auto tip=D2D1::RectF(l.body.left,y,l.body.right,y+(l.narrow?82:76)*scale);
-    fill(tip,tint,10);
-    text(L"i",rect(tip.left+16*scale,y+18*scale,18,28),20,theme.accent,true);
-    text(l10n::Get(Id::HelpTip),D2D1::RectF(tip.left+44*scale,y+16*scale,
-         tip.right-18*scale,tip.bottom-10*scale),14,muted);
+    y+=m.tip_gap*scale;
+    const auto tip=D2D1::RectF(l.body.left,y,l.body.right,y+m.tip_h*scale);
+    fill(tip,tint,8);
+    text(L"i",rect(tip.left+14*scale,y+(m.tip_h-26)/2*scale,16,26),17,theme.accent,true);
+    text(l10n::Get(Id::HelpTip),D2D1::RectF(tip.left+38*scale,y+10*scale,
+         tip.right-14*scale,tip.bottom-6*scale),13,muted);
     dc->PopAxisAlignedClip();
     if (l.max_scroll>0) {
         const float track=l.body.bottom-l.body.top;
         const float thumb=std::max(24*scale,track*track/l.content_height);
         const float top=l.body.top+(track-thumb)*std::clamp(scroll/l.max_scroll,0.0f,1.0f);
-        fill(D2D1::RectF(l.card.right-11*scale,top,l.card.right-8*scale,top+thumb),line,2);
+        fill(D2D1::RectF(l.card.right-9*scale,top,l.card.right-6*scale,top+thumb),line,2);
     }
 }
 
@@ -122,6 +159,9 @@ struct HelpWindow {
     HWND hwnd{};
     Compositor compositor;
     bool dark=false, done=false, hover=false;
+    // Set by a button press inside this window. The release of the click that
+    // opened the help (pressed in the owner) must not dismiss it.
+    bool pressed=false;
     D2D1_COLOR_F accent{};
     float scale=1, scroll=0;
     void Render() {
@@ -151,7 +191,11 @@ struct HelpWindow {
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT ps{}; BeginPaint(hwnd,&ps); self->Render(); EndPaint(hwnd,&ps); return 0; }
         case WM_MOUSEMOVE: self->hover=inside(l.close); InvalidateRect(hwnd,nullptr,FALSE); return 0;
-        case WM_LBUTTONUP: if (!inside(l.card)||inside(l.close)) self->done=true; return 0;
+        case WM_LBUTTONDOWN: self->pressed=true; return 0;
+        case WM_LBUTTONUP:
+            if (self->pressed && (!inside(l.card)||inside(l.close))) self->done=true;
+            self->pressed=false;
+            return 0;
         case WM_MOUSEWHEEL:
             self->scroll=std::clamp(self->scroll-GET_WHEEL_DELTA_WPARAM(wp)*self->scale*0.5f,0.0f,l.max_scroll);
             InvalidateRect(hwnd,nullptr,FALSE); return 0;
