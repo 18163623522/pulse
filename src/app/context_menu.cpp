@@ -200,12 +200,17 @@ std::vector<ui::FluentMenuItem> BuildSortMenu(const BackgroundViewOptions& optio
     constexpr SortRow rows[] = {
         { CmdSortName, ui::SortColumn::Name, l10n::StringId::ColumnName },
         { CmdSortModified, ui::SortColumn::Mtime, l10n::StringId::ColumnModified },
+        { CmdSortCreated, ui::SortColumn::Created, l10n::StringId::ColumnCreated },
+        { CmdSortAccessed, ui::SortColumn::Accessed, l10n::StringId::ColumnAccessed },
         { CmdSortType, ui::SortColumn::Type, l10n::StringId::ColumnType },
         { CmdSortSize, ui::SortColumn::Size, l10n::StringId::ColumnSize },
         { CmdSortPath, ui::SortColumn::Path, l10n::StringId::ColumnPath },
     };
     for (const auto& row : rows) {
         if (row.column == ui::SortColumn::Path && !options.show_path) continue;
+        // Search results and the recycle bin carry no creation / access times.
+        if ((row.column == ui::SortColumn::Created || row.column == ui::SortColumn::Accessed) &&
+            options.show_path) continue;
         auto child = Item(row.command, l10n::Get(row.label).c_str(), L"", nullptr,
                           options.can_sort && !(options.indexed_search &&
                           (row.column == ui::SortColumn::Type || row.column == ui::SortColumn::Path)));

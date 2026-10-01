@@ -288,6 +288,13 @@ void SettingsController::FolderSort(int index) {
         SaveAndApply(SettingsEffect::FolderSort);
 }
 
+void SettingsController::DetailsColumns(uint32_t mask) {
+    mask = ui::NormalizeDetailsColumns(mask);
+    if (!prefs_ || prefs_->details_columns == mask) return;
+    prefs_->details_columns = mask;
+    SaveAndApply(SettingsEffect::ListStyle);
+}
+
 // Startup and new-tab locations are read when they are used; nothing to apply.
 void SettingsController::StartupOpen(int index) {
     static constexpr int values[] = {0, 1};

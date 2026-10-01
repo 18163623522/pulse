@@ -48,9 +48,16 @@ std::shared_ptr<const TagGroupMap> TagGroupsForFolder(const std::wstring& folder
 struct GroupClock {
     uint64_t today = 0, yesterday = 0, week = 0, last_week = 0;
     uint64_t month = 0, last_month = 0, year = 0, tomorrow = 0;
+    // Which time GroupBy::Date buckets for GroupRank/GroupKey: the list's sort
+    // column when it is a date (created / accessed), otherwise modified.
+    // GroupCompare takes the column from its own argument.
+    ui::SortColumn date_column = ui::SortColumn::Mtime;
     std::shared_ptr<const TagGroupMap> tags;  // GroupBy::Tag only
 };
-GroupClock MakeGroupClock();
+GroupClock MakeGroupClock(ui::SortColumn sort_column = ui::SortColumn::Mtime);
+
+// The time GroupBy::Date uses for a list sorted by `sort_column`.
+const FILETIME& GroupDateOf(const fs::DirEntry& e, ui::SortColumn sort_column) noexcept;
 
 // Date ranks: 0 future, 1 today, 2 yesterday, 3 earlier this week, 4 last week,
 // 5 earlier this month, 6 last month, 7 earlier this year, 8 a long time ago.

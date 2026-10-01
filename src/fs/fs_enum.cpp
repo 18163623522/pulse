@@ -203,6 +203,8 @@ static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEn
         e.name = fd.cFileName;
         e.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
         e.mtime = fd.ftLastWriteTime;
+        e.ctime = fd.ftCreationTime;
+        e.atime = fd.ftLastAccessTime;
         e.attrs = fd.dwFileAttributes;
         e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         e.is_reparse = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
@@ -300,6 +302,10 @@ static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& ou
                 e.size = static_cast<uint64_t>(info->EndOfFile.QuadPart);
                 e.mtime.dwLowDateTime = info->LastWriteTime.LowPart;
                 e.mtime.dwHighDateTime = info->LastWriteTime.HighPart;
+                e.ctime.dwLowDateTime = info->CreationTime.LowPart;
+                e.ctime.dwHighDateTime = info->CreationTime.HighPart;
+                e.atime.dwLowDateTime = info->LastAccessTime.LowPart;
+                e.atime.dwHighDateTime = info->LastAccessTime.HighPart;
                 e.attrs = info->FileAttributes;
                 e.is_dir = (info->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                 e.is_reparse = (info->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
@@ -333,6 +339,8 @@ static void EnumerateThisPc(std::vector<DirEntry>& out) {
         e.full_path = NormalizePath(root);
         e.is_dir = true;
         e.attrs = FILE_ATTRIBUTE_DIRECTORY;
+        // Local metadata only (no media access): the UI shows it as the type.
+        e.drive_type = static_cast<uint8_t>(GetDriveTypeW(root));
         out.push_back(std::move(e));
     }
 }

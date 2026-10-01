@@ -159,6 +159,8 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
                 entry.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) |
                              data.nFileSizeLow;
                 entry.mtime = data.ftLastWriteTime;
+                entry.ctime = data.ftCreationTime;
+                entry.atime = data.ftLastAccessTime;
             }
             if (i < item.display_times.size() && item.display_times[i] != 0) {
                 entry.mtime.dwLowDateTime = static_cast<DWORD>(item.display_times[i]);

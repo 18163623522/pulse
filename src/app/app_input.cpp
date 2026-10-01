@@ -5,6 +5,7 @@
 #include "app_updates.h"
 #include "app_internal.h"
 #include "app_column_view.h"
+#include "details_column_menu.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
 #include "../ui/drag_drop.h"
@@ -2066,14 +2067,13 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                         s->renderer.PaneBodyBounds(slot.pane, slot.rect), slot.pane);
                     using K = ui::MainRenderer::ColumnKind;
                     for (int i = 0; i < columns.count; ++i) {
-                        const K kind = columns.kinds[i];
-                        const int stored = kind == K::Date ? 0 : kind == K::Type ? 1 : kind == K::Size ? 2 : -1;
-                        if (stored >= 0) {
-                            if (slot.pane.is_search) tab->search_column_dividers[stored + 1] = columns.widths[i] / s->scale;
-                            else tab->details_column_dividers[stored] = columns.widths[i] / s->scale;
-                        } else if (slot.pane.is_search && kind == K::Name && columns.Has(K::Path)) {
-                            tab->search_column_dividers[0] = columns.widths[i] / s->scale;
-                        }
+                        const K kind = columns.kinds[static_cast<size_t>(i)];
+                        const int stored = ui::MainRenderer::ManualColumnSlot(kind, slot.pane.is_search);
+                        const float width = columns.widths[static_cast<size_t>(i)] / s->scale;
+                        // The search name width is only stored next to a path column.
+                        if (stored < 0 || (kind == K::Name && !columns.Has(K::Path))) continue;
+                        if (slot.pane.is_search) tab->search_column_dividers[static_cast<size_t>(stored)] = width;
+                        else tab->details_column_dividers[static_cast<size_t>(stored)] = width;
                     }
                 }
             }
@@ -3472,7 +3472,23 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                    hit.region == ui::HitTestResult::ColumnHeader ||
                    hit.region == ui::HitTestResult::None)) {
             D2D1_RECT_F content = s->renderer.ContentRect(rect.right, rect.bottom);
-            if (hit.pane_index >= 0 ||
+            // The Details header picks the shown columns, as in File Explorer.
+            if (hit.region == ui::HitTestResult::ColumnHeader && hit.pane_index >= 0) {
+                s->context_menu.Close();
+                uint32_t visible = 0xFFFFFFFFu;
+                bool search = false;
+                if (hit.pane_index < static_cast<int>(vm.pane_slots.size())) {
+                    const auto& slot = vm.pane_slots[static_cast<size_t>(hit.pane_index)];
+                    const auto columns = s->renderer.DetailsColumns(
+                        s->renderer.PaneBodyBounds(slot.pane, slot.rect), slot.pane);
+                    visible = 0;
+                    for (int i = 0; i < columns.count; ++i)
+                        visible |= 1u << static_cast<uint32_t>(columns.kinds[static_cast<size_t>(i)]);
+                    search = slot.pane.is_search;
+                }
+                ShowDetailsColumnMenu(*s, sp, visible, search);
+                shown = true;
+            } else if (hit.pane_index >= 0 ||
                 (mx >= content.left && mx < content.right && my >= content.top && my < content.bottom)) {
                 ShowBackgroundContextMenu(*s, sp);
                 shown = true;

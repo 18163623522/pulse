@@ -7,7 +7,8 @@ namespace pulse::app {
 namespace {
 
 // Indexed by ui::SortColumn; stable JSON names.
-constexpr const wchar_t* kColumnNames[] = { L"name", L"modified", L"type", L"size", L"path" };
+constexpr const wchar_t* kColumnNames[] = { L"name", L"modified", L"type", L"size", L"path",
+                                            L"created", L"accessed" };
 constexpr int kColumnCount = static_cast<int>(sizeof(kColumnNames) / sizeof(kColumnNames[0]));
 
 bool Valid(FolderSort sort) {

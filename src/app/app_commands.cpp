@@ -703,6 +703,12 @@ void DispatchMenuCommand(AppState& s, int cmd) {
             SetSort(s, columns[cmd - app::CmdSortName], tab->sort_direction);
         }
         break;
+    case app::CmdSortCreated:
+    case app::CmdSortAccessed:
+        if (const auto* tab = ActiveTab(s))
+            SetSort(s, cmd == app::CmdSortCreated ? ui::SortColumn::Created : ui::SortColumn::Accessed,
+                    tab->sort_direction);
+        break;
     case app::CmdSortAscending:
     case app::CmdSortDescending:
         if (const auto* tab = ActiveTab(s))
@@ -2298,9 +2304,11 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
     }
     if (app::HasEffect(effects, app::SettingsEffect::RowHeight))
         s.renderer.SetRowHeightDip(static_cast<float>(s.appPrefs.row_height));
-    if (app::HasEffect(effects, app::SettingsEffect::ListStyle))
+    if (app::HasEffect(effects, app::SettingsEffect::ListStyle)) {
         s.renderer.SetListStyle(s.appPrefs.list_smart_date, s.appPrefs.list_zebra_rows,
                                 s.appPrefs.list_size_bar, s.appPrefs.list_tag_name_color);
+        s.renderer.SetDetailsColumns(s.appPrefs.details_columns);
+    }
     if (app::HasEffect(effects, app::SettingsEffect::FolderSort)) {
         app::SetFolderSortMode(app::FolderSortModeFromInt(s.appPrefs.folder_sort_mode));
         // Cached snapshots hold the previous order; drop and re-sort what is visible.

@@ -90,7 +90,7 @@ ui::GroupWheelOption BuildOption(const app::Tab& tab, const ModeStyle& mode,
         return o;
     }
     const app::GroupBy by = app::GroupByFromInt(mode.value);
-    app::GroupClock clock = by == app::GroupBy::Date ? app::MakeGroupClock() : app::GroupClock{};
+    app::GroupClock clock = by == app::GroupBy::Date ? app::MakeGroupClock(tab.sort_column) : app::GroupClock{};
     if (by == app::GroupBy::Tag) clock.tags = app::TagGroupsForFolder(tab.current_path);
     const auto catalog = by == app::GroupBy::Tag ? app::CurrentTagCatalog() : nullptr;
     struct Group { std::wstring key; int rank; size_t sample; int count; };
@@ -135,6 +135,10 @@ constexpr SortStyle kSortColumns[] = {
      ui::command_icons::Icon::Sort, 0xA78BFA, 0x6D28D9},
     {ui::SortColumn::Mtime, l10n::StringId::ColumnModified, l10n::StringId::SortHintModified,
      ui::command_icons::Icon::History, 0x34D399, 0x0F766E},
+    {ui::SortColumn::Created, l10n::StringId::ColumnCreated, l10n::StringId::SortHintCreated,
+     ui::command_icons::Icon::Add, 0x60A5FA, 0x1D4ED8},
+    {ui::SortColumn::Accessed, l10n::StringId::ColumnAccessed, l10n::StringId::SortHintAccessed,
+     ui::command_icons::Icon::Eye, 0xFB923C, 0xC2410C},
     {ui::SortColumn::Type, l10n::StringId::ColumnType, l10n::StringId::SortHintType,
      ui::command_icons::Icon::File, 0xFBBF24, 0xB45309},
     {ui::SortColumn::Size, l10n::StringId::ColumnSize, l10n::StringId::SortHintSize,
@@ -177,6 +181,8 @@ uint32_t Swatch(const fs::DirEntry& e) {
 std::wstring SortValue(const fs::DirEntry& e, ui::SortColumn col) {
     switch (col) {
     case ui::SortColumn::Mtime: return ShortTime(e.mtime);
+    case ui::SortColumn::Created: return ShortTime(e.ctime);
+    case ui::SortColumn::Accessed: return ShortTime(e.atime);
     case ui::SortColumn::Size: return e.is_dir ? std::wstring(L"\x2014") : format::ByteSize(e.size);
     case ui::SortColumn::Path: {
         const std::wstring full = app::GroupLocationLabel(e);
@@ -225,6 +231,16 @@ std::vector<fs::DirEntry> SampleEntries(bool with_path) {
         const uint64_t t = now - static_cast<uint64_t>(sample.hours_ago * 36'000'000'000.0);
         e.mtime.dwLowDateTime = static_cast<DWORD>(t & 0xFFFFFFFFu);
         e.mtime.dwHighDateTime = static_cast<DWORD>(t >> 32);
+        // Plausible creation / access times with their own order, so those
+        // previews differ from "modified": created earlier, opened recently.
+        const double created_days = static_cast<double>(i * 5 % 7 + 1);
+        const double accessed_hours = sample.hours_ago * 0.25 + 3.0 * static_cast<double>(i % 3);
+        const uint64_t created = t - static_cast<uint64_t>(24.0 * created_days * 36'000'000'000.0);
+        const uint64_t accessed = now - static_cast<uint64_t>(accessed_hours * 36'000'000'000.0);
+        e.ctime.dwLowDateTime = static_cast<DWORD>(created & 0xFFFFFFFFu);
+        e.ctime.dwHighDateTime = static_cast<DWORD>(created >> 32);
+        e.atime.dwLowDateTime = static_cast<DWORD>(accessed & 0xFFFFFFFFu);
+        e.atime.dwHighDateTime = static_cast<DWORD>(accessed >> 32);
         if (with_path && static_cast<size_t>(sample.location) < places.size())
             e.full_path = L"C:\\" + places[static_cast<size_t>(sample.location)] + L"\\" + e.name;
         out.push_back(std::move(e));
@@ -308,13 +324,16 @@ void OpenSortWheel(AppState& s) {
     for (const auto& col : kSortColumns) {
         if (col.column == ui::SortColumn::Path && !show_path) continue;
         if (indexed && (col.column == ui::SortColumn::Type || col.column == ui::SortColumn::Path)) continue;
+        // Same rule as the sort menu: no creation / access times in search or the recycle bin.
+        if (show_path && (col.column == ui::SortColumn::Created || col.column == ui::SortColumn::Accessed)) continue;
         ui::GroupWheelOption o;
         o.value = static_cast<int>(col.column);
         o.icon = static_cast<int>(col.icon);
         o.name = l10n::Get(col.name);
         o.hue1 = col.hue1;
         o.hue2 = col.hue2;
-        if (col.column == ui::SortColumn::Mtime)
+        if (col.column == ui::SortColumn::Mtime || col.column == ui::SortColumn::Created ||
+            col.column == ui::SortColumn::Accessed)
             o.directions = {l10n::Get(l10n::StringId::SortOldNew), l10n::Get(l10n::StringId::SortNewOld)};
         else if (col.column == ui::SortColumn::Size)
             o.directions = {l10n::Get(l10n::StringId::SortSmallLarge), l10n::Get(l10n::StringId::SortLargeSmall)};

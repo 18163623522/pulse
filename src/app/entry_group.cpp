@@ -98,17 +98,40 @@ bool FlipGroups(GroupBy g, ui::SortColumn col, ui::SortDirection dir) {
     case GroupBy::Name: return col == ui::SortColumn::Name && dir == ui::SortDirection::Desc;
     case GroupBy::Size: return col == ui::SortColumn::Size && dir == ui::SortDirection::Desc;
     case GroupBy::Type: return col == ui::SortColumn::Type && dir == ui::SortDirection::Desc;
-    case GroupBy::Date: return col == ui::SortColumn::Mtime && dir == ui::SortDirection::Asc;
+    case GroupBy::Date:
+        return (col == ui::SortColumn::Mtime || col == ui::SortColumn::Created ||
+                col == ui::SortColumn::Accessed) && dir == ui::SortDirection::Asc;
     default: return false;
     }
 }
 
 } // namespace
 
-GroupClock MakeGroupClock() {
+const FILETIME& GroupDateOf(const fs::DirEntry& e, ui::SortColumn sort_column) noexcept {
+    if (sort_column == ui::SortColumn::Created) return e.ctime;
+    if (sort_column == ui::SortColumn::Accessed) return e.atime;
+    return e.mtime;
+}
+
+namespace {
+int DateRank(uint64_t t, const GroupClock& c) {
+    if (t >= c.tomorrow) return 0;
+    if (t >= c.today) return 1;
+    if (t >= c.yesterday) return 2;
+    if (t >= c.week) return 3;
+    if (t >= c.last_week) return 4;
+    if (t >= c.month) return 5;
+    if (t >= c.last_month) return 6;
+    if (t >= c.year) return 7;
+    return 8;
+}
+} // namespace
+
+GroupClock MakeGroupClock(ui::SortColumn sort_column) {
     SYSTEMTIME now{};
     GetLocalTime(&now);
     GroupClock c;
+    c.date_column = sort_column;
     c.today = LocalMidnight(now);
     c.tomorrow = c.today + kDay;
     c.yesterday = c.today - kDay;
@@ -129,18 +152,7 @@ GroupClock MakeGroupClock() {
 
 int GroupRank(const fs::DirEntry& e, GroupBy g, const GroupClock& c) {
     switch (g) {
-    case GroupBy::Date: {
-        const uint64_t t = Ticks(e.mtime);
-        if (t >= c.tomorrow) return 0;
-        if (t >= c.today) return 1;
-        if (t >= c.yesterday) return 2;
-        if (t >= c.week) return 3;
-        if (t >= c.last_week) return 4;
-        if (t >= c.month) return 5;
-        if (t >= c.last_month) return 6;
-        if (t >= c.year) return 7;
-        return 8;
-    }
+    case GroupBy::Date: return DateRank(Ticks(GroupDateOf(e, c.date_column)), c);
     case GroupBy::Name: {
         if (e.name.empty()) return 4;
         wchar_t ch = e.name[0];
@@ -180,7 +192,8 @@ int GroupCompare(const fs::DirEntry& a, const fs::DirEntry& b, GroupBy g,
                  const GroupClock& clock, ui::SortColumn col, ui::SortDirection dir) {
     if (g == GroupBy::None) return 0;
     if (g == GroupBy::Location) return ParentCompare(a, b);
-    const int ra = GroupRank(a, g, clock), rb = GroupRank(b, g, clock);
+    const int ra = g == GroupBy::Date ? DateRank(Ticks(GroupDateOf(a, col)), clock) : GroupRank(a, g, clock);
+    const int rb = g == GroupBy::Date ? DateRank(Ticks(GroupDateOf(b, col)), clock) : GroupRank(b, g, clock);
     const bool flip = FlipGroups(g, col, dir);
     // Folders stay the first group for Size/Type even when reversed.
     const bool pinned = g == GroupBy::Size || g == GroupBy::Type;
@@ -224,7 +237,7 @@ std::wstring GroupLocationLabel(const fs::DirEntry& e) {
 void StableGroupOrder(std::vector<fs::DirEntry>& entries, std::vector<std::wstring>* parallel,
                       GroupBy g, ui::SortColumn col, ui::SortDirection dir) {
     if (g == GroupBy::None || entries.size() < 2) return;
-    const GroupClock clock = g == GroupBy::Date ? MakeGroupClock() : GroupClock{};
+    const GroupClock clock = g == GroupBy::Date ? MakeGroupClock(col) : GroupClock{};
     std::vector<size_t> order(entries.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {

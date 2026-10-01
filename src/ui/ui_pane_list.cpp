@@ -316,8 +316,11 @@ MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     const bool manual = vm.is_search
         ? std::any_of(vm.search_column_dividers.begin(), vm.search_column_dividers.end(), [](float v) { return v > 1.0f; })
         : std::any_of(vm.details_column_dividers.begin(), vm.details_column_dividers.end(), [](float v) { return v > 1.0f; });
+    // Content fitting covers the classic modified / type / size trio; extra
+    // date columns keep their measured automatic widths.
     if (manual || !columns.Has(ColumnKind::Date) || !columns.Has(ColumnKind::Type) ||
-        !columns.Has(ColumnKind::Size) || vm.view_mode != ViewMode::Details ||
+        !columns.Has(ColumnKind::Size) || columns.Has(ColumnKind::Created) ||
+        columns.Has(ColumnKind::Accessed) || vm.view_mode != ViewMode::Details ||
         !compositor_ || !compositor_->FileNameFormat()) return columns;
     const std::array<std::wstring, 3> labels{
         vm.date_column_label.empty() ? l10n::Get(l10n::StringId::ColumnModified)
@@ -382,7 +385,11 @@ MainRenderer::ColumnAutoWidths MainRenderer::AutoColumnWidths() const {
             dates = {L"2026-12-30 23:59"};
         }
         float date = header_w(StringId::ColumnModified);
-        for (const auto& d : dates) date = std::max(date, measure(fmt, d));
+        float dates_w = 0.0f;
+        for (const auto& d : dates) dates_w = std::max(dates_w, measure(fmt, d));
+        date = std::max(date, dates_w);
+        const float created = std::max(header_w(StringId::ColumnCreated), dates_w);
+        const float accessed = std::max(header_w(StringId::ColumnAccessed), dates_w);
         float type = std::max(header_w(StringId::ColumnType), measure(fmt, L"\u2014"));
         const StringId kinds[] = {StringId::TypeFolder, StringId::TypeFile, StringId::TypeTextDocument,
             StringId::TypeImage, StringId::TypeVideo, StringId::TypeAudio, StringId::TypeArchive,
@@ -392,6 +399,8 @@ MainRenderer::ColumnAutoWidths MainRenderer::AutoColumnWidths() const {
         type = std::max(type, measure(fmt, L"AutoCAD " + pulse::l10n::Get(StringId::TypeFile)) + chip);
         float size = std::max(header_w(StringId::ColumnSize), measure(fmt, L"1023.9") + kSizeUnitDip);
         out.date = std::clamp(date + pad, 72.0f, 176.0f);
+        out.created = std::clamp(created + pad, 72.0f, 176.0f);
+        out.accessed = std::clamp(accessed + pad, 72.0f, 176.0f);
         out.type = std::clamp(type + pad, 64.0f, 196.0f);
         out.size = std::clamp(size + pad, 60.0f, 112.0f);
     }
@@ -443,7 +452,7 @@ float ManualWidthDip(float stored) { return stored > 1.0f ? stored : 0.0f; }
 
 MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     const D2D1_RECT_F& pane_bounds,
-    const std::array<float, 3>& dividers,
+    const DetailsColumnWidths& dividers,
     bool search_view,
     const std::array<float, 4>& search_dividers) const {
     DetailsColumnLayout out;
@@ -457,14 +466,22 @@ MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     if (total <= 0.0f) return out;
 
     const ColumnAutoWidths fitted = AutoColumnWidths();
-    const float manual_date = ManualWidthDip(search_view ? search_dividers[1] : dividers[0]);
-    const float manual_type = ManualWidthDip(search_view ? search_dividers[2] : dividers[1]);
-    const float manual_size = ManualWidthDip(search_view ? search_dividers[3] : dividers[2]);
     struct Meta { ColumnKind kind; float width; float automatic; };
-    std::vector<Meta> meta{
-        {ColumnKind::Date, (manual_date > 0.0f ? manual_date : fitted.date) * scale_, fitted.date * scale_},
-        {ColumnKind::Type, (manual_type > 0.0f ? manual_type : fitted.type) * scale_, fitted.type * scale_},
-        {ColumnKind::Size, (manual_size > 0.0f ? manual_size : fitted.size) * scale_, fitted.size * scale_}};
+    std::vector<Meta> meta;
+    meta.reserve(5);
+    // Display order. Search results carry no creation / access times.
+    const std::pair<ColumnKind, float> shown[] = {
+        {ColumnKind::Date, fitted.date}, {ColumnKind::Created, fitted.created},
+        {ColumnKind::Accessed, fitted.accessed}, {ColumnKind::Type, fitted.type},
+        {ColumnKind::Size, fitted.size}};
+    for (const auto& [kind, automatic] : shown) {
+        if (!(details_columns_ & (1u << static_cast<uint32_t>(kind)))) continue;
+        const int slot = ManualColumnSlot(kind, search_view);
+        if (slot < 0) continue;
+        const float manual = ManualWidthDip(search_view ? search_dividers[static_cast<size_t>(slot)]
+                                                        : dividers[static_cast<size_t>(slot)]);
+        meta.push_back({kind, (manual > 0.0f ? manual : automatic) * scale_, automatic * scale_});
+    }
     auto meta_sum = [&] { float sum = 0.0f; for (const auto& m : meta) sum += m.width; return sum; };
     auto automatic_sum = [&] { float sum = 0.0f; for (const auto& m : meta) sum += m.automatic; return sum; };
     auto drop = [&](ColumnKind kind) {
@@ -484,11 +501,12 @@ MainRenderer::DetailsColumnLayout MainRenderer::DetailsColumns(
     }
     // Low-value columns go first when the name would get too narrow.
     while (total - automatic_sum() < min_name + (path_column ? min_path : 0.0f) && meta.size() > 1) {
-        if (!drop(ColumnKind::Type)) drop(ColumnKind::Date);
+        if (!drop(ColumnKind::Accessed) && !drop(ColumnKind::Created) && !drop(ColumnKind::Type) &&
+            !drop(ColumnKind::Date)) break;
     }
     const float floor_flex = (kDetailsMinNameDip + (path_column ? kDetailsMinPathDip : 0.0f)) * scale_;
     const float available = std::max(0.0f, total - floor_flex);
-    if (meta_sum() > available) {
+    if (!meta.empty() && meta_sum() > available) {
         // A narrower window may no longer fit saved widths. Keep visible
         // metadata readable and compress only its surplus above the floor.
         const float floor_meta = std::min(48.0f * scale_, available / static_cast<float>(meta.size()));
@@ -526,27 +544,26 @@ float MainRenderer::ListRowHeightDip(const PaneViewModel& vm, const D2D1_RECT_F&
     return DetailsColumns(pane_bounds, vm).two_line ? std::max(base, kDetailsTwoLineMinRowDip) : base;
 }
 
-namespace {
-// Which stored slot holds the manual width of a column (-1: flexible column).
-int ManualSlot(MainRenderer::ColumnKind kind, bool search_view) {
-    using K = MainRenderer::ColumnKind;
+int MainRenderer::ManualColumnSlot(ColumnKind kind, bool search_view) noexcept {
+    using K = ColumnKind;
     switch (kind) {
     case K::Name: return search_view ? 0 : -1;
     case K::Date: return search_view ? 1 : 0;
     case K::Type: return search_view ? 2 : 1;
     case K::Size: return search_view ? 3 : 2;
+    case K::Created: return search_view ? -1 : 3;
+    case K::Accessed: return search_view ? -1 : 4;
     default: return -1;
     }
 }
-}
 
 void MainRenderer::AutoFitColumnDivider(const D2D1_RECT_F& pane_bounds,
-                                        std::array<float, 3>& dividers, bool search_view,
+                                        DetailsColumnWidths& dividers, bool search_view,
                                         std::array<float, 4>& search_dividers, int divider_index) const {
     const DetailsColumnLayout layout = DetailsColumns(pane_bounds, dividers, search_view, search_dividers);
     if (divider_index < 0 || divider_index >= layout.count - 1) return;
     for (int side : {divider_index, divider_index + 1}) {
-        const int slot = ManualSlot(layout.kinds[static_cast<size_t>(side)], search_view);
+        const int slot = ManualColumnSlot(layout.kinds[static_cast<size_t>(side)], search_view);
         if (slot < 0) continue;
         if (search_view) search_dividers[static_cast<size_t>(slot)] = 0.0f;
         else dividers[static_cast<size_t>(slot)] = 0.0f;
@@ -572,7 +589,7 @@ std::array<float, N> ResizeColumns(const MainRenderer::DetailsColumnLayout& layo
     const float min_flex = std::min((left == K::Path ? kDetailsMinPathDip : kDetailsMinNameDip) * scale,
                                    std::max(0.0f, x2 - x0 - min_meta));
     auto put = [&](K kind, float px) {
-        const int slot = ManualSlot(kind, search_view);
+        const int slot = MainRenderer::ManualColumnSlot(kind, search_view);
         if (slot >= 0 && static_cast<size_t>(slot) < N) stored[static_cast<size_t>(slot)] = std::max(px / scale, 1.01f);
     };
     if (left == K::Name && right == K::Path) {
@@ -589,9 +606,9 @@ std::array<float, N> ResizeColumns(const MainRenderer::DetailsColumnLayout& layo
 }
 }
 
-std::array<float, 3> MainRenderer::ResizeDetailsColumnDivider(
+DetailsColumnWidths MainRenderer::ResizeDetailsColumnDivider(
     const D2D1_RECT_F& pane_bounds,
-    const std::array<float, 3>& dividers,
+    const DetailsColumnWidths& dividers,
     int divider_index, float cursor_x) const {
     return ResizeColumns(DetailsColumns(pane_bounds, dividers), dividers, false,
                          divider_index, cursor_x, scale_);
@@ -608,7 +625,7 @@ std::array<float, 4> MainRenderer::ResizeSearchColumnDivider(
 D2D1_RECT_F MainRenderer::NameCellRect(const D2D1_RECT_F& pane_bounds, int view_row, float scroll_y,
                                        float extra_top, ViewMode mode, float scroll_x,
                                        size_t item_count,
-                                       const std::array<float, 3>& column_dividers,
+                                       const DetailsColumnWidths& column_dividers,
                                        bool search_view,
                                        const std::array<float, 4>& search_dividers,
                                        float row_height_px) const {
@@ -895,6 +912,16 @@ void MainRenderer::DrawMorphFrom(const PaneViewModel& vm, const motion::ViewMorp
                 case ColumnKind::Date:
                     draw(list_smart_date_ && e.modified_value && !e.date_text.empty()
                              ? SmartListDate(e.modified_value) : e.date_text,
+                         left, avail, DWRITE_TEXT_ALIGNMENT_LEADING);
+                    break;
+                case ColumnKind::Created:
+                    draw(list_smart_date_ && e.created_value && !e.created_text.empty()
+                             ? SmartListDate(e.created_value) : e.created_text,
+                         left, avail, DWRITE_TEXT_ALIGNMENT_LEADING);
+                    break;
+                case ColumnKind::Accessed:
+                    draw(list_smart_date_ && e.accessed_value && !e.accessed_text.empty()
+                             ? SmartListDate(e.accessed_value) : e.accessed_text,
                          left, avail, DWRITE_TEXT_ALIGNMENT_LEADING);
                     break;
                 case ColumnKind::Type: {
@@ -1474,6 +1501,12 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
                 break;
             case ColumnKind::Size:
                 drawCol(pulse::l10n::Get(pulse::l10n::StringId::ColumnSize), SortColumn::Size, cw, true);
+                break;
+            case ColumnKind::Created:
+                drawCol(pulse::l10n::Get(pulse::l10n::StringId::ColumnCreated), SortColumn::Created, cw, false);
+                break;
+            case ColumnKind::Accessed:
+                drawCol(pulse::l10n::Get(pulse::l10n::StringId::ColumnAccessed), SortColumn::Accessed, cw, false);
                 break;
             }
         }
@@ -2224,6 +2257,16 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     case ColumnKind::Date: {
                         const std::wstring date = list_smart_date_ && e.modified_value && !e.date_text.empty()
                             ? SmartListDate(e.modified_value) : e.date_text;
+                        draw_detail_text(fit(date, avail), left, avail, DWRITE_TEXT_ALIGNMENT_LEADING);
+                        break;
+                    }
+                    case ColumnKind::Created:
+                    case ColumnKind::Accessed: {
+                        const bool created = detailsColumns.kinds[static_cast<size_t>(col)] == ColumnKind::Created;
+                        const std::wstring& text = created ? e.created_text : e.accessed_text;
+                        const uint64_t value = created ? e.created_value : e.accessed_value;
+                        if (text.empty()) break;
+                        const std::wstring date = list_smart_date_ && value ? SmartListDate(value) : text;
                         draw_detail_text(fit(date, avail), left, avail, DWRITE_TEXT_ALIGNMENT_LEADING);
                         break;
                     }

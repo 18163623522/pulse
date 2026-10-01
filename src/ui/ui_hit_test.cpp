@@ -1001,6 +1001,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             case ColumnKind::Date: out.column = SortColumn::Mtime; break;
             case ColumnKind::Type: out.column = SortColumn::Type; break;
             case ColumnKind::Size: out.column = SortColumn::Size; break;
+            case ColumnKind::Created: out.column = SortColumn::Created; break;
+            case ColumnKind::Accessed: out.column = SortColumn::Accessed; break;
             }
             return out;
         }

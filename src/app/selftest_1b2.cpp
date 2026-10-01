@@ -31,6 +31,8 @@
 #include "session.h"
 #include "app_prefs.h"
 #include "startup_location.h"
+#include "details_column_menu.h"
+#include "entry_group.h"
 #include "context_menu.h"
 #include "context_menu_controller.h"
 #include "context_menu_prefs.h"
@@ -1949,10 +1951,11 @@ void TestMenuModel() {
           bg[0].children.back().command == CmdApplyViewToAllFolders,
           L"menu: background reflects view and details pane");
     const auto& sort = bg[1].children;
-    Check(sort.size() == 9 && sort[3].command == CmdSortSize && sort[3].radio &&
-          !sort[4].radio && sort[5].radio && sort[5].separator_after &&
-          sort[6].command == CmdFolderSortTop && sort[6].radio &&
-          !sort[7].radio && !sort[8].radio,
+    Check(sort.size() == 11 && sort[2].command == CmdSortCreated && sort[3].command == CmdSortAccessed &&
+          sort[5].command == CmdSortSize && sort[5].radio &&
+          !sort[6].radio && sort[7].radio && sort[7].separator_after &&
+          sort[8].command == CmdFolderSortTop && sort[8].radio &&
+          !sort[9].radio && !sort[10].radio,
           L"menu: background reflects size descending with separate radio groups");
     Check(bg[2].command == CmdRefresh && bg[2].shortcut == L"F5" &&
           bg.back().command == CmdFolderProperties,
@@ -4866,7 +4869,7 @@ void TestListColumns() {
         Check(close_to(manual.Width(K::Date), 200.0f) && close_to(manual.Width(K::Type), 128.0f),
               L"columns: a manual DIP width is honoured and the rest stay fitted");
 
-        std::array<float, 3> dividers{};
+        ui::DetailsColumnWidths dividers{};
         dividers = r.ResizeDetailsColumnDivider(pane(1200.0f), dividers, 0, wide.DividerX(0) - 50.0f * scale);
         const auto grown = r.DetailsColumns(pane(1200.0f), dividers, false);
         Check(close_to(grown.Width(K::Date), 180.0f) && close_to(grown.Width(K::Size), 90.0f) &&
@@ -4905,7 +4908,7 @@ void TestListColumns() {
             const auto initial = r.DetailsColumns(pane(width), {}, search);
             bool stable = true, tracks = true;
             for (int divider = 0; divider < initial.count - 1; ++divider) for (int direction : {-1, 1}) {
-                std::array<float, 3> normal{};
+                ui::DetailsColumnWidths normal{};
                 std::array<float, 4> searching{};
                 // The real mouse-down handler captures the rendered widths.
                 for (int i = 0; i < initial.count; ++i) {
@@ -4937,6 +4940,175 @@ void TestListColumns() {
             Check(tracks, L"columns: metadata divider follows the pointer instead of consuming name width");
         }
     }
+}
+
+// Created / accessed columns and the column chooser (#26-4, #36, #47-1):
+// optional columns, their drop order, manual widths, prefs, sorting, date
+// groups and the header menu. Same fallback widths as TestListColumns;
+// the two new date columns fall back to 130 DIP.
+void TestOptionalColumns() {
+    using K = ui::MainRenderer::ColumnKind;
+    constexpr float scale = 1.5f;
+    ui::MainRenderer r;
+    r.SetScale(scale);
+    auto pane = [&](float w) { return D2D1::RectF(0.0f, 0.0f, w * scale, 400.0f * scale); };
+    auto fills = [&](const ui::MainRenderer::DetailsColumnLayout& c) {
+        float sum = 0.0f;
+        for (int i = 0; i < c.count; ++i) sum += c.widths[static_cast<size_t>(i)];
+        return std::abs(sum - (c.right - c.left)) < 0.05f;
+    };
+    auto close_to = [&](float px, float dip) { return std::abs(px - dip * scale) < 0.05f; };
+
+    Check(r.DetailsColumnsMask() == ui::kDetailsColumnsDefault,
+          L"optional columns: the renderer starts with modified / type / size");
+    r.SetDetailsColumns(ui::kDetailsColumnsAll);
+    const auto all = r.DetailsColumns(pane(1600.0f), {}, false);
+    Check(all.count == 6 && all.kinds[0] == K::Name && all.kinds[1] == K::Date &&
+          all.kinds[2] == K::Created && all.kinds[3] == K::Accessed && all.kinds[4] == K::Type &&
+          all.kinds[5] == K::Size && fills(all) && close_to(all.Width(K::Created), 130.0f) &&
+          close_to(all.Width(K::Accessed), 130.0f),
+          L"optional columns: all shown in order name, modified, created, accessed, type, size");
+    bool order_kept = true, filled = true;
+    for (float w = 260.0f; w <= 1600.0f; w += 20.0f) {
+        const auto c = r.DetailsColumns(pane(w), {}, false);
+        filled &= fills(c) && c.Width(K::Name) >= 80.0f * scale - 0.05f;
+        order_kept &= (c.Has(K::Created) || !c.Has(K::Accessed)) && (c.Has(K::Type) || !c.Has(K::Created)) &&
+                      (c.Has(K::Date) || !c.Has(K::Type));
+    }
+    Check(order_kept && filled,
+          L"optional columns: narrowing drops accessed, created, type, then modified");
+    const auto search = r.DetailsColumns(pane(1600.0f), {}, true);
+    Check(!search.Has(K::Created) && !search.Has(K::Accessed) && search.Has(K::Path) &&
+          search.Has(K::Date) && fills(search),
+          L"optional columns: search results never show creation / access times");
+
+    ui::DetailsColumnWidths widths{};
+    widths[3] = 200.0f;
+    const auto manual = r.DetailsColumns(pane(1600.0f), widths, false);
+    Check(close_to(manual.Width(K::Created), 200.0f) && close_to(manual.Width(K::Accessed), 130.0f),
+          L"optional columns: created keeps its own manual width");
+    const int created_divider = manual.IndexOf(K::Created);
+    widths = r.ResizeDetailsColumnDivider(pane(1600.0f), widths, created_divider,
+                                          manual.DividerX(created_divider) - 40.0f * scale);
+    const auto dragged = r.DetailsColumns(pane(1600.0f), widths, false);
+    Check(close_to(dragged.Width(K::Created), 160.0f) && close_to(dragged.Width(K::Accessed), 170.0f) &&
+          widths[3] > 1.0f && widths[4] > 1.0f,
+          L"optional columns: dragging between created and accessed stores both widths");
+    std::array<float, 4> unused{};
+    r.AutoFitColumnDivider(pane(1600.0f), widths, false, unused, created_divider);
+    Check(widths[3] == 0.0f && widths[4] == 0.0f,
+          L"optional columns: double-click auto-fit resets the date columns");
+    Check(ui::MainRenderer::ManualColumnSlot(K::Created, false) == 3 &&
+          ui::MainRenderer::ManualColumnSlot(K::Accessed, false) == 4 &&
+          ui::MainRenderer::ManualColumnSlot(K::Created, true) < 0 &&
+          ui::MainRenderer::ManualColumnSlot(K::Size, true) == 3,
+          L"optional columns: manual width slots");
+
+    r.SetDetailsColumns(ui::kDetailsColumnSize);
+    const auto size_only = r.DetailsColumns(pane(1200.0f), {}, false);
+    Check(size_only.count == 2 && size_only.kinds[1] == K::Size && fills(size_only),
+          L"optional columns: hiding modified and type leaves name and size (#26-4)");
+    r.SetDetailsColumns(0);
+    const auto name_only = r.DetailsColumns(pane(1200.0f), {}, false);
+    Check(name_only.count == 1 && fills(name_only), L"optional columns: name alone fills the row");
+    r.SetDetailsColumns(0xFFFFFFFFu);
+    Check(r.DetailsColumnsMask() == ui::kDetailsColumnsAll, L"optional columns: unknown bits are ignored");
+
+    // Prefs: global choice, default when missing, garbage normalized.
+    AppPrefs prefs;
+    prefs.persist = false;
+    Check(prefs.details_columns == ui::kDetailsColumnsDefault, L"optional columns: default prefs keep the classic set");
+    prefs.details_columns = ui::kDetailsColumnModified | ui::kDetailsColumnCreated;
+    prefs.folder_sorts.Set(L"C:\\Photos", {ui::SortColumn::Created, ui::SortDirection::Desc});
+    AppPrefs reloaded;
+    reloaded.persist = false;
+    const auto photos = reloaded.FromJson(prefs.ToJson()) ? reloaded.folder_sorts.Find(L"C:\\Photos")
+                                                         : std::optional<app::FolderSort>{};
+    Check(reloaded.details_columns == prefs.details_columns && photos &&
+          photos->column == ui::SortColumn::Created && photos->direction == ui::SortDirection::Desc,
+          L"optional columns: shown columns and a per-folder created sort round trip");
+    reloaded.FromJson(L"{\"details_columns\":4095}");
+    Check(reloaded.details_columns == ui::kDetailsColumnsAll, L"optional columns: stored masks are normalized");
+    reloaded.FromJson(L"{}");
+    Check(reloaded.details_columns == ui::kDetailsColumnsDefault, L"optional columns: missing key keeps the default");
+
+    // Sorting by creation / access time.
+    auto at = [](uint64_t days) {
+        const uint64_t t = 133'000'000'000'000'000ull + days * 864'000'000'000ull;
+        return FILETIME{static_cast<DWORD>(t), static_cast<DWORD>(t >> 32)};
+    };
+    fs::DirEntry a, b, dir;
+    a.name = L"a.txt"; a.mtime = at(9); a.ctime = at(1); a.atime = at(5);
+    b.name = L"b.txt"; b.mtime = at(1); b.ctime = at(9); b.atime = at(3);
+    dir.name = L"z"; dir.is_dir = true; dir.attrs = FILE_ATTRIBUTE_DIRECTORY; dir.ctime = at(20); dir.atime = at(0);
+    using ui::SortColumn; using ui::SortDirection;
+    Check(EntryLess(a, b, SortColumn::Created, SortDirection::Asc, FolderSortMode::FoldersFirst) &&
+          !EntryLess(a, b, SortColumn::Created, SortDirection::Desc, FolderSortMode::FoldersFirst) &&
+          EntryLess(b, a, SortColumn::Accessed, SortDirection::Asc, FolderSortMode::FoldersFirst) &&
+          EntryLess(a, b, SortColumn::Accessed, SortDirection::Desc, FolderSortMode::FoldersFirst),
+          L"optional columns: entries sort by creation and access time");
+    Check(EntryLess(dir, a, SortColumn::Created, SortDirection::Asc, FolderSortMode::FoldersFirst) &&
+          EntryLess(dir, a, SortColumn::Created, SortDirection::Desc, FolderSortMode::Mixed) &&
+          EntryLess(a, dir, SortColumn::Accessed, SortDirection::Desc, FolderSortMode::Mixed),
+          L"optional columns: folder placement modes apply to the new date sorts");
+
+    // Date groups follow the sorted date column.
+    FILETIME now_ft{};
+    GetSystemTimeAsFileTime(&now_ft);
+    fs::DirEntry fresh = a, old = b;
+    fresh.mtime = now_ft; fresh.ctime = at(0);
+    old.mtime = at(0); old.ctime = now_ft;
+    const GroupClock by_created = MakeGroupClock(SortColumn::Created);
+    const GroupClock by_modified = MakeGroupClock();
+    Check(GroupRank(fresh, GroupBy::Date, by_modified) == 1 && GroupRank(fresh, GroupBy::Date, by_created) == 8 &&
+          GroupRank(old, GroupBy::Date, by_created) == 1 &&
+          GroupKey(old, GroupBy::Date, by_created) != GroupKey(old, GroupBy::Date, by_modified),
+          L"optional columns: date groups bucket the sorted date column (#47)");
+    Check(GroupCompare(old, fresh, GroupBy::Date, by_created, SortColumn::Created, SortDirection::Desc) < 0 &&
+          GroupCompare(fresh, old, GroupBy::Date, by_created, SortColumn::Mtime, SortDirection::Desc) < 0 &&
+          GroupCompare(fresh, old, GroupBy::Date, by_created, SortColumn::Created, SortDirection::Asc) < 0,
+          L"optional columns: date group order follows the column and direction");
+
+    // Header menu.
+    const auto menu = BuildDetailsColumnMenu(ui::kDetailsColumnsDefault);
+    const int created_cmd = kDetailsColumnToggleBase + static_cast<int>(K::Created);
+    Check(menu.size() == 7 && menu[0].checked && !menu[0].enabled && menu[1].checked &&
+          menu[2].command == created_cmd && !menu[2].checked && menu[5].checked &&
+          menu[5].separator_after && menu[6].command == kDetailsColumnsReset && !menu[6].enabled,
+          L"optional columns: header menu lists name (fixed), the five columns and reset");
+    const uint32_t with_created = ApplyDetailsColumnCommand(ui::kDetailsColumnsDefault, created_cmd);
+    Check(with_created == (ui::kDetailsColumnsDefault | ui::kDetailsColumnCreated) &&
+          ApplyDetailsColumnCommand(with_created, created_cmd) == ui::kDetailsColumnsDefault &&
+          ApplyDetailsColumnCommand(with_created, kDetailsColumnsReset) == ui::kDetailsColumnsDefault &&
+          ApplyDetailsColumnCommand(with_created, kDetailsColumnToggleBase) == with_created &&
+          ApplyDetailsColumnCommand(with_created, 0) == with_created &&
+          BuildDetailsColumnMenu(with_created)[2].checked && BuildDetailsColumnMenu(with_created)[6].enabled,
+          L"optional columns: header menu toggles a column, resets, and ignores name / dismiss");
+    const uint32_t drawn = (1u << static_cast<uint32_t>(K::Name)) | ui::kDetailsColumnsDefault;
+    const auto narrow_menu = BuildDetailsColumnMenu(with_created, drawn, false);
+    const auto search_menu = BuildDetailsColumnMenu(with_created, drawn, true);
+    Check(narrow_menu[2].badge_text == l10n::Get(l10n::StringId::DetailsColumnNoRoom) &&
+          !narrow_menu[2].tooltip.empty() && narrow_menu[1].badge_text.empty() &&
+          narrow_menu[3].badge_text.empty() && narrow_menu[0].badge_text.empty() &&
+          search_menu[2].badge_text == l10n::Get(l10n::StringId::DetailsColumnNotInSearch) &&
+          BuildDetailsColumnMenu(with_created)[2].badge_text.empty(),
+          L"optional columns: a chosen column the pane cannot show says why");
+
+    // Sort menu: the new dates appear for folders, not for search results.
+    BackgroundViewOptions folder_options;
+    BackgroundViewOptions search_options;
+    search_options.show_path = true;
+    auto has_command = [](const std::vector<ui::FluentMenuItem>& items, int command) {
+        return std::any_of(items.begin(), items.end(), [&](const auto& item) { return item.command == command; });
+    };
+    folder_options.sort_column = SortColumn::Created;
+    const auto folder_sort = BuildSortMenu(folder_options);
+    const auto search_sort = BuildSortMenu(search_options);
+    const auto created_row = std::find_if(folder_sort.begin(), folder_sort.end(),
+        [](const auto& item) { return item.command == CmdSortCreated; });
+    Check(created_row != folder_sort.end() && created_row->radio && has_command(folder_sort, CmdSortAccessed) &&
+          !has_command(search_sort, CmdSortCreated) && !has_command(search_sort, CmdSortAccessed),
+          L"optional columns: sort menu offers created / accessed for folders only");
 }
 
 } // namespace
@@ -5509,6 +5681,22 @@ void TestSessionLayoutTabs() {
             out[0].panes[0].search_columns[0] == 0.0f,
               L"layouttabs: older JSON without searchCols stays default");
     }
+    {   // Created / accessed widths add two cols values only when set, so
+        // sessions without them stay readable by older builds.
+        std::vector<LayoutTabSnapshot> tabs(1), out;
+        tabs[0].panes.push_back({ L"C:\\", ui::ViewMode::Details, { 140.0f, 0.0f, 90.0f, 160.0f, 0.0f } });
+        Check(LayoutTabsToJson(tabs).find(L"\"cols\":\"1400000,0,900000,1600000,0\"") != std::wstring::npos &&
+              ParseLayoutTabs(LayoutTabsToJson(tabs), out) && SameLayoutTabs(tabs, out),
+              L"layouttabs: created / accessed column widths round-trip");
+        tabs[0].panes[0].columns = { 140.0f, 0.0f, 90.0f };
+        Check(LayoutTabsToJson(tabs).find(L"\"cols\":\"1400000,0,900000\"") != std::wstring::npos,
+              L"layouttabs: classic column widths keep the three-value format");
+        out.clear();
+        Check(ParseLayoutTabs(
+            L"[{\"panes\":[{\"path\":\"C:\\\\\",\"view\":\"details\",\"cols\":\"1400000,0,900000,7\"}]}]", out) &&
+            out.size() == 1 && out[0].panes.size() == 1 && out[0].panes[0].columns[0] == 0.0f,
+              L"layouttabs: malformed column widths fall back to automatic");
+    }
     {   // Empty array and empty layout tab.
         std::vector<LayoutTabSnapshot> out;
         Check(ParseLayoutTabs(L"[]", out) && out.empty(),
@@ -6044,6 +6232,7 @@ int RunSelfTest1B2() {
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"list-columns") == 0) {
         TestListColumns();
+        TestOptionalColumns();
         TestViewLayouts();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
@@ -6158,6 +6347,7 @@ int RunSelfTest1B2() {
     TestSplitLayout();
     TestViewLayouts();
     TestListColumns();
+    TestOptionalColumns();
     TestTrayStack();
     TestHiddenFiles();
     TestQuickAccess();

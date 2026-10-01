@@ -60,7 +60,7 @@ struct Tab {
     // Collapsed group keys per folder (session only).
     std::map<std::wstring, std::set<std::wstring>> collapsed_groups;
     uint64_t group_collapse_rev = 0;
-    std::array<float, 3> details_column_dividers{};
+    ui::DetailsColumnWidths details_column_dividers{};
     std::array<float, 4> search_column_dividers{};
     std::wstring filter_text;
     bool show_hidden_files = false;

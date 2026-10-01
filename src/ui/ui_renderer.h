@@ -17,6 +17,7 @@
 #include "ui_motion.h"
 #include "ui_view_morph.h"
 #include "group_wheel.h"
+#include "details_column_set.h"
 #include "../fs/fs_enum.h"
 #include "../fs/fs_snapshot.h"
 #include <algorithm>
@@ -42,7 +43,8 @@ class BloomAccentPicker;
 // Embedded Fluent Color SVG for a Segoe sidebar/toolbar glyph, or 0.
 int FluentSvgIdForGlyph(std::wstring_view glyph);
 
-enum class SortColumn { Name, Mtime, Type, Size, Path };
+// Values are persisted (folder sort prefs, session): append only.
+enum class SortColumn { Name, Mtime, Type, Size, Path, Created, Accessed };
 enum class SortDirection { Asc, Desc };
 
 struct TabView {
@@ -72,9 +74,13 @@ struct ListEntryView {
     std::wstring date_text;
     std::wstring type_text;
     std::wstring path;
+    std::wstring created_text;   // empty when the source has no creation time
+    std::wstring accessed_text;
     DWORD attrs = 0;
     uint64_t size_value = 0;
     uint64_t modified_value = 0;
+    uint64_t created_value = 0;
+    uint64_t accessed_value = 0;
     bool is_dir = false;
     bool is_reparse = false;
     bool cloud_recall = false;
@@ -219,9 +225,9 @@ struct PaneViewModel {
     uint64_t view_generation = 1;
     SortColumn sort_column = SortColumn::Name;
     SortDirection sort_direction = SortDirection::Asc;
-    // Cumulative column divider positions in the details view, normalized to
-    // the usable header width. All zeroes select the responsive defaults.
-    std::array<float, 3> details_column_dividers{};
+    // Manual details column widths (DIP, see DetailsColumnWidths). All zeroes
+    // select the responsive defaults.
+    DetailsColumnWidths details_column_dividers{};
     std::array<float, 4> search_column_dividers{};
     // "Group by" (app::GroupBy value) and its spans over view rows.
     int group_by = 0;
@@ -1050,15 +1056,25 @@ public:
     void ScrollDetailsPreview(float steps, float x, float y, bool horizontal = false);
     void ToggleDetailsPreviewFit(float x, float y);
 
-    enum class ColumnKind : uint8_t { Name, Path, Date, Type, Size };
+    // Date = modified. Values double as details_column_set.h bits: append only.
+    enum class ColumnKind : uint8_t { Name, Path, Date, Type, Size, Created, Accessed };
+    static constexpr size_t kMaxDetailsColumns = 7;
+    static_assert(kDetailsColumnModified == 1u << static_cast<uint32_t>(ColumnKind::Date) &&
+                  kDetailsColumnType == 1u << static_cast<uint32_t>(ColumnKind::Type) &&
+                  kDetailsColumnSize == 1u << static_cast<uint32_t>(ColumnKind::Size) &&
+                  kDetailsColumnCreated == 1u << static_cast<uint32_t>(ColumnKind::Created) &&
+                  kDetailsColumnAccessed == 1u << static_cast<uint32_t>(ColumnKind::Accessed));
     // Details columns in display order. Name is always first; Path only in
-    // wide search views; Type then Date are dropped first when space is short.
+    // wide search views; then the shown metadata columns (modified, created,
+    // accessed, type, size). Accessed, created, type, then modified are
+    // dropped first when space is short.
     struct DetailsColumnLayout {
         float left = 0.0f;
         float right = 0.0f;
-        std::array<float, 5> widths{};
-        std::array<ColumnKind, 5> kinds{ColumnKind::Name, ColumnKind::Date,
-                                        ColumnKind::Type, ColumnKind::Size, ColumnKind::Size};
+        std::array<float, kMaxDetailsColumns> widths{};
+        std::array<ColumnKind, kMaxDetailsColumns> kinds{ColumnKind::Name, ColumnKind::Date,
+                                        ColumnKind::Type, ColumnKind::Size, ColumnKind::Size,
+                                        ColumnKind::Size, ColumnKind::Size};
         int count = 4;
         // Narrow search view: the folder path is drawn under the name.
         bool two_line = false;
@@ -1087,7 +1103,9 @@ public:
     // Content-fitted metadata widths (DIP) measured from the current font,
     // language, DPI and date format; independent of row data so layout,
     // hit testing and painting always agree.
-    struct ColumnAutoWidths { float date = 130.0f, type = 128.0f, size = 90.0f; };
+    struct ColumnAutoWidths {
+        float date = 130.0f, type = 128.0f, size = 90.0f, created = 130.0f, accessed = 130.0f;
+    };
     ColumnAutoWidths AutoColumnWidths() const;
     float TypeChipWidthDip(const std::wstring& chip) const;
     // Cached max(LumaText, DWrite) advance for list cells (small=true: SmallFormat).
@@ -1098,6 +1116,13 @@ public:
         auto_widths_scale_ = -1.0f;
     }
     bool ListSmartDate() const { return list_smart_date_; }
+    // Optional details columns (details_column_set.h bits).
+    void SetDetailsColumns(uint32_t mask) { details_columns_ = NormalizeDetailsColumns(mask); }
+    uint32_t DetailsColumnsMask() const { return details_columns_; }
+    // Which stored slot holds a column's manual width (-1: flexible / none).
+    // Folder views: DetailsColumnWidths order. Search views: 0 name, 1 modified,
+    // 2 type, 3 size.
+    static int ManualColumnSlot(ColumnKind kind, bool search_view) noexcept;
     // Columns shown by the last painted Details header of a pane: bit
     // (1 << ColumnKind), plus bit 8 for the two-line search layout. 0 = unknown.
     uint32_t PaintedColumnMask(int pane_index) const {
@@ -1107,18 +1132,18 @@ public:
     // Double-click on a divider: drop the manual widths on both sides so the
     // columns return to their fitted widths.
     void AutoFitColumnDivider(const D2D1_RECT_F& pane_bounds,
-                              std::array<float, 3>& dividers, bool search_view,
+                              DetailsColumnWidths& dividers, bool search_view,
                               std::array<float, 4>& search_dividers, int divider_index) const;
     DetailsColumnLayout DetailsColumns(
         const D2D1_RECT_F& pane_bounds,
-        const std::array<float, 3>& dividers = {},
+        const DetailsColumnWidths& dividers = {},
         bool search_view = false,
         const std::array<float, 4>& search_dividers = {}) const;
     DetailsColumnLayout DetailsColumns(const D2D1_RECT_F& pane_bounds,
                                        const PaneViewModel& vm) const;
-    std::array<float, 3> ResizeDetailsColumnDivider(
+    DetailsColumnWidths ResizeDetailsColumnDivider(
         const D2D1_RECT_F& pane_bounds,
-        const std::array<float, 3>& dividers,
+        const DetailsColumnWidths& dividers,
         int divider_index, float cursor_x) const;
     std::array<float, 4> ResizeSearchColumnDivider(
         const D2D1_RECT_F& pane_bounds,
@@ -1128,7 +1153,7 @@ public:
     D2D1_RECT_F NameCellRect(const D2D1_RECT_F& pane_bounds, int view_row, float scroll_y,
                              float extra_top = 0.0f, ViewMode mode = ViewMode::Details,
                              float scroll_x = 0.0f, size_t item_count = 0,
-                             const std::array<float, 3>& column_dividers = {},
+                             const DetailsColumnWidths& column_dividers = {},
                              bool search_view = false,
                              const std::array<float, 4>& search_dividers = {},
                              float row_height_px = 0.0f) const;
@@ -1354,6 +1379,7 @@ private:
     float row_height_dip_ = 34.0f;
     bool list_smart_date_ = true, list_zebra_ = true, list_size_bar_ = false;
     bool list_tag_names_ = false;
+    uint32_t details_columns_ = kDetailsColumnsDefault;
     // Motion state: highlight plates glide between items (ui_motion.h).
     uint64_t motion_frame_ = 0;
     uint64_t motion_now_ = 0;  // motion::NowMs() sampled once per Render

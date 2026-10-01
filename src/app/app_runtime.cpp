@@ -2459,7 +2459,7 @@ std::wstring TooltipForHover(AppState& s) {
                     if (slash != std::wstring::npos && slash > 0)
                         tooltip += L" · " + full.substr(0, slash);
                 }
-                if (hidden(K::Date))
+                if (hidden(K::Date) && (entry.mtime.dwLowDateTime || entry.mtime.dwHighDateTime))
                     tooltip += L" · " + pulse::l10n::Get(pulse::l10n::StringId::ColumnModified) + L" " +
                                pulse::format::LocalFileTime(entry.mtime);
             }
