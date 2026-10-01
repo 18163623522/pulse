@@ -520,7 +520,8 @@ void ClearTextWidthCache() {
         bar.content_extent = SidebarContentHeight(vm, m);
         bar.offset = std::clamp(vm.sidebar_scroll, 0.0f,
             std::max(0.0f, bar.content_extent - bar.viewport_extent));
-        bar.expand_progress = 1.0f;
+        bar.expand_progress = vm.sidebar_scrollbar_expand;
+        bar.opacity = vm.sidebar_scrollbar_opacity;
         bar.enabled = !SidebarRailLayout(sb.right - sb.left, scale);
         return bar;
     }

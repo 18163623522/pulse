@@ -1097,6 +1097,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 s->scrollbarHoverWidth = target;
                 dirty = true;
             }
+            // Sidebar scrollbar: shown while the sidebar scrolls or the bar is
+            // hovered or dragged, faded out otherwise (#44).
+            if (s->sidebarScroll != s->sidebarScrollSeen) {
+                s->sidebarScrollSeen = s->sidebarScroll;
+                s->sidebarScrollbarFade.Reveal(now);
+            }
+            s->sidebarScrollbarFade.SetHot(s->sidebarScrollbarHot ||
+                (s->scrollbarDragging && s->scrollbarSidebar), now);
+            if (s->sidebarScrollbarFade.Tick(now)) dirty = true;
+            if (s->sidebarScrollbarFade.Moving(now)) g_uiTimerPacer.NoteActivity(now);
             // Smooth scroll.
             if (s->scrollAnimating) {
                 UpdateSmoothScroll(*s);

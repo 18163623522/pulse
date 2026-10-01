@@ -1858,6 +1858,7 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 RequestUncProbe(*s, hit.path);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
+        s->sidebarScrollbarHot = hit.region == ui::HitTestResult::Scrollbar && hit.sub_index == 2;
         int newHover = (hit.region == ui::HitTestResult::Row ||
                         hit.region == ui::HitTestResult::RowStar ||
                         hit.region == ui::HitTestResult::RowFolderSize ||
@@ -1901,6 +1902,7 @@ LRESULT HandleMouseLeave(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         (void)lParam;
         if (s) {
             s->scrollbarHovered = false;
+            s->sidebarScrollbarHot = false;
             s->hoverRow = -1;
             s->hoverPaneIndex = -1;
             s->ctxHoverSince = 0;

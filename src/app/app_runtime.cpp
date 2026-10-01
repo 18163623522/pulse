@@ -1755,6 +1755,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_home_folder = s.appPrefs.home_folder;
     vm.settings_text_render = s.appPrefs.text_render;
     vm.sidebar_scroll = s.sidebarScroll;
+    vm.sidebar_scrollbar_opacity = s.sidebarScrollbarFade.Opacity();
+    vm.sidebar_scrollbar_expand = s.sidebarScrollbarFade.Expand();
     if (s.groupDragActive) {
         vm.sidebar_group_drag_id = s.groupDragId;
         if (s.groupGapVisible) vm.sidebar_group_gap_line_y = s.groupGapLineY;
