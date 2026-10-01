@@ -18,7 +18,7 @@ struct GroupSessionSnapshot {
 struct PaneFolderSnapshot {
     std::wstring path;
     ui::ViewMode view = ui::ViewMode::Details;
-    std::array<float, 3> columns{};
+    ui::DetailsColumnWidths columns{};
     std::array<float, 4> search_columns{};
     bool column_layout = false;
     std::vector<float> column_widths; // DIP, see ui::ColumnStripWidthDip

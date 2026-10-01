@@ -253,7 +253,20 @@ void ClearTextWidthCache() {
         entry.size_text = penetrated
             ? (source.link_target_is_dir ? L"" : pulse::format::ByteSize(source.link_target_size, true))
             : (source.is_dir ? L"" : pulse::format::ByteSize(source.size, true));
+        // A zero creation / access time means "no time" (index rows and the
+        // recycle bin carry none), not 1601-01-01.
+        const auto list_time = [](const FILETIME& time) {
+            return time.dwLowDateTime || time.dwHighDateTime ? pulse::format::LocalFileTime(time)
+                                                             : std::wstring();
+        };
+        const auto time_value = [](const FILETIME& time) {
+            return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+        };
         entry.date_text = pulse::format::LocalFileTime(source.mtime);
+        entry.created_text = list_time(source.ctime);
+        entry.accessed_text = list_time(source.atime);
+        entry.created_value = time_value(source.ctime);
+        entry.accessed_value = time_value(source.atime);
         entry.path = !source.full_path.empty() ? source.full_path
                      : (fs::IsVirtualPath(vm.path) ? L"" : JoinDirName(vm.path, source.name));
         entry.attrs = source.attrs;

@@ -55,6 +55,7 @@ void AppPrefs::ResetToDefaults() {
     list_zebra_rows = true;
     list_size_bar = false;
     folder_sort_mode = 0;
+    details_columns = ui::kDetailsColumnsDefault;
     startup_open = 0;
     new_tab_open = 0;
     home_folder.clear();
@@ -129,6 +130,8 @@ std::wstring AppPrefs::ToJson() const {
     out += sidebar_collapsed ? L"true" : L"false";
     out += L",\n  \"folder_sort_mode\":";
     out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
+    out += L",\n  \"details_columns\":";
+    out += std::to_wstring(ui::NormalizeDetailsColumns(details_columns));
     out += L",\n  \"startup_open\":";
     out += startup_open == 1 ? L"1" : L"0";
     out += L",\n  \"new_tab_open\":";
@@ -250,6 +253,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
     if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
+    details_columns = ui::NormalizeDetailsColumns(static_cast<uint32_t>(pulse::json::ExtractInt(
+        json, L"details_columns", static_cast<int>(ui::kDetailsColumnsDefault))));
     startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
     new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 0) == 1 ? 1 : 0;
     home_folder = pulse::json::ExtractString(json, L"home_folder");

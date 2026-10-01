@@ -49,6 +49,8 @@ bool FillDirEntry(const std::wstring& dir, const std::wstring& name, fs::DirEntr
     out.cloud_recall = (data.dwFileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
     out.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
     out.mtime = data.ftLastWriteTime;
+    out.ctime = data.ftCreationTime;
+    out.atime = data.ftLastAccessTime;
     return true;
 }
 

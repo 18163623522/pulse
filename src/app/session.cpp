@@ -21,20 +21,29 @@ namespace {
 //           quick-access mask is dropped for files written before 7.
 constexpr int kSessionVersion = 7;
 
-std::wstring FormatScaled3(const std::array<float, 3>& edges) {
-    return std::to_wstring(static_cast<int>(std::lround(edges[0] * 10000.0f))) + L","
-         + std::to_wstring(static_cast<int>(std::lround(edges[1] * 10000.0f))) + L","
-         + std::to_wstring(static_cast<int>(std::lround(edges[2] * 10000.0f)));
+// Folder-view column widths: modified, type, size[, created, accessed].
+// The two date columns are only written when set, so the value stays the
+// three numbers older versions parse (they read the first three of five too).
+std::wstring FormatDetailsWidths(const ui::DetailsColumnWidths& edges) {
+    const size_t count = edges[3] > 0.0f || edges[4] > 0.0f ? 5 : 3;
+    std::wstring out;
+    for (size_t i = 0; i < count; ++i) {
+        if (i) out += L",";
+        out += std::to_wstring(static_cast<int>(std::lround(edges[i] * 10000.0f)));
+    }
+    return out;
 }
 
-std::array<float, 3> ParseScaled3(const std::wstring& value) {
-    std::array<int, 3> edges{};
-    std::array<float, 3> ratios{};
+ui::DetailsColumnWidths ParseDetailsWidths(const std::wstring& value) {
+    std::array<int, 5> edges{};
+    ui::DetailsColumnWidths ratios{};
     // Values <= 1 are pre-1.0.39 divider ratios (read back as "automatic");
     // larger values are manual column widths in DIP. 0 = automatic.
-    if (swscanf_s(value.c_str(), L"%d,%d,%d",
-                  &edges[0], &edges[1], &edges[2]) == 3 &&
-        std::all_of(edges.begin(), edges.end(), [](int v) { return v >= 0 && v <= 40000000; })) {
+    const int read = swscanf_s(value.c_str(), L"%d,%d,%d,%d,%d",
+                               &edges[0], &edges[1], &edges[2], &edges[3], &edges[4]);
+    if (read != 3 && read != 5) return ratios;
+    if (read == 3) edges[3] = edges[4] = 0;
+    if (std::all_of(edges.begin(), edges.end(), [](int v) { return v >= 0 && v <= 40000000; })) {
         for (size_t i = 0; i < ratios.size(); ++i)
             ratios[i] = static_cast<float>(edges[i]) / 10000.0f;
     }
@@ -142,7 +151,7 @@ std::wstring LayoutTabsToJson(const std::vector<LayoutTabSnapshot>& tabs) {
             out += L"\",\"view\":\"";
             out += ui::ViewModeName(pane.view);
             out += L"\",\"cols\":\"";
-            out += FormatScaled3(pane.columns);
+            out += FormatDetailsWidths(pane.columns);
             out += L"\",\"searchCols\":\"";
             out += FormatScaled4(pane.search_columns);
             out += L"\",\"colLayout\":";
@@ -287,7 +296,7 @@ bool ParseLayoutTabs(const std::wstring& array_json,
                 PaneFolderSnapshot pane;
                 pane.path = pulse::json::ExtractString(pj, L"path");
                 pane.view = ui::ParseViewMode(pulse::json::ExtractString(pj, L"view"));
-                pane.columns = ParseScaled3(pulse::json::ExtractString(pj, L"cols"));
+                pane.columns = ParseDetailsWidths(pulse::json::ExtractString(pj, L"cols"));
                 pane.search_columns = ParseScaled4(
                     pulse::json::ExtractString(pj, L"searchCols"));
                 pane.column_layout = pulse::json::ExtractBool(pj, L"colLayout");

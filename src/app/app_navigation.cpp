@@ -1478,7 +1478,7 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
     const size_t n = app::LayoutPresetCount(preset);
     std::wstring clone = L"C:\\";
     ui::ViewMode cloneView = ui::ViewMode::Details;
-    std::array<float, 3> cloneColumns{};
+    ui::DetailsColumnWidths cloneColumns{};
     std::array<float, 4> cloneSearchColumns{};
     if (s.pane && s.pane->ActiveTab() && !s.pane->ActiveTab()->current_path.empty())
         clone = s.pane->ActiveTab()->current_path;

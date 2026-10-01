@@ -47,6 +47,8 @@ enum MenuCmd : int {
     CmdFolderSortTop,     // 文件夹优先：始终置顶
     CmdFolderSortFollow,  // 文件夹优先：跟随排序方向
     CmdFolderSortMixed,   // 文件夹优先：与文件混排
+    CmdSortCreated = 31,  // 排序方式：创建日期
+    CmdSortAccessed = 32, // 排序方式：访问日期
     CmdLayoutSingle = 50,
     CmdLayoutTwoVertical,
     CmdLayoutTwoHorizontal,

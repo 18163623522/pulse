@@ -135,6 +135,8 @@ public:
     void AccentChoice(bool system_choice, uint32_t rgb);
     void RowHeight(int index);
     void FolderSort(int index);
+    // Optional Details columns (ui/details_column_set.h bits), every folder.
+    void DetailsColumns(uint32_t mask);
     void StartupOpen(int index);
     void NewTabOpen(int index);
     // 0 picks the default location's folder, 1 resets it to This PC.

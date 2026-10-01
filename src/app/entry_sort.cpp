@@ -82,6 +82,14 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
         cmp = CompareFileTime(&a.mtime, &b.mtime);
         if (cmp == 0) cmp = NameCompare(a.name, b.name);
         break;
+    case ui::SortColumn::Created:
+        cmp = CompareFileTime(&a.ctime, &b.ctime);
+        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        break;
+    case ui::SortColumn::Accessed:
+        cmp = CompareFileTime(&a.atime, &b.atime);
+        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        break;
     case ui::SortColumn::Type: {
         cmp = ExtensionCompare(a.name, b.name);
         if (cmp == 0) cmp = NameCompare(a.name, b.name);

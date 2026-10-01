@@ -1584,7 +1584,7 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
     out.group_by = tab->EffectiveGroup();
     if (out.group_by != 0 && tab->snapshot && !tab->content_results && !out.compare_active) {
         const GroupBy by = GroupByFromInt(out.group_by);
-        GroupClock clock = by == GroupBy::Date ? MakeGroupClock() : GroupClock{};
+        GroupClock clock = by == GroupBy::Date ? MakeGroupClock(tab->sort_column) : GroupClock{};
         // Tag groups re-split when the catalog changes; dates at midnight.
         const auto tag_catalog = by == GroupBy::Tag ? CurrentTagCatalog() : nullptr;
         const uint64_t day_key = by == GroupBy::Tag ? (tag_catalog ? tag_catalog->revision : 0) : clock.today;

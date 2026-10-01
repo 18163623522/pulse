@@ -2603,6 +2603,14 @@ BEGIN
   IDS_SETTINGS_NEW_TAB_OPEN "新标签页打开"
   IDS_SETTINGS_NEW_TAB_OPEN_DESC "新建标签页时显示当前文件夹，或默认位置"
   IDS_NEW_TAB_OPEN_CURRENT "当前文件夹"
+  IDS_COLUMN_CREATED "创建日期"
+  IDS_COLUMN_ACCESSED "访问日期"
+  IDS_SORT_HINT_CREATED "按文件创建的时间"
+  IDS_SORT_HINT_ACCESSED "按最后一次访问的时间"
+  IDS_DETAILS_COLUMNS_RESET "恢复默认列"
+  IDS_DETAILS_COLUMN_NO_ROOM "空间不足"
+  IDS_DETAILS_COLUMN_NO_ROOM_TIP "窗格太窄，加宽窗口或收起侧栏后显示"
+  IDS_DETAILS_COLUMN_NOT_IN_SEARCH "搜索中不显示"
 END
 
 LANGUAGE 0x09, 0x01
@@ -2791,4 +2799,12 @@ BEGIN
   IDS_SETTINGS_NEW_TAB_OPEN "New tabs open"
   IDS_SETTINGS_NEW_TAB_OPEN_DESC "Show the current folder in a new tab, or the default location"
   IDS_NEW_TAB_OPEN_CURRENT "Current folder"
+  IDS_COLUMN_CREATED "Date created"
+  IDS_COLUMN_ACCESSED "Date accessed"
+  IDS_SORT_HINT_CREATED "By when it was created"
+  IDS_SORT_HINT_ACCESSED "By when it was last accessed"
+  IDS_DETAILS_COLUMNS_RESET "Reset columns"
+  IDS_DETAILS_COLUMN_NO_ROOM "No room"
+  IDS_DETAILS_COLUMN_NO_ROOM_TIP "The pane is too narrow. Widen the window or collapse the sidebar to show it."
+  IDS_DETAILS_COLUMN_NOT_IN_SEARCH "Not in search"
 END

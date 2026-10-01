@@ -12,6 +12,8 @@ struct DirEntry {
     std::wstring name;
     uint64_t size = 0;
     FILETIME mtime{};
+    FILETIME ctime{}; // creation time; zero when the source has none (index hits, recycle bin)
+    FILETIME atime{}; // last access time; same rule
     DWORD attrs = 0;
     bool is_dir = false;
     bool is_reparse = false;

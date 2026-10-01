@@ -3,6 +3,7 @@
 #include "folder_view_prefs.h"
 #include "folder_sort_prefs.h"
 #include "entry_group.h"
+#include "../ui/details_column_set.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -28,6 +29,8 @@ struct AppPrefs {
     bool sidebar_collapsed = false;   // sidebar folded to its icon rail (Ctrl+B)
     // 0 folders first, 1 follow the sort direction, 2 mixed with files
     int folder_sort_mode = 0;
+    // Optional Details columns for every folder (ui/details_column_set.h bits).
+    uint32_t details_columns = ui::kDetailsColumnsDefault;
     // Where Pulse opens. home_folder is the default location; empty means This PC.
     // startup_open: 0 restore the last tabs, 1 open the default location.
     // new_tab_open: 0 the current folder, 1 the default location.

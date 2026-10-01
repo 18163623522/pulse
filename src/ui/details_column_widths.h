@@ -8,7 +8,8 @@ namespace pulse::ui {
 // Reserve readable name/path space, then give metadata its measured width.
 // Long type descriptions yield first on narrow panes, preserving complete
 // dates and sizes whenever possible.
-inline void FitDetailsMetadata(std::array<float, 5>& widths, int count,
+template <size_t N>
+inline void FitDetailsMetadata(std::array<float, N>& widths, int count,
                                const std::array<float, 3>& measured, float scale) {
     const int first = count - 3;
     float total = 0.0f;
