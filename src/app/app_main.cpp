@@ -2252,6 +2252,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         h = state.shot.height;
     }
 
+    constexpr DWORD kMainWindowStyle =
+        WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    static_assert((kMainWindowStyle & WS_CAPTION) == WS_CAPTION &&
+                  (kMainWindowStyle & WS_SYSMENU) == 0,
+                  "keep the system animations without DWM's duplicate caption buttons");
     HWND hwnd = CreateWindowExW(
         WS_EX_NOREDIRECTIONBITMAP,
         wc.lpszClassName,
@@ -2259,9 +2264,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         // Pulse paints the entire title bar (WM_NCCALCSIZE makes the whole
         // window client area). WS_CAPTION is what makes DWM play the system
         // minimize / maximize / restore animations; WM_NCACTIVATE keeps the
-        // classic caption from being repainted. The remaining styles retain
-        // resizing, the system menu, min/max and Snap Layout behavior.
-        WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+        // classic caption from being repainted. No WS_SYSMENU: with it DWM
+        // also draws its own min / max / close buttons in the extended frame,
+        // and they show through the Mica title bar behind Pulse's buttons.
+        // Minimize / maximize / close commands, Alt+F4 and resizing do not
+        // need it.
+        kMainWindowStyle,
         x, y, w, h,
         nullptr, nullptr, hInstance, &state);
 
