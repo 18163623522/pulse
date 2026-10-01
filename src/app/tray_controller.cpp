@@ -63,6 +63,7 @@ void TrayController::HideWindow() {
 
 void TrayController::RestoreWindow() {
     if (!hwnd_) return;
+    if (before_restore_ && !IsWindowVisible(hwnd_)) before_restore_();
     ShowWindow(hwnd_, IsIconic(hwnd_) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(hwnd_);
 }

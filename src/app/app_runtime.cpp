@@ -29,6 +29,7 @@
 #include "search_query.h"
 #include "resource.h"
 #include "pulse_version.h"
+#include "tray_reveal.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
 #include <windows.h>
@@ -279,8 +280,11 @@ void SelectLaunchedFile(AppState& s, const std::wstring& raw) {
 }
 
 void OpenFolderInNewTab(AppState& s, const std::wstring& raw) {
-    s.tray_controller.RestoreWindow();
     const std::wstring path = ResolveOpenFolderPath(raw);
+    // Back from the tray with "open the default location" at startup: an
+    // explicit folder starts over on its own, as launching with it would.
+    if (!path.empty() && !IsWindowVisible(s.hwnd) && TakeFreshStart(s)) StartFreshAt(s, path);
+    s.tray_controller.RestoreWindow();
     if (!path.empty() && !ActivateExistingFolderTab(s, path)) NewTab(s, path);
     else InvalidateRect(s.hwnd, nullptr, FALSE);
     // A file (Pulse as a file's default app, a launcher's "open containing

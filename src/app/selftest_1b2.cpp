@@ -31,6 +31,7 @@
 #include "session.h"
 #include "app_prefs.h"
 #include "startup_location.h"
+#include "tray_reveal.h"
 #include "details_column_menu.h"
 #include "entry_group.h"
 #include "context_menu.h"
@@ -3055,6 +3056,92 @@ void TestStartupLocation() {
     state.reset();
     RemoveDirectoryW(work.c_str());
     RemoveDirectoryW(home.c_str());
+    RemoveDirectoryW(root.c_str());
+}
+
+// Close to the tray and back with startup = default location: the window
+// starts over there (pinned tabs stay), a second launch with a folder starts
+// over at that folder, and "restore last tabs" leaves everything alone. The
+// tray icon itself is never added here: the hide step is simulated.
+void TestTrayReveal() {
+    wchar_t temp[MAX_PATH]{};
+    GetTempPathW(ARRAYSIZE(temp), temp);
+    const std::wstring root = std::wstring(temp) + L"PulseTrayReveal-" +
+                              std::to_wstring(GetCurrentProcessId());
+    const std::wstring work = root + L"\\work";
+    const std::wstring other = root + L"\\other";
+    const std::wstring home = root + L"\\home";
+    CreateDirectoryW(root.c_str(), nullptr);
+    for (const auto* dir : {&work, &other, &home}) CreateDirectoryW(dir->c_str(), nullptr);
+
+    auto state = std::make_unique<AppState>();
+    state->places.persist = false;
+    state->appPrefs.persist = false;
+    state->isolatedTest = true;
+    HWND hwnd = CreateWindowExW(0, L"STATIC", L"", WS_POPUP,
+        0, 0, 1000, 700, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(hwnd != nullptr, L"tray reveal: isolated owner created");
+    if (hwnd) {
+        state->hwnd = hwnd;
+        const bool ready = state->compositor.Init(hwnd);
+        Check(ready, L"tray reveal: renderer initialized");
+        if (ready) {
+            state->renderer.SetCompositor(&state->compositor);
+            state->window_tabs.NewTab(work);
+            state->pane = state->window_tabs.Active()->panes.front().get();
+            StartLoadingPath(*state, *state->pane->ActiveTab(), work);
+            NewTab(*state, other);
+            NewTab(*state, work);
+            state->window_tabs.items[0]->pinned = true;
+            auto active_is = [&](const std::wstring& path) {
+                const app::Tab* tab = ActiveTab(*state);
+                return tab && (path.empty() ? tab->current_path.empty()
+                                            : _wcsicmp(tab->current_path.c_str(),
+                                                       fs::NormalizePath(path).c_str()) == 0);
+            };
+
+            state->hidden_to_tray = true;
+            Check(!TakeFreshStart(*state) && !state->hidden_to_tray && state->window_tabs.items.size() == 3,
+                  L"tray reveal: restoring last tabs keeps the window as it was");
+            state->appPrefs.startup_open = 1;
+            state->appPrefs.home_folder = home;
+            Check(!TakeFreshStart(*state), L"tray reveal: nothing starts over unless the window was closed");
+
+            InstallTrayRevealHook(*state);
+            state->tray_controller.Attach(hwnd, GetModuleHandleW(nullptr));
+            state->hidden_to_tray = true;
+            state->tray_controller.RestoreWindow();
+            Check(IsWindowVisible(hwnd) && state->window_tabs.items.size() == 2 &&
+                  state->window_tabs.items[0]->pinned && state->window_tabs.active == 1 &&
+                  active_is(home) && !state->hidden_to_tray,
+                  L"tray reveal: shown from the tray it starts over at the default location, pinned tabs stay");
+            NewTab(*state, other);
+            state->tray_controller.RestoreWindow();
+            Check(state->window_tabs.items.size() == 3 && active_is(other),
+                  L"tray reveal: raising a visible window leaves its tabs alone");
+
+            ShowWindow(hwnd, SW_HIDE);
+            state->hidden_to_tray = true;
+            OpenFolderInNewTab(*state, other);
+            Check(IsWindowVisible(hwnd) && state->window_tabs.items.size() == 2 && active_is(other) &&
+                  state->window_tabs.items[0]->pinned,
+                  L"tray reveal: a second launch with a folder starts over at that folder");
+
+            ShowWindow(hwnd, SW_HIDE);
+            state->hidden_to_tray = true;
+            state->appPrefs.home_folder.clear();
+            state->tray_controller.RestoreWindow();
+            Check(state->window_tabs.items.size() == 2 && active_is(std::wstring()),
+                  L"tray reveal: a This PC default starts over at This PC");
+            ShowWindow(hwnd, SW_HIDE);
+            state->tray_controller.Detach();
+        }
+        state->watches.Stop();
+        DestroyWindow(hwnd);
+        state->hwnd = nullptr;
+    }
+    state.reset();
+    for (const auto* dir : {&work, &other, &home}) RemoveDirectoryW(dir->c_str());
     RemoveDirectoryW(root.c_str());
 }
 
@@ -6185,6 +6272,7 @@ int RunSelfTest1B2() {
         TestFolderViews();
         TestFolderSorts();
         TestStartupLocation();
+        TestTrayReveal();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -6336,6 +6424,7 @@ int RunSelfTest1B2() {
     TestFolderViews();
     TestFolderSorts();
     TestStartupLocation();
+    TestTrayReveal();
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();

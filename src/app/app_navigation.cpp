@@ -1897,7 +1897,10 @@ std::wstring NewTabPath(const AppState& s) {
 }
 
 void OpenNewTab(AppState& s) {
-    const std::wstring path = NewTabPath(s);
+    OpenTabAt(s, NewTabPath(s));
+}
+
+void OpenTabAt(AppState& s, const std::wstring& path) {
     if (!path.empty()) {
         NewTab(s, path);
         return;
