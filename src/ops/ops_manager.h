@@ -172,6 +172,11 @@ public:
     // `wt.exe -d <dir>` on the ops worker thread. Compile-verified only.
     void OpenTerminal(const std::wstring& dir);
 
+    // Start a console program (cmd.exe, powershell.exe, ...) with `dir` as its
+    // working directory, on the open thread. wt.exe gets `-d <dir>` before args.
+    void OpenProgramIn(const std::wstring& exe, const std::wstring& dir,
+                       const std::wstring& args);
+
     // --- Explorer context-menu sessions (pulse_shell IContextMenu) ---------
     // Runs on a dedicated forwarding thread so a slow pipe reconnect or an
     // in-flight transfer never delays a right-click. The callback fires on the

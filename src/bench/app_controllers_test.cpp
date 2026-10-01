@@ -1,4 +1,5 @@
 #include "../app/settings_controller.h"
+#include "../app/address_bar_command.h"
 #include "../app/session.h"
 #include "../app/context_menu_controller.h"
 #include "../app/single_instance_coordinator.h"
@@ -38,6 +39,43 @@ namespace {
 
 bool Report(const char* name, bool passed) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", name);
+    return passed;
+}
+
+bool TestAddressBarCommands() {
+    using pulse::app::AddressBarProgram;
+    using pulse::app::ParseAddressBarCommand;
+    auto is = [](const wchar_t* text, AddressBarProgram program, const wchar_t* args) {
+        const auto command = ParseAddressBarCommand(text);
+        return command.program == program && command.args == args;
+    };
+    bool passed = true;
+    passed &= Report("address bar: cmd / powershell / pwsh / wt are recognized",
+        is(L"cmd", AddressBarProgram::Cmd, L"") &&
+        is(L"powershell", AddressBarProgram::PowerShell, L"") &&
+        is(L"pwsh", AddressBarProgram::Pwsh, L"") &&
+        is(L"wt", AddressBarProgram::WindowsTerminal, L""));
+    passed &= Report("address bar: case, .exe suffix and surrounding spaces are ignored",
+        is(L"  CMD.exe ", AddressBarProgram::Cmd, L"") &&
+        is(L"PowerShell.EXE", AddressBarProgram::PowerShell, L"") &&
+        is(L"\x3000WT\x3000", AddressBarProgram::WindowsTerminal, L""));
+    passed &= Report("address bar: arguments after the program are kept",
+        is(L"cmd /k dir", AddressBarProgram::Cmd, L"/k dir") &&
+        is(L"wt   -p Ubuntu  ", AddressBarProgram::WindowsTerminal, L"-p Ubuntu"));
+    passed &= Report("address bar: paths and other words still navigate",
+        is(L"", AddressBarProgram::None, L"") &&
+        is(L"C:\\cmd", AddressBarProgram::None, L"") &&
+        is(L"cmd\\sub", AddressBarProgram::None, L"") &&
+        is(L"cmdx", AddressBarProgram::None, L"") &&
+        is(L"wtf", AddressBarProgram::None, L"") &&
+        is(L".exe", AddressBarProgram::None, L"") &&
+        is(L"\"cmd\"", AddressBarProgram::None, L"") &&
+        is(L"D:\\Projects\\wt", AddressBarProgram::None, L""));
+    passed &= Report("address bar: program executables",
+        std::wstring(pulse::app::AddressBarProgramExe(AddressBarProgram::Cmd)) == L"cmd.exe" &&
+        std::wstring(pulse::app::AddressBarProgramExe(AddressBarProgram::Pwsh)) == L"pwsh.exe" &&
+        std::wstring(pulse::app::AddressBarProgramExe(AddressBarProgram::WindowsTerminal)) == L"wt.exe" &&
+        pulse::app::AddressBarProgramExe(AddressBarProgram::None) == nullptr);
     return passed;
 }
 
@@ -620,6 +658,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     passed &= Report("settings controller joins tasks during destruction",
         lifecycle_completed);
+
+    passed &= TestAddressBarCommands();
 
     std::printf("\n== app controller tests: %s ==\n", passed ? "PASS" : "FAIL");
     return passed ? 0 : 1;
