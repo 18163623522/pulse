@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <shlwapi.h>
 #include <shlobj.h>
+#include <algorithm>
 #include <cwctype>
 
 #pragma comment(lib, "shlwapi.lib")
@@ -639,6 +640,10 @@ bool AppPrefs::ApplyWinE(bool on) {
     SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.c_str());
     SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.substr(0, shell.rfind(L'\\')).c_str());
     return true;
+}
+
+int MenuRowHeightDip(int list_row_height) noexcept {
+    return std::clamp(list_row_height + 2, 28, 40);
 }
 
 bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept {
