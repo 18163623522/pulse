@@ -605,6 +605,8 @@ enum class StringId : UINT {
     ContextRowNewTab = IDS_CONTEXT_ROW_NEW_TAB,
     ContextRowStar = IDS_CONTEXT_ROW_STAR,
     ContextRowMore = IDS_CONTEXT_ROW_MORE,
+    GlobalSearchHandoff = IDS_GLOBAL_SEARCH_HANDOFF,
+    GlobalSearchTruncatedShort = IDS_GLOBAL_SEARCH_TRUNCATED_SHORT,
     DetailsColumnNoRoom = IDS_DETAILS_COLUMN_NO_ROOM,
     DetailsColumnNoRoomTip = IDS_DETAILS_COLUMN_NO_ROOM_TIP,
     DetailsColumnNotInSearch = IDS_DETAILS_COLUMN_NOT_IN_SEARCH,

@@ -10,7 +10,7 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_CONTEXT_ROW_MORE;
+constexpr UINT kLastString = IDS_GLOBAL_SEARCH_TRUNCATED_SHORT;
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
               static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
               static_cast<UINT>(StringId::FolderSortMixed) <= kLastString &&
@@ -24,7 +24,8 @@ static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstStrin
               static_cast<UINT>(StringId::ApplyViewAllConfirm) <= kLastString &&
               static_cast<UINT>(StringId::NewTabOpenCurrent) <= kLastString &&
               static_cast<UINT>(StringId::HelpMoveFocus) <= kLastString &&
-              static_cast<UINT>(StringId::ContextRowMore) <= kLastString);
+              static_cast<UINT>(StringId::ContextRowMore) <= kLastString &&
+              static_cast<UINT>(StringId::GlobalSearchTruncatedShort) <= kLastString);
 
 HINSTANCE g_module = nullptr;
 std::atomic<Language> g_preference{Language::System};
