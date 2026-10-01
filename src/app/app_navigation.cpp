@@ -17,6 +17,7 @@
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
 #include "entry_group.h"
+#include "entry_order_hold.h"
 #include "session.h"
 #include "../fs/fs_net_cache.h"
 #include "context_menu.h"
@@ -883,6 +884,10 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     }
     tab.net_readonly = false;
     tab.cache_unix = 0;
+    // Opening a folder shows it in sort order again (#13).
+    tab.refresh_keeps_order = false;
+    tab.order_held = false;
+    tab.held_renames.clear();
     if (tab.snapshot_path != normalized) {
         tab.SetSnapshot(nullptr);
         tab.applied_generation = 0;
@@ -1008,7 +1013,24 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
                         s.places.SetRecentKind(entry.full_path, item_kind);
                 }
             }
-            tab->SetSnapshot(res.snapshot);
+            // A background refresh keeps the rows where they are; F5 and a
+            // new sort take the worker's order as is (#13).
+            if (res.snapshot && !tab->held_renames.empty())
+                app::FollowHeldRenames(tab->held_renames, *res.snapshot, pendingNames, pendingFocus);
+            fs::SnapshotPtr listing = res.snapshot;
+            const bool keep_order = tab->refresh_keeps_order && res.snapshot && tab->snapshot &&
+                tab->snapshot_path == res.path && !fs::IsVirtualPath(res.path);
+            if (keep_order) {
+                const app::ScopedEntryGrouping grouping(tab->EffectiveGroup(), tab->current_path);
+                listing = std::make_shared<std::vector<fs::DirEntry>>(app::KeepEntryOrder(
+                    *tab->snapshot, *res.snapshot, tab->held_renames,
+                    tab->sort_column, tab->sort_direction));
+            }
+            tab->order_held = keep_order;
+            tab->refresh_keeps_order = false;
+            if (keep_order) app::PruneHeldRenames(tab->held_renames, *res.snapshot);
+            else tab->held_renames.clear();
+            tab->SetSnapshot(listing);
             tab->git_root = res.git_root;
             tab->loading = false;
             tab->pending_generation = 0;
@@ -1137,7 +1159,14 @@ void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
         return;
     }
     for (app::Tab* tab : tabs) {
+        // F5 re-sorts; anything else merges into the rows on screen unless an
+        // in-flight load (navigation, F5) already wants sort order (#13).
+        if (reason == RefreshReason::Explicit) tab->refresh_keeps_order = false;
+        else if (tab->pending_generation == 0) tab->refresh_keeps_order = true;
+        const bool reveal = reason == RefreshReason::Explicit && tab->order_held;
         CaptureListingSelection(*tab);
+        // The selection usually moved when the held rows re-sort; follow it.
+        if (reveal && tab->SelectedCount() > 0) tab->pending_ensure_selection_visible = true;
         tab->loading = !tab->snapshot;
         tab->pending_generation = 0;
     }
@@ -1238,6 +1267,7 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
             if (_wcsicmp(focus.c_str(), event.old_name.c_str()) == 0) focus = event.name;
         }
         tab->SetSnapshot(std::move(copy));
+        tab->order_held = true;
         if (!names.empty()) tab->RemapSelection(names, focus);
         else if (tab->snapshot && tab->EntryCount() != 0 && tab->selected_index < 0)
             tab->SelectOnly(0);

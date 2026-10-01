@@ -453,6 +453,9 @@ void HideRenameOverlay(AppState& s, bool commit) {
                 req.new_name = buf;
                 tab->pending_selected_name = buf;
                 tab->pending_selected_names = { buf };
+                // The renamed row keeps its place even if the refresh beats
+                // the watcher event (#13).
+                tab->held_renames.push_back({tab->EntryAt(index).name, buf});
                 s.ops.Submit(std::move(req));
             }
         }

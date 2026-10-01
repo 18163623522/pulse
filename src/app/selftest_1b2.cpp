@@ -28,6 +28,7 @@
 #include "app_worker.h"
 #include "entry_sort.h"
 #include "snapshot_patch.h"
+#include "entry_order_hold.h"
 #include "session.h"
 #include "app_prefs.h"
 #include "startup_location.h"
@@ -3425,6 +3426,8 @@ void TestSnapshotPatchBatch() {
     MoveFileW(full(L"Gamma.txt").c_str(), full(L"gamma.txt").c_str());
     make(L"zeta.txt", 99);
     make(L"file20.txt", 1);
+    make(L"alpha.txt", 3);  // empty -> tiny: changes its size group
+    MoveFileW(full(L"epsilon.md").c_str(), full(L"epsilon.txt").c_str());  // changes its type group
     const auto ev = [](DWORD action, const wchar_t* name, const wchar_t* old_name = L"") {
         fs::DirNotifyEvent event;
         event.action = action;
@@ -3439,13 +3442,19 @@ void TestSnapshotPatchBatch() {
         ev(FILE_ACTION_RENAMED_NEW_NAME, L"gamma.txt", L"Gamma.txt"),
         ev(FILE_ACTION_ADDED, L"temp.tmp"), ev(FILE_ACTION_REMOVED, L"temp.tmp"),
         ev(FILE_ACTION_MODIFIED, L"zeta.txt"), ev(FILE_ACTION_ADDED, L"file20.txt"),
-        ev(FILE_ACTION_ADDED, L"ghost.txt"), ev(FILE_ACTION_REMOVED, L"missing.txt")};
+        ev(FILE_ACTION_ADDED, L"ghost.txt"), ev(FILE_ACTION_REMOVED, L"missing.txt"),
+        ev(FILE_ACTION_MODIFIED, L"alpha.txt"),
+        ev(FILE_ACTION_RENAMED_NEW_NAME, L"epsilon.txt", L"epsilon.md")};
 
     bool same = true;
     const ui::SortColumn cols[] = {ui::SortColumn::Name, ui::SortColumn::Size,
                                    ui::SortColumn::Mtime, ui::SortColumn::Type};
     const ui::SortDirection dirs[] = {ui::SortDirection::Asc, ui::SortDirection::Desc};
     std::vector<fs::DirEntry> last;
+    const int groups[] = {static_cast<int>(GroupBy::None), static_cast<int>(GroupBy::Type),
+                          static_cast<int>(GroupBy::Size)};
+    for (const int group : groups) {
+    const ScopedEntryGrouping grouping(group);
     for (const auto col : cols) {
         for (const auto sort_dir : dirs) {
             std::vector<fs::DirEntry> base = initial;
@@ -3469,7 +3478,8 @@ void TestSnapshotPatchBatch() {
             last = batch;
         }
     }
-    Check(same, L"patch batch: identical to per-event patching for every sort order");
+    }
+    Check(same, L"patch batch: identical to per-event patching for every sort order and grouping");
     const auto has = [&](const wchar_t* name) {
         return std::any_of(last.begin(), last.end(),
                            [&](const fs::DirEntry& e) { return e.name == name; });
@@ -3487,12 +3497,166 @@ void TestSnapshotPatchBatch() {
                               ui::SortDirection::Asc) == NotifyPatch::NeedFullEnum,
           L"patch batch: nested names require a full enumeration");
 
-    for (const wchar_t* name : {L"alpha.txt", L"gamma.txt", L"omega.txt", L"epsilon.md",
+    for (const wchar_t* name : {L"alpha.txt", L"gamma.txt", L"omega.txt", L"epsilon.txt",
                                 L"file2.txt", L"file3.txt", L"file10.txt", L"file20.txt",
                                 L"zeta.txt"})
         DeleteFileW(full(name).c_str());
     RemoveDirectoryW(full(L"docs").c_str());
     RemoveDirectoryW(dir.c_str());
+}
+
+// #13: patches keep rows on screen in place like File Explorer.
+void TestSnapshotPatchHoldsRows() {
+    wchar_t temp[MAX_PATH]{};
+    GetTempPathW(ARRAYSIZE(temp), temp);
+    const std::wstring dir = std::wstring(temp) + L"PulsePatchHold-" +
+                             std::to_wstring(GetCurrentProcessId());
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const auto full = [&](const wchar_t* name) { return dir + L"\\" + name; };
+    const auto make = [&](const wchar_t* name, DWORD bytes) {
+        HANDLE hf = CreateFileW(full(name).c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hf == INVALID_HANDLE_VALUE) return;
+        std::vector<char> data(bytes, 'x');
+        DWORD written = 0;
+        if (bytes) WriteFile(hf, data.data(), bytes, &written, nullptr);
+        CloseHandle(hf);
+    };
+    const auto ev = [](DWORD action, const wchar_t* name, const wchar_t* old_name = L"") {
+        fs::DirNotifyEvent event;
+        event.action = action;
+        event.name = name;
+        event.old_name = old_name;
+        return event;
+    };
+    const auto names = [](const std::vector<fs::DirEntry>& entries) {
+        std::wstring out;
+        for (const auto& entry : entries) {
+            if (!out.empty()) out += L",";
+            out += entry.name;
+        }
+        return out;
+    };
+    std::vector<fs::DirEntry> entries;
+    for (const wchar_t* name : {L"alpha.txt", L"beta.txt", L"gamma.txt"}) {
+        make(name, 1);
+        fs::DirEntry entry;
+        if (FillDirEntry(dir, name, entry)) entries.push_back(std::move(entry));
+    }
+    const auto name_asc = [](std::vector<fs::DirEntry>& list, const fs::DirNotifyEvent& event,
+                             const std::wstring& folder) {
+        return ApplyDirNotify(list, folder, event, ui::SortColumn::Name, ui::SortDirection::Asc);
+    };
+
+    MoveFileW(full(L"alpha.txt").c_str(), full(L"zeta.txt").c_str());
+    Check(name_asc(entries, ev(FILE_ACTION_RENAMED_NEW_NAME, L"zeta.txt", L"alpha.txt"), dir) ==
+              NotifyPatch::Applied &&
+          names(entries) == L"zeta.txt,beta.txt,gamma.txt",
+          L"patch hold: a renamed row keeps its place instead of re-sorting");
+    make(L"aardvark.txt", 1);
+    Check(name_asc(entries, ev(FILE_ACTION_ADDED, L"aardvark.txt"), dir) == NotifyPatch::Applied &&
+          names(entries) == L"zeta.txt,beta.txt,gamma.txt,aardvark.txt",
+          L"patch hold: a new row lands at the end until the next sort");
+    make(L"beta.txt", 5000);
+    Check(ApplyDirNotify(entries, dir, ev(FILE_ACTION_MODIFIED, L"beta.txt"),
+                         ui::SortColumn::Size, ui::SortDirection::Desc) == NotifyPatch::Applied &&
+          names(entries) == L"zeta.txt,beta.txt,gamma.txt,aardvark.txt" &&
+          entries[1].size == 5000u,
+          L"patch hold: a modified row keeps its place and takes the new size");
+
+    {
+        const ScopedEntryGrouping grouping(static_cast<int>(GroupBy::Type));
+        CreateDirectoryW(full(L"new").c_str(), nullptr);
+        make(L"notes.md", 1);
+        name_asc(entries, ev(FILE_ACTION_ADDED, L"new"), dir);
+        name_asc(entries, ev(FILE_ACTION_ADDED, L"notes.md"), dir);
+        Check(names(entries) == L"new,notes.md,zeta.txt,beta.txt,gamma.txt,aardvark.txt",
+              L"patch hold: grouped, a new row joins the end of its own group");
+        MoveFileW(full(L"zeta.txt").c_str(), full(L"zeta.md").c_str());
+        name_asc(entries, ev(FILE_ACTION_RENAMED_NEW_NAME, L"zeta.md", L"zeta.txt"), dir);
+        Check(names(entries) == L"new,notes.md,zeta.md,beta.txt,gamma.txt,aardvark.txt",
+              L"patch hold: grouped, a rename into another group moves to that group's end");
+    }
+
+    for (const wchar_t* name : {L"zeta.md", L"beta.txt", L"gamma.txt", L"aardvark.txt", L"notes.md"})
+        DeleteFileW(full(name).c_str());
+    RemoveDirectoryW(full(L"new").c_str());
+    RemoveDirectoryW(dir.c_str());
+}
+
+void TestEntryOrderHold() {
+    const auto entry = [](const wchar_t* name, bool is_dir = false, uint64_t size = 1) {
+        fs::DirEntry e;
+        e.name = name;
+        e.is_dir = is_dir;
+        e.attrs = is_dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        e.size = size;
+        return e;
+    };
+    const auto names = [](const std::vector<fs::DirEntry>& entries) {
+        std::wstring out;
+        for (const auto& e : entries) {
+            if (!out.empty()) out += L",";
+            out += e.name;
+        }
+        return out;
+    };
+    const auto sorted = [](std::vector<fs::DirEntry> list) {
+        std::sort(list.begin(), list.end(), [](const fs::DirEntry& a, const fs::DirEntry& b) {
+            return EntryLess(a, b, ui::SortColumn::Name, ui::SortDirection::Asc);
+        });
+        return list;
+    };
+    const auto keep = [](const std::vector<fs::DirEntry>& shown, const std::vector<fs::DirEntry>& fresh,
+                         const std::vector<EntryRename>& renames) {
+        return KeepEntryOrder(shown, fresh, renames, ui::SortColumn::Name, ui::SortDirection::Asc);
+    };
+
+    const std::vector<fs::DirEntry> shown = {entry(L"alpha"), entry(L"echo"), entry(L"delta"),
+                                             entry(L"beta")};
+    const std::vector<fs::DirEntry> fresh = sorted({entry(L"alpha", false, 42), entry(L"beta"),
+                                                    entry(L"charlie"), entry(L"delta"),
+                                                    entry(L"zulu")});
+    const auto held = keep(shown, fresh, {{L"echo", L"zulu"}});
+    Check(names(held) == L"alpha,zulu,delta,beta,charlie",
+          L"order hold: rows keep their place, a renamed row its old one, new rows go last");
+    Check(!held.empty() && held[0].size == 42u,
+          L"order hold: kept rows take the fresh metadata");
+    Check(names(keep(shown, fresh, {})) == L"alpha,delta,beta,charlie,zulu",
+          L"order hold: without a rename hint the new name is just a new row");
+    Check(names(keep({}, fresh, {})) == names(fresh),
+          L"order hold: nothing shown yet means plain sort order");
+
+    {
+        const ScopedEntryGrouping grouping(static_cast<int>(GroupBy::Type));
+        const std::vector<fs::DirEntry> shown_grouped = {entry(L"docs", true), entry(L"c.txt"),
+                                                         entry(L"a.txt")};
+        const auto fresh_grouped = sorted({entry(L"docs", true), entry(L"new", true),
+                                           entry(L"z.md"), entry(L"a.txt"), entry(L"b.txt"),
+                                           entry(L"c.txt")});
+        Check(names(keep(shown_grouped, fresh_grouped, {})) == L"docs,new,z.md,c.txt,a.txt,b.txt",
+              L"order hold: grouped, new rows join the end of their own group");
+        const auto fresh_moved = sorted({entry(L"docs", true), entry(L"a.md"), entry(L"c.txt")});
+        Check(names(keep(shown_grouped, fresh_moved, {{L"a.txt", L"a.md"}})) == L"docs,a.md,c.txt",
+              L"order hold: grouped, a rename into another group leaves its old row");
+    }
+
+    {
+        std::vector<std::wstring> selected = {L"apple.txt", L"fig.txt", L"pending.txt"};
+        std::wstring focus = L"apple.txt";
+        FollowHeldRenames({{L"apple.txt", L"zebra.txt"}, {L"pending.txt", L"later.txt"}},
+                          {entry(L"zebra.txt"), entry(L"fig.txt"), entry(L"pending.txt")},
+                          selected, focus);
+        Check(selected.size() == 3 && selected[0] == L"zebra.txt" && selected[1] == L"fig.txt" &&
+                  selected[2] == L"pending.txt" && focus == L"zebra.txt",
+              L"order hold: a selection captured before the rename follows the new name");
+    }
+
+    std::vector<EntryRename> renames = {{L"pending.txt", L"later.txt"}, {L"done.txt", L"new.txt"},
+                                        {L"Case.txt", L"case.txt"}};
+    PruneHeldRenames(renames, {entry(L"pending.txt"), entry(L"new.txt"), entry(L"case.txt")});
+    Check(renames.size() == 1 && renames[0].old_name == L"pending.txt",
+          L"order hold: renames the listing already reflects are dropped");
 }
 
 void TestSnapshotStorePutKeepsWorkerGeneration() {
@@ -6407,6 +6571,8 @@ int RunSelfTest1B2() {
         wcscmp(test_case, L"snapshot-patch") == 0) {
         TestSnapshotPatch();
         TestSnapshotPatchBatch();
+        TestSnapshotPatchHoldsRows();
+        TestEntryOrderHold();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -6541,6 +6707,8 @@ int RunSelfTest1B2() {
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();
+    TestSnapshotPatchHoldsRows();
+    TestEntryOrderHold();
     TestSnapshotStorePutKeepsWorkerGeneration();
     TestDataObject();
     TestClipboardText();
