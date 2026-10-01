@@ -988,6 +988,22 @@ void OpsManager::OpenTerminal(const std::wstring& dir) {
     EnqueueOpen(std::move(item));
 }
 
+void OpsManager::OpenProgramIn(const std::wstring& exe, const std::wstring& dir,
+                               const std::wstring& args) {
+    if (exe.empty()) return;
+    QueueItem item;
+    item.open_path = dir;      // lpDirectory
+    item.open_file = exe;
+    item.open_verb = L"open";
+    if (_wcsicmp(exe.c_str(), L"wt.exe") == 0) {
+        item.open_args = TerminalCommandLine(dir);
+        if (!args.empty()) item.open_args += L" " + args;
+    } else {
+        item.open_args = args;
+    }
+    EnqueueOpen(std::move(item));
+}
+
 void OpsManager::CancelCurrent() {
     if (transfer_active_.load()) {
         transfer_cancel_.store(true);

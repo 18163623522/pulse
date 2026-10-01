@@ -1,6 +1,7 @@
 #include "../ui/edit_host.h"
 // app_hosted_edit.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "address_bar_command.h"
 #include "tab_shortcuts.h"
 #include "../ui/address_search_layout.h"
 #include "../ui/lumatext_renderer.h"
@@ -186,6 +187,22 @@ void ShowAddressEditor(AppState& s) {
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
+// Explorer starts the program in the folder being shown. Virtual places (This
+// PC, search results, recycle bin) have no working directory, so they use the
+// profile folder instead.
+static void RunAddressBarCommand(AppState& s, const app::AddressBarCommand& command) {
+    const app::Tab* tab = ActiveTab(s);
+    std::wstring dir;
+    if (tab && !tab->current_path.empty() && !fs::IsVirtualPath(tab->current_path))
+        dir = ClipboardPath(tab->current_path);
+    if (dir.empty()) {
+        wchar_t profile[MAX_PATH]{};
+        const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", profile, ARRAYSIZE(profile));
+        if (n > 0 && n < ARRAYSIZE(profile)) dir.assign(profile, n);
+    }
+    s.ops.OpenProgramIn(app::AddressBarProgramExe(command.program), dir, command.args);
+}
+
 void HideAddressEditor(AppState& s, bool navigate) {
     if (!s.hwndAddressEdit) return;
     FlushAddressSearch(s);
@@ -193,7 +210,10 @@ void HideAddressEditor(AppState& s, bool navigate) {
     if (navigate) {
         wchar_t buf[MAX_PATH * 4];
         GetWindowTextW(s.hwndAddressEdit, buf, ARRAYSIZE(buf));
-        NavigateTo(s, FormatAddressPath(buf));
+        // cmd / powershell / pwsh / wt open a console here instead of navigating.
+        const app::AddressBarCommand command = app::ParseAddressBarCommand(buf);
+        if (command.program != app::AddressBarProgram::None) RunAddressBarCommand(s, command);
+        else NavigateTo(s, FormatAddressPath(buf));
     }
     s.addressIgnoreKillFocus = true;
     ShowWindow(s.hwndAddressEdit, SW_HIDE);
