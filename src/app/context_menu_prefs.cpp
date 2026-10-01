@@ -51,6 +51,7 @@ void ContextMenuPrefs::ResetToDefaults() {
     item_enabled.clear();
     seen.clear();
     slow_ext.clear();
+    builtin_hidden = 0;
 }
 
 bool ContextMenuPrefs::CategoryEnabled(ipc::CtxMenuCategory c) const {
@@ -95,6 +96,11 @@ bool ContextMenuPrefs::ItemEnabled(const std::wstring& key, ipc::CtxMenuCategory
     if (it != item_enabled.end()) return it->second;
     if (c == ipc::CtxMenuCategory::OpenWith && from_com) return open_with_com;
     return CategoryEnabled(c);
+}
+
+void ContextMenuPrefs::SetBuiltinVisible(BuiltinMenuItem item, bool on) {
+    if (on) builtin_hidden &= ~BuiltinMenuBit(item);
+    else builtin_hidden |= BuiltinMenuBit(item);
 }
 
 void ContextMenuPrefs::SetItemEnabled(const std::wstring& key, bool on) {
@@ -208,7 +214,17 @@ std::wstring ContextMenuPrefs::ToJson() const {
     cat(L"open_with_com", open_with_com, false);
     cat(L"system_extra", system_extra, false);
     cat(L"print", print, true);
-    out += L"  },\n  \"items\":{\n";
+    out += L"  },\n  \"pulse_items\":{";
+    bool first_builtin = true;
+    for (int i = 0; i < kBuiltinMenuItemCount; ++i) {
+        const auto item = static_cast<BuiltinMenuItem>(i);
+        if (BuiltinVisible(item)) continue;
+        out += first_builtin ? L"\n    \"" : L",\n    \"";
+        out += BuiltinMenuKey(item);
+        out += L"\":false";
+        first_builtin = false;
+    }
+    out += first_builtin ? L"},\n  \"items\":{\n" : L"\n  },\n  \"items\":{\n";
     size_t n = 0;
     for (const auto& kv : item_enabled) {
         std::wstring key;
@@ -282,6 +298,14 @@ bool ContextMenuPrefs::FromJson(const std::wstring& json) {
     open_with_com = pulse::json::ExtractBool(src, L"open_with_com", false);
     system_extra = pulse::json::ExtractBool(src, L"system_extra", false);
     print = pulse::json::ExtractBool(src, L"print", true);
+
+    builtin_hidden = 0;
+    const std::wstring builtin = ExtractObject(json, L"pulse_items");
+    for (int i = 0; i < kBuiltinMenuItemCount && !builtin.empty(); ++i) {
+        const auto item = static_cast<BuiltinMenuItem>(i);
+        if (!pulse::json::ExtractBool(builtin, std::wstring(BuiltinMenuKey(item)), true))
+            builtin_hidden |= BuiltinMenuBit(item);
+    }
 
     item_enabled.clear();
     const std::wstring items = ExtractObject(json, L"items");

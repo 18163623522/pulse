@@ -488,6 +488,7 @@ add_executable(pulse_app_controllers_test
     src/app/folder_sort_prefs.cpp
     src/app/startup_location.cpp
     src/app/context_menu_prefs.cpp
+    src/app/builtin_menu_items.cpp
     src/ui/view_layout.cpp
     src/index/index_client.cpp
     src/index/network_agent_client.cpp)

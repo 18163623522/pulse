@@ -514,7 +514,19 @@ void SettingsController::ToggleUi(int index) {
         context_->Save();
     } else if (index >= 100) {
         const size_t item = static_cast<size_t>(index - 100);
-        if (item >= context_->seen.size()) return;
+        if (item >= context_->seen.size()) {
+            // Rows after the seen catalog are Pulse's own commands, in
+            // BuiltinMenuItem order (app_runtime builds them the same way).
+            const size_t builtin = item - context_->seen.size();
+            if (builtin >= static_cast<size_t>(kBuiltinMenuItemCount)) return;
+            const auto which = static_cast<BuiltinMenuItem>(builtin);
+            context_->SetBuiltinVisible(which, !context_->BuiltinVisible(which));
+            context_->Save();
+            if (which == BuiltinMenuItem::RowNewTab || which == BuiltinMenuItem::RowStar ||
+                which == BuiltinMenuItem::RowMore)
+                Apply(SettingsEffect::ListStyle);
+            return;
+        }
         const auto& seen = context_->seen[item];
         const bool enabled = context_->ItemEnabled(seen.key, seen.category, seen.from_com);
         context_->SetItemEnabled(seen.key, !enabled);

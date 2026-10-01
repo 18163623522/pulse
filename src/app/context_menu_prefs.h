@@ -6,6 +6,7 @@
 // applies these prefs so turning 「发送到」 back on actually works.
 #pragma once
 #include "../ipc/ctx_menu_util.h"
+#include "builtin_menu_items.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,6 +52,8 @@ struct ContextMenuPrefs {
     std::unordered_map<std::wstring, bool> item_enabled;
     std::vector<SeenMenuItem> seen;
     std::unordered_map<std::wstring, SlowComExt> slow_ext;
+    // Pulse's own menu rows / row buttons the user turned off (BuiltinMenuBit).
+    uint32_t builtin_hidden = 0;
 
     void ResetToDefaults();
     // Re-keys the seen catalog through CatalogKey and carries the per-item
@@ -70,6 +73,10 @@ struct ContextMenuPrefs {
     bool ComDeferred(const std::wstring& key) const;
     bool ComDisabled(const std::wstring& key) const;
     void SetComDisabled(const std::wstring& key, bool on);
+    bool BuiltinVisible(BuiltinMenuItem item) const {
+        return (builtin_hidden & BuiltinMenuBit(item)) == 0;
+    }
+    void SetBuiltinVisible(BuiltinMenuItem item, bool on);
 
     std::wstring ToJson() const;
     bool FromJson(const std::wstring& json);

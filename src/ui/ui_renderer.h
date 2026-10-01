@@ -1116,6 +1116,8 @@ public:
         auto_widths_scale_ = -1.0f;
     }
     bool ListSmartDate() const { return list_smart_date_; }
+    // List-row hover buttons the user keeps: bit 0 star, bit 1 new tab, bit 2 more.
+    void SetRowActions(unsigned mask) { row_actions_ = mask & 7u; }
     // Optional details columns (details_column_set.h bits).
     void SetDetailsColumns(uint32_t mask) { details_columns_ = NormalizeDetailsColumns(mask); }
     uint32_t DetailsColumnsMask() const { return details_columns_; }
@@ -1379,6 +1381,7 @@ private:
     float row_height_dip_ = 34.0f;
     bool list_smart_date_ = true, list_zebra_ = true, list_size_bar_ = false;
     bool list_tag_names_ = false;
+    unsigned row_actions_ = 7u;
     uint32_t details_columns_ = kDetailsColumnsDefault;
     // Motion state: highlight plates glide between items (ui_motion.h).
     uint64_t motion_frame_ = 0;

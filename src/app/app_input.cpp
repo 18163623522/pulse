@@ -2271,6 +2271,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsRestore) {
             s->ctxMenuPrefs.ResetToDefaults();
             s->ctxMenuPrefs.Save();
+            s->renderer.SetRowActions(app::RowActionMask(s->ctxMenuPrefs.builtin_hidden));
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::SettingsDiagnosticsAction) {
             s->settings.DiagnosticsAction(hit.index);
