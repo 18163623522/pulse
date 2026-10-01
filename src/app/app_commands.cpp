@@ -1222,7 +1222,8 @@ void ScheduleFolderRefresh(AppState& s) {
     app::Tab* tab = ActiveTab(s);
     if (!tab || tab->current_path.empty() || fs::IsVirtualPath(tab->current_path)) return;
     s.store.MarkDirty(tab->current_path);
-    RefreshActiveTab(s);
+    // Follows a shell verb, not F5: new files join the rows on screen (#13).
+    RefreshActiveTab(s, RefreshReason::OperationCompleted);
     // Bandizip / 7-Zip often return from InvokeCommand before the archive
     // lands on disk; a second pass catches the late create. Unarmed UNC
     // panes poll once a second from the UI timer.

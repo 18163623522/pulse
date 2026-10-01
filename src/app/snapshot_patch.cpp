@@ -1,9 +1,10 @@
 #include "snapshot_patch.h"
-#include "entry_sort.h"
+#include "entry_order_hold.h"
 #include "../fs/fs_enum.h"
 #include <algorithm>
 #include <cstdint>
 #include <cwctype>
+#include <optional>
 #include <unordered_map>
 
 namespace pulse::app {
@@ -22,15 +23,6 @@ int FindName(const std::vector<fs::DirEntry>& entries, const std::wstring& name)
             return i;
     }
     return -1;
-}
-
-void InsertSorted(std::vector<fs::DirEntry>& entries, fs::DirEntry entry,
-                  ui::SortColumn col, ui::SortDirection sort_dir) {
-    auto it = std::lower_bound(entries.begin(), entries.end(), entry,
-        [col, sort_dir](const fs::DirEntry& a, const fs::DirEntry& b) {
-            return EntryLess(a, b, col, sort_dir);
-        });
-    entries.insert(it, std::move(entry));
 }
 
 } // namespace
@@ -73,10 +65,19 @@ NotifyPatch ApplyDirNotify(std::vector<fs::DirEntry>& entries, const std::wstrin
             if (at >= 0) entries.erase(entries.begin() + at);
             return NotifyPatch::Applied;
         }
-        if (at >= 0) entries.erase(entries.begin() + at);
+        // The renamed row keeps its place (#13); a row already holding the
+        // new name gives way to it.
+        int slot = at;
         const int dup = FindName(entries, event.name);
-        if (dup >= 0) entries.erase(entries.begin() + dup);
-        InsertSorted(entries, std::move(entry), col, sort_dir);
+        if (dup >= 0 && dup != at) {
+            if (at >= 0) {
+                entries.erase(entries.begin() + dup);
+                if (dup < at) --slot;
+            } else {
+                slot = dup;
+            }
+        }
+        PlaceEntryHeld(entries, slot, std::move(entry), col, sort_dir);
         return NotifyPatch::Applied;
     }
 
@@ -87,9 +88,7 @@ NotifyPatch ApplyDirNotify(std::vector<fs::DirEntry>& entries, const std::wstrin
             if (at >= 0) entries.erase(entries.begin() + at);
             return NotifyPatch::Applied;
         }
-        const int at = FindName(entries, event.name);
-        if (at >= 0) entries.erase(entries.begin() + at);
-        InsertSorted(entries, std::move(entry), col, sort_dir);
+        PlaceEntryHeld(entries, FindName(entries, event.name), std::move(entry), col, sort_dir);
         return NotifyPatch::Applied;
     }
 
@@ -133,52 +132,107 @@ NotifyPatch ApplyDirNotifyBatch(std::vector<fs::DirEntry>& entries, const std::w
         return NotifyPatch::Applied;
     }
 
-    // Final state of every touched name: the on-disk name to stat, or empty
-    // when the last event removed it. Later events win, as they would in order.
-    std::unordered_map<std::wstring, std::wstring, FoldedNameHash, FoldedNameEqual> touched;
-    touched.reserve(events.size() * 2);
     for (const auto& event : events) {
         if (event.name.empty() || event.name.find_first_of(L"\\/") != std::wstring::npos)
             return NotifyPatch::NeedFullEnum;
-        switch (event.action) {
-        case FILE_ACTION_REMOVED:
-            touched[event.name].clear();
-            break;
-        case FILE_ACTION_RENAMED_NEW_NAME:
-            if (!event.old_name.empty()) touched[event.old_name].clear();
-            touched[event.name] = event.name;
-            break;
-        case FILE_ACTION_ADDED:
-        case FILE_ACTION_MODIFIED:
-            touched[event.name] = event.name;
-            break;
-        default:
+        if (event.action != FILE_ACTION_REMOVED && event.action != FILE_ACTION_RENAMED_NEW_NAME &&
+            event.action != FILE_ACTION_ADDED && event.action != FILE_ACTION_MODIFIED)
             return NotifyPatch::NeedFullEnum;
-        }
     }
 
-    const auto less = [col, sort_dir](const fs::DirEntry& a, const fs::DirEntry& b) {
-        return EntryLess(a, b, col, sort_dir);
-    };
-    std::vector<fs::DirEntry> fresh;
-    fresh.reserve(touched.size());
-    for (const auto& item : touched) {
-        if (item.second.empty()) continue;
+    // Replays the per-event rules on slots instead of a vector: rows keep
+    // their slot, and a row that has to move (new, or its group changed) gets
+    // a new slot after every original one. Appended slots are merged into
+    // their group's end at the finish, exactly where InsertAtGroupEnd would
+    // have put them one at a time.
+    struct Slot {
         fs::DirEntry entry;
-        if (FillDirEntry(folder, item.second, entry)) fresh.push_back(std::move(entry));
-    }
-    std::sort(fresh.begin(), fresh.end(), less);
+        bool live = true;
+    };
+    std::vector<Slot> slots;
+    slots.reserve(entries.size() + events.size());
+    for (auto& entry : entries) slots.push_back({std::move(entry), true});
+    const size_t original = slots.size();
+    constexpr size_t kNone = static_cast<size_t>(-1);
+    std::unordered_map<std::wstring, size_t, FoldedNameHash, FoldedNameEqual> where;
+    where.reserve(slots.size() + events.size());
+    for (size_t i = 0; i < slots.size(); ++i) where.emplace(slots[i].entry.name, i);
+    const auto find = [&](const std::wstring& name) {
+        const auto it = where.find(name);
+        return it == where.end() ? kNone : it->second;
+    };
+    const auto drop = [&](size_t slot) {
+        if (slot == kNone) return;
+        where.erase(slots[slot].entry.name);
+        slots[slot].live = false;
+    };
+    const auto place = [&](size_t slot, fs::DirEntry entry) {
+        if (slot != kNone && SameEntryGroup(slots[slot].entry, entry, col, sort_dir)) {
+            where.erase(slots[slot].entry.name);
+            slots[slot].entry = std::move(entry);
+            where[slots[slot].entry.name] = slot;
+            return;
+        }
+        drop(slot);
+        slots.push_back({std::move(entry), true});
+        where[slots.back().entry.name] = slots.size() - 1;
+    };
+    // Disk is stat'ed once per spelling; every event for it sees the same state.
+    std::unordered_map<std::wstring, std::optional<fs::DirEntry>> stats;
+    const auto stat = [&](const std::wstring& name) -> const std::optional<fs::DirEntry>& {
+        auto it = stats.find(name);
+        if (it == stats.end()) {
+            fs::DirEntry entry;
+            std::optional<fs::DirEntry> result;
+            if (FillDirEntry(folder, name, entry)) result = std::move(entry);
+            it = stats.emplace(name, std::move(result)).first;
+        }
+        return it->second;
+    };
 
-    std::vector<fs::DirEntry> merged;
-    merged.reserve(entries.size() + fresh.size());
-    auto next = fresh.begin();
-    for (auto& entry : entries) {
-        if (touched.find(entry.name) != touched.end()) continue;
-        // InsertSorted places a new entry before the first one not less than it.
-        while (next != fresh.end() && less(*next, entry)) merged.push_back(std::move(*next++));
-        merged.push_back(std::move(entry));
+    for (const auto& event : events) {
+        if (event.action == FILE_ACTION_REMOVED) {
+            drop(find(event.name));
+            continue;
+        }
+        if (event.action == FILE_ACTION_RENAMED_NEW_NAME) {
+            const size_t at = find(event.old_name.empty() ? event.name : event.old_name);
+            const auto& entry = stat(event.name);
+            if (!entry) {
+                drop(at);
+                continue;
+            }
+            size_t slot = at;
+            const size_t dup = find(event.name);
+            if (dup != kNone && dup != at) {
+                if (at != kNone) drop(dup);
+                else slot = dup;
+            }
+            place(slot, *entry);
+            continue;
+        }
+        const auto& entry = stat(event.name);
+        if (!entry) drop(find(event.name));
+        else place(find(event.name), *entry);
     }
-    for (; next != fresh.end(); ++next) merged.push_back(std::move(*next));
+
+    std::vector<size_t> appended;
+    for (size_t i = original; i < slots.size(); ++i)
+        if (slots[i].live) appended.push_back(i);
+    std::stable_sort(appended.begin(), appended.end(), [&](size_t a, size_t b) {
+        return GroupBefore(slots[a].entry, slots[b].entry, col, sort_dir);
+    });
+    std::vector<fs::DirEntry> merged;
+    merged.reserve(slots.size());
+    size_t next = 0;
+    for (size_t i = 0; i < original; ++i) {
+        if (!slots[i].live) continue;
+        while (next < appended.size() &&
+               GroupBefore(slots[appended[next]].entry, slots[i].entry, col, sort_dir))
+            merged.push_back(std::move(slots[appended[next++]].entry));
+        merged.push_back(std::move(slots[i].entry));
+    }
+    for (; next < appended.size(); ++next) merged.push_back(std::move(slots[appended[next]].entry));
     entries = std::move(merged);
     return NotifyPatch::Applied;
 }

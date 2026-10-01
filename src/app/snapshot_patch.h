@@ -10,6 +10,9 @@ enum class NotifyPatch { Applied, NeedFullEnum };
 
 bool FillDirEntry(const std::wstring& dir, const std::wstring& name, fs::DirEntry& out);
 
+// Patches keep the rows on screen in place like File Explorer (#13): a
+// renamed or modified row stays put, a new row goes to the end of its group
+// (see entry_order_hold.h). The list is re-sorted by a full enumeration.
 NotifyPatch ApplyDirNotify(std::vector<fs::DirEntry>& entries, const std::wstring& folder,
                            const fs::DirNotifyEvent& event,
                            ui::SortColumn col, ui::SortDirection sort_dir);
