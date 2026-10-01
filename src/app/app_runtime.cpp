@@ -1735,6 +1735,9 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_show_hints = s.appPrefs.show_hints;
     vm.settings_tips_seen = s.appPrefs.tips_seen != 0;
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
+    vm.settings_startup_open = s.appPrefs.startup_open;
+    vm.settings_new_tab_open = s.appPrefs.new_tab_open;
+    vm.settings_home_folder = s.appPrefs.home_folder;
     vm.settings_text_render = s.appPrefs.text_render;
     vm.sidebar_scroll = s.sidebarScroll;
     if (s.groupDragActive) {
@@ -2326,6 +2329,10 @@ std::wstring TooltipForHover(AppState& s) {
             ? I::TooltipClearBackground : I::TooltipChooseBackground);
     case R::SettingsDensity: return text(I::SettingsRowHeight);
     case R::SettingsFolderSort: return text(I::SettingsFolderSort);
+    case R::SettingsStartupOpen: return text(I::SettingsStartupOpen);
+    case R::SettingsNewTabOpen: return text(I::SettingsNewTabOpen);
+    case R::SettingsHomeFolder:
+        return text(s.hoverControlIndex == 1 ? I::ThisPc : I::SettingsHomeFolderPick);
     case R::SettingsTextRender: return text(I::SettingsTextRender);
     case R::SettingsTrayIcon: return text(I::SettingsTrayIcon);
     case R::SettingsWallpaperLook: return text(I::SettingsWallpaperLook);

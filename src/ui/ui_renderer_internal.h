@@ -1686,6 +1686,13 @@ struct SettingsLayout {
     D2D1_RECT_F density_row[3]{};
     D2D1_RECT_F folder_sort_card{};
     D2D1_RECT_F folder_sort_row[3]{};
+    D2D1_RECT_F home_folder_card{};
+    D2D1_RECT_F home_folder_choose{};
+    D2D1_RECT_F home_folder_reset{};
+    D2D1_RECT_F startup_open_card{};
+    D2D1_RECT_F startup_open_row[2]{};
+    D2D1_RECT_F new_tab_open_card{};
+    D2D1_RECT_F new_tab_open_row[2]{};
     D2D1_RECT_F text_render_card{};
     D2D1_RECT_F text_render_row[3]{};
     D2D1_RECT_F tray_icon_card{};

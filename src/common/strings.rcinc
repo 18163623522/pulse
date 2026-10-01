@@ -2593,6 +2593,16 @@ BEGIN
   IDS_APPLY_VIEW_ALL_TITLE "应用到所有文件夹"
   IDS_APPLY_VIEW_ALL_MESSAGE "所有文件夹都将使用此文件夹当前的视图和排序方式。之前为各个文件夹单独保存的视图和排序会被清除，分组方式不受影响。"
   IDS_APPLY_VIEW_ALL_CONFIRM "应用"
+  IDS_SETTINGS_HOME_FOLDER "默认位置"
+  IDS_SETTINGS_HOME_FOLDER_PICK "选择文件夹…"
+  IDS_SETTINGS_HOME_FOLDER_TITLE "选择默认位置"
+  IDS_SETTINGS_STARTUP_OPEN "启动时打开"
+  IDS_SETTINGS_STARTUP_OPEN_DESC "恢复上次关闭时的标签页，或只打开默认位置"
+  IDS_STARTUP_OPEN_LAST_TABS "上次的标签页"
+  IDS_OPEN_DEFAULT_LOCATION "默认位置"
+  IDS_SETTINGS_NEW_TAB_OPEN "新标签页打开"
+  IDS_SETTINGS_NEW_TAB_OPEN_DESC "新建标签页时显示当前文件夹，或默认位置"
+  IDS_NEW_TAB_OPEN_CURRENT "当前文件夹"
 END
 
 LANGUAGE 0x09, 0x01
@@ -2771,4 +2781,14 @@ BEGIN
   IDS_APPLY_VIEW_ALL_TITLE "Apply to all folders"
   IDS_APPLY_VIEW_ALL_MESSAGE "All folders will use this folder's current view and sort order. View and sort choices saved for individual folders will be cleared. Grouping is not changed."
   IDS_APPLY_VIEW_ALL_CONFIRM "Apply"
+  IDS_SETTINGS_HOME_FOLDER "Default location"
+  IDS_SETTINGS_HOME_FOLDER_PICK "Choose folder…"
+  IDS_SETTINGS_HOME_FOLDER_TITLE "Choose the default location"
+  IDS_SETTINGS_STARTUP_OPEN "When Pulse starts"
+  IDS_SETTINGS_STARTUP_OPEN_DESC "Reopen the tabs from last time, or only the default location"
+  IDS_STARTUP_OPEN_LAST_TABS "Last tabs"
+  IDS_OPEN_DEFAULT_LOCATION "Default location"
+  IDS_SETTINGS_NEW_TAB_OPEN "New tabs open"
+  IDS_SETTINGS_NEW_TAB_OPEN_DESC "Show the current folder in a new tab, or the default location"
+  IDS_NEW_TAB_OPEN_CURRENT "Current folder"
 END

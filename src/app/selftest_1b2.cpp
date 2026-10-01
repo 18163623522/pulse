@@ -30,6 +30,7 @@
 #include "snapshot_patch.h"
 #include "session.h"
 #include "app_prefs.h"
+#include "startup_location.h"
 #include "context_menu.h"
 #include "context_menu_controller.h"
 #include "context_menu_prefs.h"
@@ -2931,6 +2932,127 @@ void TestFolderSorts() {
     state->watches.Stop();
     DestroyWindow(hwnd);
     state->hwnd = nullptr;
+}
+
+void TestStartupLocation() {
+    AppPrefs prefs;
+    prefs.persist = false;
+    Check(prefs.startup_open == 0 && prefs.new_tab_open == 0 && prefs.home_folder.empty() &&
+          app::RestoresLastTabs(prefs) && app::DefaultLocation(prefs).empty(),
+          L"startup location: defaults restore the last tabs and point at This PC");
+    Check(app::NewTabLocation(prefs, L"D:\\Current") == L"D:\\Current",
+          L"startup location: new tabs keep the current folder by default");
+    prefs.startup_open = 1;
+    prefs.new_tab_open = 1;
+    prefs.home_folder = L"\\\\server\\share\\照片";
+    AppPrefs reloaded;
+    reloaded.persist = false;
+    Check(reloaded.FromJson(prefs.ToJson()) && reloaded.startup_open == 1 &&
+          reloaded.new_tab_open == 1 && reloaded.home_folder == prefs.home_folder &&
+          !app::RestoresLastTabs(reloaded),
+          L"startup location: choices round trip including UNC and Unicode");
+    Check(app::NewTabLocation(reloaded, L"D:\\Current") == prefs.home_folder,
+          L"startup location: new tabs open the default location when chosen (#34)");
+    reloaded.FromJson(L"{\"startup_open\":7,\"new_tab_open\":-1}");
+    Check(reloaded.startup_open == 0 && reloaded.new_tab_open == 0 && reloaded.home_folder.empty(),
+          L"startup location: invalid or missing values keep the old behavior");
+    prefs.ResetToDefaults();
+    Check(prefs.startup_open == 0 && prefs.new_tab_open == 0 && prefs.home_folder.empty(),
+          L"startup location: reset restores defaults");
+
+    wchar_t temp[MAX_PATH]{};
+    GetTempPathW(ARRAYSIZE(temp), temp);
+    const std::wstring root = std::wstring(temp) + L"PulseStartupLocation-" +
+                              std::to_wstring(GetCurrentProcessId());
+    const std::wstring work = root + L"\\work";
+    const std::wstring home = root + L"\\home";
+    CreateDirectoryW(root.c_str(), nullptr);
+    CreateDirectoryW(work.c_str(), nullptr);
+    CreateDirectoryW(home.c_str(), nullptr);
+
+    auto state = std::make_unique<AppState>();
+    state->places.persist = false;
+    state->appPrefs.persist = false;
+    state->isolatedTest = true;
+    HWND hwnd = CreateWindowExW(0, L"STATIC", L"", WS_POPUP,
+        0, 0, 1000, 700, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(hwnd != nullptr, L"startup location: isolated owner created");
+    if (hwnd) {
+        state->hwnd = hwnd;
+        const bool ready = state->compositor.Init(hwnd);
+        Check(ready, L"startup location: renderer initialized");
+        if (ready) {
+            state->renderer.SetCompositor(&state->compositor);
+            state->window_tabs.NewTab(work);
+            state->pane = state->window_tabs.Active()->panes.front().get();
+            StartLoadingPath(*state, *state->pane->ActiveTab(), work);
+            const std::wstring work_path = state->pane->ActiveTab()->current_path;
+            Check(NewTabPath(*state) == work_path,
+                  L"startup location: current-folder mode opens the active folder");
+            const size_t before = state->window_tabs.items.size();
+            state->appPrefs.new_tab_open = 1;
+            Check(NewTabPath(*state).empty(), L"startup location: default location starts as This PC");
+            OpenNewTab(*state);
+            const app::Tab* opened = ActiveTab(*state);
+            Check(state->window_tabs.items.size() == before + 1 && opened &&
+                  opened->current_path.empty(),
+                  L"startup location: a new tab opens This PC, not C:\\");
+            state->appPrefs.home_folder = home;
+            OpenNewTab(*state);
+            opened = ActiveTab(*state);
+            const std::wstring home_path = opened ? opened->current_path : std::wstring();
+            Check(state->window_tabs.items.size() == before + 2 && !home_path.empty() &&
+                  _wcsicmp(home_path.c_str(), fs::NormalizePath(home).c_str()) == 0,
+                  L"startup location: a new tab opens the chosen folder");
+            state->appPrefs.new_tab_open = 0;
+            OpenNewTab(*state);
+            opened = ActiveTab(*state);
+            Check(opened && opened->current_path == home_path,
+                  L"startup location: switching back follows the current folder again");
+
+            std::wstring picked = work;
+            bool picker_shown = false;
+            SettingsController::UiCallbacks callbacks;
+            callbacks.pick_folder = [&](std::wstring& path, std::wstring_view) {
+                picker_shown = true;
+                if (picked.empty()) return false;
+                path = picked;
+                return true;
+            };
+            state->settings.BindUi(state->appPrefs, state->ctxMenuPrefs, state->index,
+                                   state->networkIndex, std::move(callbacks));
+            state->settings.HomeFolder(0);
+            Check(picker_shown && state->appPrefs.home_folder == work,
+                  L"startup location: choosing a folder stores it");
+            picked.clear();
+            state->settings.HomeFolder(0);
+            Check(state->appPrefs.home_folder == work,
+                  L"startup location: cancelling the picker keeps the folder");
+            state->settings.HomeFolder(1);
+            Check(state->appPrefs.home_folder.empty(),
+                  L"startup location: This PC button clears the folder");
+            state->settings.StartupOpen(1);
+            state->settings.NewTabOpen(1);
+            Check(state->appPrefs.startup_open == 1 && state->appPrefs.new_tab_open == 1,
+                  L"startup location: segmented choices select the default location");
+            state->settings.StartupOpen(5);
+            state->settings.NewTabOpen(-1);
+            Check(state->appPrefs.startup_open == 1 && state->appPrefs.new_tab_open == 1,
+                  L"startup location: out-of-range choices are ignored");
+            state->settings.StartupOpen(0);
+            state->settings.NewTabOpen(0);
+            Check(state->appPrefs.startup_open == 0 && state->appPrefs.new_tab_open == 0,
+                  L"startup location: segmented choices return to the old behavior");
+            state->settings.ResetUi();
+        }
+        state->watches.Stop();
+        DestroyWindow(hwnd);
+        state->hwnd = nullptr;
+    }
+    state.reset();
+    RemoveDirectoryW(work.c_str());
+    RemoveDirectoryW(home.c_str());
+    RemoveDirectoryW(root.c_str());
 }
 
 void TestNavigateAlwaysEnumerates() {
@@ -5874,6 +5996,7 @@ int RunSelfTest1B2() {
         wcscmp(test_case, L"folder-views") == 0) {
         TestFolderViews();
         TestFolderSorts();
+        TestStartupLocation();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -6023,6 +6146,7 @@ int RunSelfTest1B2() {
     TestDirWatch();
     TestFolderViews();
     TestFolderSorts();
+    TestStartupLocation();
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();

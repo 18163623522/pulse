@@ -55,6 +55,9 @@ void AppPrefs::ResetToDefaults() {
     list_zebra_rows = true;
     list_size_bar = false;
     folder_sort_mode = 0;
+    startup_open = 0;
+    new_tab_open = 0;
+    home_folder.clear();
     text_render = 0;
     folder_views.Clear();
     folder_sorts.Clear();
@@ -93,7 +96,9 @@ std::wstring AppPrefs::ToJson() const {
     std::wstring escaped_effect;
     std::wstring escaped_image;
     std::wstring escaped_language;
+    std::wstring escaped_home;
     pulse::json::Escape(window_effect, escaped_effect);
+    pulse::json::Escape(home_folder, escaped_home);
     pulse::json::Escape(background_image, escaped_image);
     pulse::json::Escape(language, escaped_language);
     std::wstring out = L"{\n  \"version\":4,\n  \"launch_on_startup\":";
@@ -124,6 +129,13 @@ std::wstring AppPrefs::ToJson() const {
     out += sidebar_collapsed ? L"true" : L"false";
     out += L",\n  \"folder_sort_mode\":";
     out += std::to_wstring(folder_sort_mode >= 0 && folder_sort_mode <= 2 ? folder_sort_mode : 0);
+    out += L",\n  \"startup_open\":";
+    out += startup_open == 1 ? L"1" : L"0";
+    out += L",\n  \"new_tab_open\":";
+    out += new_tab_open == 1 ? L"1" : L"0";
+    out += L",\n  \"home_folder\":\"";
+    out += escaped_home;
+    out += L"\"";
     out += L",\n  \"text_render\":";
     out += std::to_wstring(text_render >= 0 && text_render <= 2 ? text_render : 0);
     out += L",\n  \"show_hidden_files\":";
@@ -238,6 +250,9 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);
     if (folder_sort_mode < 0 || folder_sort_mode > 2) folder_sort_mode = 0;
+    startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
+    new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 0) == 1 ? 1 : 0;
+    home_folder = pulse::json::ExtractString(json, L"home_folder");
     text_render = pulse::json::ExtractInt(json, L"text_render", 0);
     if (text_render < 0 || text_render > 2) text_render = 0;
     search_pinyin = pulse::json::ExtractBool(json, L"search_pinyin", true);

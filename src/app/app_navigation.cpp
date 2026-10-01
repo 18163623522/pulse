@@ -24,6 +24,7 @@
 #include "search_query.h"
 #include "search_refresh_log.h"
 #include "link_resolve.h"
+#include "startup_location.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
@@ -1885,11 +1886,29 @@ bool IsSettingsTab(const app::Tab* tab) {
 
 std::wstring NewTabPath(const AppState& s) {
     const app::Tab* tab = s.pane ? s.pane->ActiveTab() : nullptr;
+    std::wstring current;
     if (!tab || IsSettingsTab(tab) || tab->current_path.empty()) {
         const auto recent = s.places.RecentFolderPaths(1);
-        return recent.empty() ? L"C:\\" : recent.front();
+        current = recent.empty() ? L"C:\\" : recent.front();
+    } else {
+        current = tab->current_path;
     }
-    return tab->current_path;
+    return app::NewTabLocation(s.appPrefs, current);
+}
+
+void OpenNewTab(AppState& s) {
+    const std::wstring path = NewTabPath(s);
+    if (!path.empty()) {
+        NewTab(s, path);
+        return;
+    }
+    // This PC. The tab model turns an empty path into C:\ for callers that
+    // pass none, so create the tab first and point it at This PC afterwards.
+    RememberLayoutFocus(s);
+    s.window_tabs.NewTab(L"C:\\");
+    BindCurrentLayout(s);
+    if (app::Tab* tab = ActiveTab(s)) StartLoadingPath(s, *tab, std::wstring());
+    InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
 void NewTab(AppState& s, const std::wstring& path) {

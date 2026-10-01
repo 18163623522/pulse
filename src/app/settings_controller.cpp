@@ -288,6 +288,35 @@ void SettingsController::FolderSort(int index) {
         SaveAndApply(SettingsEffect::FolderSort);
 }
 
+// Startup and new-tab locations are read when they are used; nothing to apply.
+void SettingsController::StartupOpen(int index) {
+    static constexpr int values[] = {0, 1};
+    if (prefs_ && SelectValue(index, values, prefs_->startup_open))
+        SaveAndApply(SettingsEffect::None);
+}
+
+void SettingsController::NewTabOpen(int index) {
+    static constexpr int values[] = {0, 1};
+    if (prefs_ && SelectValue(index, values, prefs_->new_tab_open))
+        SaveAndApply(SettingsEffect::None);
+}
+
+void SettingsController::HomeFolder(int action) {
+    if (!prefs_) return;
+    if (action == 0) {
+        std::wstring path;
+        if (!ui_.pick_folder ||
+            !ui_.pick_folder(path, l10n::Get(l10n::StringId::SettingsHomeFolderTitle).c_str()) ||
+            path.empty() || path == prefs_->home_folder) return;
+        prefs_->home_folder = std::move(path);
+    } else if (action == 1 && !prefs_->home_folder.empty()) {
+        prefs_->home_folder.clear();
+    } else {
+        return;
+    }
+    SaveAndApply(SettingsEffect::None);
+}
+
 void SettingsController::TextRendering(int index) {
     static constexpr int values[] = {0, 1, 2};
     if (prefs_ && SelectValue(index, values, prefs_->text_render))

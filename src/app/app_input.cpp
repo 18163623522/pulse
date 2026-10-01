@@ -2194,7 +2194,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             CloseLayoutTab(*s, static_cast<size_t>(hit.index));
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::TabNew) {
-            NewTab(*s, NewTabPath(*s));
+            OpenNewTab(*s);
         } else if (hit.region == ui::HitTestResult::ThemeToggle) {
             ToggleTheme(*s);
         } else if (hit.region == ui::HitTestResult::SettingsButton) {
@@ -2220,8 +2220,18 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsTextRender) {
             s->settings.TextRendering(hit.index);
             InvalidateRect(hwnd, nullptr, FALSE);
-        } else if (hit.region == ui::HitTestResult::SettingsFolderSort) {
-            s->settings.FolderSort(hit.index);
+        } else if (hit.region == ui::HitTestResult::SettingsFolderSort ||
+                   hit.region == ui::HitTestResult::SettingsStartupOpen ||
+                   hit.region == ui::HitTestResult::SettingsNewTabOpen ||
+                   hit.region == ui::HitTestResult::SettingsHomeFolder) {
+            // One branch on purpose: this else-if chain sits at MSVC's block
+            // nesting limit (C1061), so new settings must not lengthen it.
+            switch (hit.region) {
+            case ui::HitTestResult::SettingsStartupOpen: s->settings.StartupOpen(hit.index); break;
+            case ui::HitTestResult::SettingsNewTabOpen: s->settings.NewTabOpen(hit.index); break;
+            case ui::HitTestResult::SettingsHomeFolder: s->settings.HomeFolder(hit.index); break;
+            default: s->settings.FolderSort(hit.index); break;
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::SettingsTrayIcon) {
             s->settings.TrayIconSize(hit.index);
@@ -3611,7 +3621,7 @@ LRESULT HandleKeyDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         } else if (ctrl && !shift && !alt && wParam == L'B') {
             ToggleSidebarCollapsed(*s);
         } else if (ctrl && wParam == L'T') {
-            NewTab(*s, NewTabPath(*s));
+            OpenNewTab(*s);
         } else if (ctrl && wParam == L'K') {
             if (shift) ShowOmnibar(*s, OmnibarMode::Mixed);
             else ShowAddressSearch(*s);

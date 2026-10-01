@@ -135,6 +135,10 @@ public:
     void AccentChoice(bool system_choice, uint32_t rgb);
     void RowHeight(int index);
     void FolderSort(int index);
+    void StartupOpen(int index);
+    void NewTabOpen(int index);
+    // 0 picks the default location's folder, 1 resets it to This PC.
+    void HomeFolder(int action);
     void TextRendering(int index);
     void TrayIconSize(int index);
     // Settings sliders: 0 interface transparency (0..90), 1 wallpaper blur (0..40).
