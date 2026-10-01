@@ -2115,7 +2115,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 nameX, textY, textH, nameColRight, cell.top, cell.bottom, scale_,
                 e.name, tagDotCount, badgeW, showStar, showNewTab, showMore,
                 compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), change != nullptr,
-                vm.view_mode == ViewMode::Details ? (e.is_dir ? 3 : 2) : 0, name_matches);
+                vm.view_mode == ViewMode::Details ? (e.is_dir ? 3 : 2) : 0, name_matches, row_actions_);
             if (src == vm.rename_index) {
                 const D2D1_RECT_F fieldRc = RenameFieldRect(vm, viewport, src);
                 fluent::ControlState fieldState{};

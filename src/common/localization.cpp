@@ -23,6 +23,8 @@ static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstStrin
               static_cast<UINT>(StringId::HintsResetDone) <= kLastString &&
               static_cast<UINT>(StringId::ApplyViewAllConfirm) <= kLastString &&
               static_cast<UINT>(StringId::NewTabOpenCurrent) <= kLastString &&
+              static_cast<UINT>(StringId::HelpMoveFocus) <= kLastString &&
+              static_cast<UINT>(StringId::ContextRowMore) <= kLastString &&
               static_cast<UINT>(StringId::GlobalSearchTruncatedShort) <= kLastString);
 
 HINSTANCE g_module = nullptr;

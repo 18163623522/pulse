@@ -578,13 +578,24 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             for (int g = 0; g < 5; ++g)
                 vm.settings_group_on[g] = s.ctxMenuPrefs.GroupEnabled(kGroups[g]);
             vm.settings_items.clear();
-            vm.settings_items.reserve(s.ctxMenuPrefs.seen.size());
+            vm.settings_items.reserve(s.ctxMenuPrefs.seen.size() + app::kBuiltinMenuItemCount);
             for (const auto& seen : s.ctxMenuPrefs.seen) {
                 ui::SettingsRowView row;
                 row.key = seen.key;
                 row.text = seen.text;
                 row.group = static_cast<int>(ipc::GroupOf(seen.category));
                 row.on = s.ctxMenuPrefs.ItemEnabled(seen.key, seen.category, seen.from_com);
+                vm.settings_items.push_back(std::move(row));
+            }
+            // Pulse's own commands: card 5, after the seen catalog (see
+            // SettingsController::ToggleUi).
+            for (int i = 0; i < app::kBuiltinMenuItemCount; ++i) {
+                const auto item = static_cast<app::BuiltinMenuItem>(i);
+                ui::SettingsRowView row;
+                row.key = app::BuiltinMenuKey(item);
+                row.text = app::BuiltinMenuLabel(item);
+                row.group = 5;
+                row.on = s.ctxMenuPrefs.BuiltinVisible(item);
                 vm.settings_items.push_back(std::move(row));
             }
             if (vm.status.status_text.empty())

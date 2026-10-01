@@ -112,7 +112,7 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     switch(hit.region) {
     case H::SettingsFind: FindSetting(s);break;
     case H::SettingsDisclosure: {
-        if(hit.index!=0 && hit.index!=1 && hit.index!=2 && (hit.index<8 || hit.index>12)) return true;
+        if(hit.index!=0 && hit.index!=1 && hit.index!=2 && (hit.index<8 || hit.index>13)) return true; // 8-13: 右键菜单 cards
         s.settingsExpanded^=1u<<hit.index;
         // Re-check the system extensions each time the formats card opens: the
         // user may just have installed one from its "Get" button.

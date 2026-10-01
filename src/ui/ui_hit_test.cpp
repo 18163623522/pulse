@@ -437,8 +437,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     }
                 }
             } else if (vm.settings_page == 2) {
-                for(int g=0;g<5;++g) {
-                    if(ContainsPt(lay.context_toggle[g],x,y)) {r.region=HitTestResult::SettingsToggle;r.index=10+g;return r;}
+                for(int g=0;g<SettingsLayout::kContextCards;++g) {
+                    if(g<5 && ContainsPt(lay.context_toggle[g],x,y)) {r.region=HitTestResult::SettingsToggle;r.index=10+g;return r;}
                     if(ContainsPt(lay.context_header[g],x,y)) {r.region=HitTestResult::SettingsDisclosure;r.index=8+g;return r;}
                 }
                 for(size_t i=0;i<lay.context_rows.size();++i) if(ContainsPt(lay.context_rows[i],x,y)) {
@@ -1147,7 +1147,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                             compositor_, compositor_->DwriteFactory(), compositor_->FileNameFormat(), change != nullptr,
                             paneVm.view_mode == ViewMode::Details ? (entry.is_dir ? 3 : 2) : 0,
                             NameMatchRanges(entry.name, NameHighlightTerms(paneVm.filter_text,
-                                paneVm.is_search ? paneVm.search_query : L"")));
+                                paneVm.is_search ? paneVm.search_query : L"")),
+                            row_actions_);
                         if (change && !grid && ContainsPt(trail.badge, x, y)) {
                             out.region = HitTestResult::ChangeBadge; out.index = idx; return out;
                         }

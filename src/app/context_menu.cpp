@@ -96,6 +96,47 @@ std::vector<ui::FluentMenuItem> BuildItemMenu(bool can_undo, const std::wstring&
     return items;
 }
 
+BuiltinMenuItem BuiltinItemForCommand(int command) {
+    switch (command) {
+    case CmdOpenInNewTab: return BuiltinMenuItem::OpenInNewTab;
+    case CmdCopyPath: return BuiltinMenuItem::CopyPath;
+    case CmdOpenTerminal: return BuiltinMenuItem::Terminal;
+    case CmdPinQuickAccess:
+    case CmdUnpinQuickAccess: return BuiltinMenuItem::QuickAccess;
+    case CmdPinWorkspace: return BuiltinMenuItem::PinWorkspace;
+    case CmdPinNetwork: return BuiltinMenuItem::PinNetwork;
+    case CmdTags: return BuiltinMenuItem::Tags; // swatch strip and 标签...
+    case CmdViewRecentChanges: return BuiltinMenuItem::RecentChanges;
+    case CmdSelectAll:
+    case CmdInvertSelection:
+    case CmdSelectWildcard: return BuiltinMenuItem::SelectCommands;
+    case CmdUndo: return BuiltinMenuItem::Undo;
+    default: return BuiltinMenuItem::Count;
+    }
+}
+
+void ApplyBuiltinMenuPrefs(std::vector<ui::FluentMenuItem>& items,
+                           const ContextMenuPrefs& prefs) {
+    if (prefs.builtin_hidden == 0 || items.empty()) return;
+    auto hidden = [&](const ui::FluentMenuItem& item) {
+        const BuiltinMenuItem owner = BuiltinItemForCommand(item.command);
+        return owner != BuiltinMenuItem::Count && !prefs.BuiltinVisible(owner);
+    };
+    const bool last_dropped = hidden(items.back());
+    std::vector<ui::FluentMenuItem> kept;
+    kept.reserve(items.size());
+    for (auto& item : items) {
+        if (hidden(item)) {
+            if (item.separator_after && !kept.empty()) kept.back().separator_after = true;
+            continue;
+        }
+        kept.push_back(std::move(item));
+    }
+    // The old last row never ended in a separator; keep it that way.
+    if (last_dropped && !kept.empty()) kept.back().separator_after = false;
+    items = std::move(kept);
+}
+
 std::wstring RecentChangesMenuPath(const Tab& tab, bool background) {
     auto filesystem = [](const std::wstring& path) { return !path.empty() && !fs::IsVirtualPath(path); };
     if (background) return filesystem(tab.current_path) ? tab.current_path : std::wstring{};
