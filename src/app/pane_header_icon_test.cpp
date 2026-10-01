@@ -110,9 +110,13 @@ struct PaneHeaderIconTest {
         }
         {
             const auto roomy=LayoutShortcutHelp(884,945,1);
-            check(roomy.max_scroll==0 && roomy.card.bottom-roomy.card.top<600 &&
-                  roomy.card.right-roomy.card.left<=560,
+            check(roomy.max_scroll==0 && !roomy.narrow &&
+                  roomy.card.bottom-roomy.card.top<760 &&
+                  roomy.card.right-roomy.card.left<=820,
                   "shortcut help card hugs its content in a normal window");
+            const auto narrow=LayoutShortcutHelp(560,900,1);
+            check(narrow.narrow && narrow.max_scroll>0,
+                  "shortcut help stacks into one scrolling column when narrow");
             const auto short_window=LayoutShortcutHelp(600,360,1.5f);
             check(short_window.max_scroll>0 && short_window.card.top>=0 &&
                   short_window.close.left>short_window.card.left &&

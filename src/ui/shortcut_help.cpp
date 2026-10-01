@@ -4,38 +4,101 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <array>
+#include <string>
+#include <vector>
 
 namespace pulse::ui {
 namespace {
-// Compact card metrics in DIPs. Layout and drawing share them so the scroll
-// extent always matches what is painted.
-struct HelpMetrics {
-    float pad, header, desc_h, desc_gap, row_h, tip_gap, tip_h, bottom;
-};
-constexpr int kHelpRows = 8;
-HelpMetrics MetricsFor(bool narrow) {
-    return narrow ? HelpMetrics{20, 84, 60, 10, 54, 14, 72, 18}
-                  : HelpMetrics{28, 88, 40, 10, 40, 16, 56, 22};
+using Id = l10n::StringId;
+struct HelpRow { Id label; std::wstring keys; };
+struct HelpGroup { Id title; std::vector<HelpRow> rows; };
+
+// Every shortcut HandleKeyDown (app_input.cpp) and WM_SYSKEYDOWN (app_main.cpp)
+// handle, grouped. In the two-column layout the first kLeftGroups groups fill
+// the left column.
+constexpr size_t kLeftGroups = 2;
+std::vector<HelpGroup> HelpGroups(bool zh) {
+    return {
+        {Id::HelpGroupNav, {
+            {Id::HelpOpen, zh ? L"Enter / 双击" : L"Enter / Double-click"},
+            {Id::HelpBackForward, L"Alt ← / →"},
+            {Id::Up, L"Backspace / Alt ↑"},
+            {Id::HelpGoToPath, L"Ctrl L / Alt D / F4"},
+            {Id::Refresh, L"F5"},
+            {Id::HelpMoveFocus, L"↑ ↓ PgUp PgDn Home End"},
+        }},
+        {Id::HelpGroupFiles, {
+            {Id::QuickPreview, L"Space"},
+            {Id::HelpClipboard, L"Ctrl C / X / V"},
+            {Id::CopyPath, L"Ctrl Shift C"},
+            {Id::Undo, L"Ctrl Z"},
+            {Id::Rename, L"F2"},
+            {Id::BatchRename, L"Ctrl Shift R"},
+            {Id::NewFolder, L"F7"},
+            {Id::Delete, L"Delete"},
+            {Id::PermanentDelete, L"Shift Delete"},
+            {Id::Properties, L"Alt Enter"},
+            {Id::HelpToggleTag, L"Ctrl Shift 1–7"},
+        }},
+        {Id::HelpGroupSearch, {
+            {Id::Search, L"Ctrl K"},
+            {Id::HelpCommandBar, L"Ctrl Shift K"},
+            {Id::HelpProject, L"Ctrl P"},
+            {Id::HelpFilter, L"Ctrl F"},
+            {Id::AdvancedSearch, L"Ctrl Shift F"},
+        }},
+        {Id::HelpGroupSelect, {
+            {Id::SelectAll, L"Ctrl A"},
+            {Id::InvertSelection, L"Ctrl I"},
+            {Id::HelpSelectPattern, L"Ctrl Shift A"},
+            {Id::SelectionHint, l10n::Get(Id::SelectionKeys)},
+        }},
+        {Id::HelpGroupTabs, {
+            {Id::TooltipNewTab, L"Ctrl T"},
+            {Id::TabClose, L"Ctrl W"},
+            {Id::HelpSwitchTab, L"Ctrl Tab / Ctrl Shift Tab"},
+            {Id::SplitLayout, L"Ctrl 1 / 2 / 3 / 4"},
+            {Id::HelpNextPane, L"F6"},
+            {Id::HelpMarkTarget, L"Ctrl D"},
+            {Id::HelpTransferTarget, L"Ctrl Alt C / X"},
+            {Id::HelpSidebar, L"Ctrl B"},
+        }},
+    };
 }
-float ContentHeightDip(const HelpMetrics& m) {
-    return m.desc_h + m.desc_gap + m.row_h * kHelpRows + m.tip_gap + m.tip_h;
+
+// Compact metrics in DIPs, shared by layout and drawing so the scroll extent
+// always matches what is painted.
+constexpr float kPad = 24, kHeader = 86, kFooter = 40, kRowH = 28, kGroupH = 32,
+                kColumnGap = 32;
+float GroupHeightDip(const HelpGroup& g) {
+    return kGroupH + kRowH * static_cast<float>(g.rows.size());
+}
+float ColumnHeightDip(const std::vector<HelpGroup>& groups, size_t first, size_t last) {
+    float h = 0;
+    for (size_t i = first; i < last && i < groups.size(); ++i) h += GroupHeightDip(groups[i]);
+    return h;
 }
 }
 
 ShortcutHelpLayout LayoutShortcutHelp(float width, float height, float scale) {
     ShortcutHelpLayout l;
-    const float w = std::max(0.0f, std::min(560.0f * scale, width - 32 * scale));
-    l.narrow = w < 440 * scale;
-    const HelpMetrics m = MetricsFor(l.narrow);
-    l.content_height = ContentHeightDip(m) * scale;
+    const float w = std::max(0.0f, std::min(820.0f * scale, width - 32 * scale));
+    l.narrow = w < 640 * scale;
+    const auto groups = HelpGroups(false);
+    const float content = l.narrow
+        ? ColumnHeightDip(groups, 0, groups.size())
+        : std::max(ColumnHeightDip(groups, 0, kLeftGroups),
+                   ColumnHeightDip(groups, kLeftGroups, groups.size()));
+    l.content_height = content * scale;
+    const float header = kHeader + (l.narrow ? 20.0f : 0.0f);
     // The card hugs its content and only scrolls when the window is short.
-    const float wanted = (m.header + ContentHeightDip(m) + m.bottom) * scale;
+    const float wanted = (header + content + kFooter) * scale;
     const float h = std::max(0.0f, std::min(wanted, height - 32 * scale));
     l.card = D2D1::RectF((width-w)/2, (height-h)/2, (width+w)/2, (height+h)/2);
-    l.close = D2D1::RectF(l.card.right-48*scale, l.card.top+18*scale,
-                         l.card.right-16*scale, l.card.top+50*scale);
-    l.body = D2D1::RectF(l.card.left+m.pad*scale, l.card.top+m.header*scale,
-                        l.card.right-m.pad*scale, l.card.bottom-m.bottom*scale);
+    l.close = D2D1::RectF(l.card.right-48*scale, l.card.top+16*scale,
+                         l.card.right-16*scale, l.card.top+48*scale);
+    l.body = D2D1::RectF(l.card.left+kPad*scale, l.card.top+header*scale,
+                        l.card.right-kPad*scale, l.card.bottom-kFooter*scale);
     l.max_scroll = std::max(0.0f, l.content_height-(l.body.bottom-l.body.top));
     return l;
 }
@@ -46,13 +109,12 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
     if (!dc) return;
     const auto l = LayoutShortcutHelp(static_cast<float>(compositor.Width()),
                                       static_cast<float>(compositor.Height()), scale);
-    const HelpMetrics m = MetricsFor(l.narrow);
-    const auto theme = MakeTheme(dark, accent);
     const auto surface = dark ? HexColor(0x20242E) : HexColor(0xFFFFFF);
     const auto ink = dark ? HexColor(0xE7EAF5) : HexColor(0x303C54);
     const auto muted = dark ? HexColor(0xA7B3CA) : HexColor(0x71819D);
     const auto line = dark ? HexColor(0x363E50) : HexColor(0xE3E8F3);
     const auto tint = dark ? HexColor(0x2B324B) : HexColor(0xEEF1FD);
+    const auto heading = MakeTheme(dark, accent).accent;
     ComPtr<ID2D1SolidColorBrush> brush;
     dc->CreateSolidColorBrush(ink, &brush);
     if (!brush.get()) return;
@@ -75,8 +137,8 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
         dc->DrawTextW(value.data(), static_cast<UINT32>(value.size()), format.get(), r,
                       brush.get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     };
-    // Key captions mix Latin and CJK, so measure them instead of guessing.
-    const auto key_format = make_format(12, false);
+    // Key captions mix Latin, arrows and CJK, so measure them instead of guessing.
+    const auto key_format = make_format(11.5f, false);
     auto text_width = [&](std::wstring_view value) {
         ComPtr<IDWriteTextLayout> layout;
         DWRITE_TEXT_METRICS metrics{};
@@ -86,10 +148,7 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
             SUCCEEDED(layout->GetMetrics(&metrics))) {
             return metrics.widthIncludingTrailingWhitespace;
         }
-        return static_cast<float>(value.size()) * 7.2f * scale;
-    };
-    auto rect = [&](float x, float y, float w, float h) {
-        return D2D1::RectF(x, y, x+w*scale, y+h*scale);
+        return static_cast<float>(value.size()) * 7.0f * scale;
     };
     // Soft layered shadow keeps the card distinct from the dimmed owner.
     for (int i=10; i>0; --i) {
@@ -99,58 +158,59 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
     }
     fill(l.card, surface, 14);
     const bool zh = l10n::effective_language() != l10n::Language::EnUS;
-    text(L"A LITTLE HELP", rect(l.body.left,l.card.top+20*scale,260,18),11,
-         dark ? HexColor(0xA5AEFF) : HexColor(0x6269CD),true);
-    text(l10n::Get(l10n::StringId::HelpTitle),
-         D2D1::RectF(l.body.left,l.card.top+40*scale,l.close.left-8*scale,l.card.top+74*scale),
-         l.narrow ? 20.0f : 22.0f,ink,true);
+    const float left = l.card.left + kPad*scale;
+    text(l10n::Get(Id::HintActShortcuts),
+         D2D1::RectF(left,l.card.top+18*scale,l.close.left-8*scale,l.card.top+48*scale),
+         20,ink,true);
+    text(l10n::Get(Id::HelpDescription),
+         D2D1::RectF(left,l.card.top+52*scale,l.card.right-kPad*scale,
+                     l.body.top-6*scale),12.5f,muted);
     if (close_hover) fill(l.close,tint,6);
     brush->SetColor(muted);
     const float cx=(l.close.left+l.close.right)/2, cy=(l.close.top+l.close.bottom)/2;
     dc->DrawLine({cx-5*scale,cy-5*scale},{cx+5*scale,cy+5*scale},brush.get(),1.5f*scale);
     dc->DrawLine({cx+5*scale,cy-5*scale},{cx-5*scale,cy+5*scale},brush.get(),1.5f*scale);
+
     dc->PushAxisAlignedClip(l.body,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    float y=l.body.top-std::clamp(scroll,0.0f,l.max_scroll);
-    text(l10n::Get(l10n::StringId::HelpDescription),
-         D2D1::RectF(l.body.left,y,l.body.right,y+m.desc_h*scale),13,muted);
-    y+=(m.desc_h+m.desc_gap)*scale;
-    using Id=l10n::StringId;
-    const std::array<std::pair<Id,std::wstring>,kHelpRows> rows{{
-        {Id::Search,L"Ctrl K"}, {Id::HelpOpen,zh?L"Enter / 双击":L"Enter / Double-click"},
-        {Id::QuickPreview,L"Space"}, {Id::HelpClipboard,L"Ctrl C / X / V"},
-        {Id::Rename,L"F2"}, {Id::Delete,L"Delete"}, {Id::SelectAll,L"Ctrl A"},
-        {Id::SelectionHint,l10n::Get(Id::SelectionKeys)}
-    }};
-    const float row_h=m.row_h*scale;
-    for (const auto& row:rows) {
-        const float key_w=std::min(l.body.right-l.body.left,
-            text_width(row.second)+16*scale);
-        const float key_y=l.narrow ? y+26*scale : y+(m.row_h-24)/2*scale;
-        const float key_x=l.narrow?l.body.left:l.body.right-key_w;
-        const auto key=D2D1::RectF(key_x,key_y,key_x+key_w,key_y+24*scale);
-        const float label_y=l.narrow ? y+4*scale : y+(m.row_h-22)/2*scale;
-        text(l10n::Get(row.first),D2D1::RectF(l.body.left,label_y,
-             l.narrow?l.body.right:key.left-12*scale,label_y+22*scale),14,ink);
-        fill(key,dark?HexColor(0x282E3B):HexColor(0xF7F8FC),5);
-        brush->SetColor(line);
-        dc->DrawRoundedRectangle(D2D1::RoundedRect(key,5*scale,5*scale),brush.get(),scale);
-        text(row.second,D2D1::RectF(key.left+8*scale,key.top+4*scale,key.right-2*scale,key.bottom),12,muted);
-        brush->SetColor(line);
-        dc->DrawLine({l.body.left,y+row_h},{l.body.right,y+row_h},brush.get(),scale);
-        y+=row_h;
+    const float top = l.body.top - std::clamp(scroll,0.0f,l.max_scroll);
+    const float gap = kColumnGap*scale;
+    const float column_w = l.narrow ? l.body.right-l.body.left
+                                    : (l.body.right-l.body.left-gap)/2;
+    const auto groups = HelpGroups(zh);
+    float y = top;
+    for (size_t gi = 0; gi < groups.size(); ++gi) {
+        const bool right_column = !l.narrow && gi >= kLeftGroups;
+        if (!l.narrow && gi == kLeftGroups) y = top;
+        const float x0 = right_column ? l.body.left+column_w+gap : l.body.left;
+        const float x1 = x0 + column_w;
+        const auto& group = groups[gi];
+        text(l10n::Get(group.title), D2D1::RectF(x0,y+8*scale,x1,y+kGroupH*scale),
+             12, heading, true);
+        y += kGroupH*scale;
+        for (const auto& row : group.rows) {
+            const float key_w = std::min(column_w*0.62f, text_width(row.keys)+14*scale);
+            const auto key = D2D1::RectF(x1-key_w, y+(kRowH-22)/2*scale,
+                                         x1, y+(kRowH+22)/2*scale);
+            text(l10n::Get(row.label), D2D1::RectF(x0,y+(kRowH-20)/2*scale,
+                 key.left-10*scale,y+(kRowH+20)/2*scale),13,ink);
+            fill(key,dark?HexColor(0x282E3B):HexColor(0xF7F8FC),4);
+            brush->SetColor(line);
+            dc->DrawRoundedRectangle(D2D1::RoundedRect(key,4*scale,4*scale),brush.get(),scale);
+            text(row.keys,D2D1::RectF(key.left+7*scale,key.top+3*scale,key.right-2*scale,key.bottom),
+                 11.5f,muted);
+            y += kRowH*scale;
+            brush->SetColor(line);
+            dc->DrawLine({x0,y},{x1,y},brush.get(),scale*0.75f);
+        }
     }
-    y+=m.tip_gap*scale;
-    const auto tip=D2D1::RectF(l.body.left,y,l.body.right,y+m.tip_h*scale);
-    fill(tip,tint,8);
-    text(L"i",rect(tip.left+14*scale,y+(m.tip_h-26)/2*scale,16,26),17,theme.accent,true);
-    text(l10n::Get(Id::HelpTip),D2D1::RectF(tip.left+38*scale,y+10*scale,
-         tip.right-14*scale,tip.bottom-6*scale),13,muted);
     dc->PopAxisAlignedClip();
+    text(l10n::Get(Id::HelpTip),D2D1::RectF(left,l.body.bottom+10*scale,
+         l.card.right-kPad*scale,l.card.bottom-4*scale),11.5f,muted);
     if (l.max_scroll>0) {
         const float track=l.body.bottom-l.body.top;
         const float thumb=std::max(24*scale,track*track/l.content_height);
-        const float top=l.body.top+(track-thumb)*std::clamp(scroll/l.max_scroll,0.0f,1.0f);
-        fill(D2D1::RectF(l.card.right-9*scale,top,l.card.right-6*scale,top+thumb),line,2);
+        const float bar=l.body.top+(track-thumb)*std::clamp(scroll/l.max_scroll,0.0f,1.0f);
+        fill(D2D1::RectF(l.card.right-9*scale,bar,l.card.right-6*scale,bar+thumb),line,2);
     }
 }
 
