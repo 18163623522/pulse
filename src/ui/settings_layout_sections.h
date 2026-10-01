@@ -42,6 +42,15 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.group[0]=D2D1::RectF(left,l.theme_row.top,right,y);
     section(1);
     l.startup_row[0]=row(64); l.startup_row[1]=row(64);
+    l.home_folder_card=row(narrow ? 98.0f : 64.0f);
+    {
+        const float rw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::ThisPc)) : 80*scale;
+        const float cw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::SettingsHomeFolderPick)) : 120*scale;
+        l.home_folder_reset=D2D1::RectF(right-16*scale-rw,y-44*scale,right-16*scale,y-12*scale);
+        l.home_folder_choose=D2D1::RectF(l.home_folder_reset.left-8*scale-cw,y-44*scale,l.home_folder_reset.left-8*scale,y-12*scale);
+    }
+    l.startup_open_card=row(narrow ? 98.0f : 64.0f); segments(l.startup_open_card,l.startup_open_row,2,282);
+    l.new_tab_open_card=row(narrow ? 98.0f : 64.0f); segments(l.new_tab_open_card,l.new_tab_open_row,2,282);
     l.group[1]=D2D1::RectF(left,l.startup_row[0].top,right,y);
     section(2);
     l.density_card=row(narrow ? 98.0f : 64.0f); segments(l.density_card,l.density_row,3,282);

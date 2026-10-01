@@ -649,6 +649,9 @@ struct WindowViewModel {
     bool settings_show_hints = true;
     bool settings_tips_seen = false;   // any teaching bubble already shown
     int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
+    int settings_startup_open = 0; // 0 last tabs, 1 default location
+    int settings_new_tab_open = 0; // 0 current folder, 1 default location
+    std::wstring settings_home_folder; // default location; empty = This PC
     int settings_text_render = 0; // 0 auto, 1 sharp, 2 smooth
     bool settings_open_folders = false;
     bool settings_win_e = false;
@@ -810,6 +813,9 @@ struct HitTestResult {
         SettingsWallpaper,
         SettingsDensity,
         SettingsFolderSort,
+        SettingsStartupOpen,
+        SettingsNewTabOpen,
+        SettingsHomeFolder,
         SettingsTextRender,
         SettingsTrayIcon,
         SettingsLanguage,

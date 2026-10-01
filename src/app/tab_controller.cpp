@@ -55,6 +55,22 @@ void TabController::WillChangeLayout() const {
     if (callbacks_.will_change_layout) callbacks_.will_change_layout();
 }
 
+// A tab the user created from a menu. `path` is its context folder, which the
+// new-tab setting may swap for the default location (empty = This PC).
+void TabController::OpenCreatedTab(WindowTabs& tabs, size_t index, std::wstring path,
+                                   int group_id) {
+    const bool use_default = callbacks_.default_new_tab && callbacks_.default_new_tab(path);
+    WillChangeLayout();
+    tabs.NewTabAt(index, path);
+    if (group_id != 0) tabs.Active()->tab_group = group_id;
+    LayoutChanged();
+    Tab* created = tabs.Active() ? tabs.Active()->ActiveFolder() : nullptr;
+    if (!created) return;
+    // The model opens an empty path at C:\; This PC has to be set explicitly.
+    if (use_default && path.empty()) created->current_path.clear();
+    if (callbacks_.load_tab) callbacks_.load_tab(*created);
+}
+
 void TabController::ToggleGroupCollapse(WindowTabs& tabs, int group_id) {
     TabGroup* group = FindGroup(tabs, group_id);
     if (!group) return;
@@ -152,15 +168,8 @@ void TabController::ShowGroupMenu(WindowTabs& tabs, int group_id, POINT screen_p
         }
         if (last_member >= 0) {
             const Tab* folder = tabs.items[static_cast<size_t>(last_member)]->ActiveFolder();
-            const std::wstring path = folder ? folder->current_path : L"C:\\";
-            WillChangeLayout();
-            tabs.NewTabAt(static_cast<size_t>(last_member + 1), path);
-            tabs.Active()->tab_group = id;
-            LayoutChanged();
-            if (callbacks_.load_tab) {
-                if (Tab* created = tabs.Active()->ActiveFolder())
-                    callbacks_.load_tab(*created);
-            }
+            OpenCreatedTab(tabs, static_cast<size_t>(last_member + 1),
+                           folder ? folder->current_path : L"C:\\", id);
         }
     } else if (command == CmdTabGroupUngroup) {
         RemoveGroup(tabs, id);
@@ -275,19 +284,20 @@ void TabController::ShowTabMenu(WindowTabs& tabs, int tab_index, POINT screen_pt
     items.push_back(MenuItem(CmdTabCloseRight, TabText(Text::TabCloseRight)));
 
     const int command = menu.TrackPopup(screen_pt, std::move(items));
-    if (command == CmdTabNewRight || command == CmdTabDuplicate) {
+    if (command == CmdTabDuplicate) {
         const Tab* folder = tab.ActiveFolder();
-        const Tab* current = tabs.Active() ? tabs.Active()->ActiveFolder() : nullptr;
-        const std::wstring path = command == CmdTabDuplicate
-            ? (folder ? folder->current_path : L"C:\\")
-            : (current ? current->current_path : L"C:\\");
         WillChangeLayout();
-        tabs.NewTabAt(static_cast<size_t>(tab_index) + 1, path);
+        tabs.NewTabAt(static_cast<size_t>(tab_index) + 1,
+                      folder ? folder->current_path : L"C:\\");
         LayoutChanged();
         if (callbacks_.load_tab) {
             if (Tab* created = tabs.Active()->ActiveFolder())
                 callbacks_.load_tab(*created);
         }
+    } else if (command == CmdTabNewRight) {
+        const Tab* current = tabs.Active() ? tabs.Active()->ActiveFolder() : nullptr;
+        OpenCreatedTab(tabs, static_cast<size_t>(tab_index) + 1,
+                       current ? current->current_path : L"C:\\");
     } else if (command == CmdTabRename) {
         std::wstring draft = LayoutTabTitle(tab);
         menu.SetFilterPlaceholder(pulse::l10n::Get(pulse::l10n::StringId::TabNameHint));

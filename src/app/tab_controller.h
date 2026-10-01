@@ -14,6 +14,8 @@ public:
         std::function<void()> invalidate;
         std::function<void()> layout_changed;
         std::function<void()> will_change_layout;
+        // Replaces `path` with the default location when new tabs open there.
+        std::function<bool(std::wstring&)> default_new_tab;
     };
 
     explicit TabController(Callbacks callbacks = {}) : callbacks_(std::move(callbacks)) {}
@@ -38,6 +40,8 @@ private:
     void Changed() const;
     void LayoutChanged() const;
     void WillChangeLayout() const;
+    void OpenCreatedTab(WindowTabs& tabs, size_t index, std::wstring path,
+                        int group_id = 0);
 
     Callbacks callbacks_;
 };

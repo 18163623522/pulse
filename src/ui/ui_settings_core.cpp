@@ -66,14 +66,14 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             (vm.settings_expanded&(1u<<id)) ? L"\xE70D" : L"\xE76C",L"",theme.text_secondary,0.75f);
     };
     auto section=[&](int i,I title) { text(l10n::Get(title),lay.section[i]); };
-    auto segmented=[&](D2D1_RECT_F card,D2D1_RECT_F const* choices,const I* labels,const int* values,int current,H::Region hit,I title,I desc) {
+    auto segmented=[&](D2D1_RECT_F card,D2D1_RECT_F const* choices,const I* labels,const int* values,int current,H::Region hit,I title,I desc,int count=3,const wchar_t* icon=L"\xE8A4") {
         const bool stacked=choices[0].left<card.left+100*scale_;
-        label(card,l10n::Get(title),l10n::Get(desc),L"\xE8A4",stacked ? card.right-16*scale_ : choices[0].left-12*scale_);
-        painter_.DrawSegmentedTrack(D2D1::RectF(choices[0].left,choices[0].top,choices[2].right,choices[2].bottom));
-        for(int i=0;i<3;++i) {
+        label(card,l10n::Get(title),l10n::Get(desc),icon,stacked ? card.right-16*scale_ : choices[0].left-12*scale_);
+        painter_.DrawSegmentedTrack(D2D1::RectF(choices[0].left,choices[0].top,choices[count-1].right,choices[count-1].bottom));
+        for(int i=0;i<count;++i) {
             fluent::SegmentedItemSpec item{};item.bounds=choices[i];item.text=l10n::Get(labels[i]);
             item.state.checked=current==values[i];item.state.hovered=IsHovered(vm,hit,i);
-            item.shared_track=true; item.position=i==0 ? fluent::SegmentPosition::First : i==2 ? fluent::SegmentPosition::Last : fluent::SegmentPosition::Middle;
+            item.shared_track=true; item.position=i==0 ? fluent::SegmentPosition::First : i==count-1 ? fluent::SegmentPosition::Last : fluent::SegmentPosition::Middle;
             painter_.DrawSegmentedItem(item);
         }
     };
@@ -199,7 +199,21 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         const I text_render[]={I::TextRenderAuto,I::TextRenderSharp,I::TextRenderSmooth};const int text_render_values[]={0,1,2};
         segmented(lay.text_render_card,lay.text_render_row,text_render,text_render_values,vm.settings_text_render,H::SettingsTextRender,I::SettingsTextRender,I::SettingsTextRenderDesc);
         toggle(lay.startup_row[0],I::SettingsLaunch,I::SettingsLaunchDesc,L"\xE7E8",vm.settings_launch_on_startup,1);divider(lay.startup_row[0]);
-        toggle(lay.startup_row[1],I::SettingsKeepRunning,I::SettingsKeepRunningDesc,L"\xE737",vm.settings_keep_running,2);
+        toggle(lay.startup_row[1],I::SettingsKeepRunning,I::SettingsKeepRunningDesc,L"\xE737",vm.settings_keep_running,2);divider(lay.startup_row[1]);
+        {
+            // Default location: buttons sit beside the text, or below it when narrow.
+            const bool below=lay.home_folder_choose.top>lay.home_folder_card.top+40*scale_;
+            label(lay.home_folder_card,l10n::Get(I::SettingsHomeFolder),
+                vm.settings_home_folder.empty() ? l10n::Get(I::ThisPc) : vm.settings_home_folder,L"\xE80F",
+                below ? lay.home_folder_card.right-16*scale_ : lay.home_folder_choose.left-12*scale_);
+            button(lay.home_folder_choose,l10n::Get(I::SettingsHomeFolderPick),H::SettingsHomeFolder,0);
+            button(lay.home_folder_reset,l10n::Get(I::ThisPc),H::SettingsHomeFolder,1,false,!vm.settings_home_folder.empty());
+            divider(lay.home_folder_card);
+        }
+        const I startup_open[]={I::StartupOpenLastTabs,I::OpenDefaultLocation};const int two_values[]={0,1};
+        segmented(lay.startup_open_card,lay.startup_open_row,startup_open,two_values,vm.settings_startup_open,H::SettingsStartupOpen,I::SettingsStartupOpen,I::SettingsStartupOpenDesc,2,L"\xE81C");divider(lay.startup_open_card);
+        const I new_tab_open[]={I::NewTabOpenCurrent,I::OpenDefaultLocation};
+        segmented(lay.new_tab_open_card,lay.new_tab_open_row,new_tab_open,two_values,vm.settings_new_tab_open,H::SettingsNewTabOpen,I::SettingsNewTabOpen,I::SettingsNewTabOpenDesc,2,L"\xE710");
         const I density[]={I::SettingsDensityCompact,I::SettingsDensityStandard,I::SettingsDensityRoomy};const int heights[]={28,34,40};
         segmented(lay.density_card,lay.density_row,density,heights,vm.settings_row_height,H::SettingsDensity,I::SettingsRowHeight,I::SettingsRowHeightDesc);divider(lay.density_card);
         toggle(lay.performance_row,I::SettingsShowPerformance,I::SettingsShowPerformanceDesc,L"\xE946",vm.settings_show_performance,4);divider(lay.performance_row);

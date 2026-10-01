@@ -44,6 +44,7 @@
 #include "tray_controller.h"
 #include "global_search_controller.h"
 #include "tab_controller.h"
+#include "startup_location.h"
 #include "update_checker.h"
 #include "app_updates.h"
 #include "link_resolve.h"
@@ -401,6 +402,11 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             [hwnd] { InvalidateRect(hwnd, nullptr, FALSE); },
             [s] { BindCurrentLayout(*s); },
             [s] { RememberLayoutFocus(*s); },
+            [s](std::wstring& path) {
+                if (s->appPrefs.new_tab_open != 1) return false;
+                path = app::DefaultLocation(s->appPrefs);
+                return true;
+            },
         });
         if (s->isolatedTest) {
             s->places.persist = false;
@@ -656,6 +662,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             RegisterDragDrop(hwnd, s->dropTarget);
         }
 
+        // "Open the default location" drops only the saved tabs; the rest of the
+        // session (sidebar, details pane, window state) still applies.
+        const bool open_default_location =
+            !s->shot.active && !app::RestoresLastTabs(s->appPrefs);
+        if (open_default_location) {
+            s->session_layout_tabs.clear();
+            s->session_tab_groups.clear();
+            s->session_active_layout_tab = 0;
+            s->session_path.clear();
+        }
         if (!s->shot.active && !s->session_layout_tabs.empty()) {
             s->pane = nullptr;
             s->targetPane = nullptr;
@@ -685,6 +701,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (!s->shot.active && !s->session_path.empty()) startPath = s->session_path;
         else if (!s->shot.active && !s->open_path.empty())
             startPath = ResolveOpenFolderPath(s->open_path);
+        else if (open_default_location)
+            startPath = app::DefaultLocation(s->appPrefs); // empty = This PC
         s->pane->NewTab(startPath);
         if (s->shot.active) s->pane->ActiveTab()->view_mode = s->shot.view_mode;
         StartLoadingPath(*s, *s->pane->ActiveTab(), startPath,

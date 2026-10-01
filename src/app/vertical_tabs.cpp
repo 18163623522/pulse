@@ -165,7 +165,7 @@ bool HandleVerticalTabPress(AppState& s, const ui::HitTestResult& hit) {
     }
     if (hit.region == R::SidebarHeaderAction &&
         hit.sidebar_action == ui::SidebarAddAction::NewTab) {
-        NewTab(s, NewTabPath(s));
+        OpenNewTab(s);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return true;
     }
@@ -181,7 +181,7 @@ bool HandleVerticalTabPress(AppState& s, const ui::HitTestResult& hit) {
         return true;
     }
     if (hit.region == R::SidebarItem && hit.path == kNewTabRowPath) {
-        NewTab(s, NewTabPath(s));
+        OpenNewTab(s);
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return true;
     }
