@@ -339,6 +339,8 @@ static void EnumerateThisPc(std::vector<DirEntry>& out) {
         e.full_path = NormalizePath(root);
         e.is_dir = true;
         e.attrs = FILE_ATTRIBUTE_DIRECTORY;
+        // Local metadata only (no media access): the UI shows it as the type.
+        e.drive_type = static_cast<uint8_t>(GetDriveTypeW(root));
         out.push_back(std::move(e));
     }
 }

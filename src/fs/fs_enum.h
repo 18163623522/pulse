@@ -18,6 +18,7 @@ struct DirEntry {
     bool is_dir = false;
     bool is_reparse = false;
     bool cloud_recall = false;
+    uint8_t drive_type = 0; // GetDriveTypeW for "This PC" rows, 0 otherwise
     std::wstring full_path; // set for virtual views (search/tag); empty = parent+name
     std::wstring recycle_path; // $R payload when listing pulse:recycle; not a .lnk target
     bool change_record_only = false; // Historical deleted/moved-out item, never a file operation source.

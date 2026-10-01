@@ -227,6 +227,19 @@ void ClearTextWidthCache() {
         return pulse::l10n::Get(StringId::TypeFile);
     }
 
+    // "This PC" rows: the drive kind instead of "Folder".
+    inline std::wstring DriveTypeText(uint8_t drive_type) {
+        using pulse::l10n::StringId;
+        switch (drive_type) {
+        case DRIVE_FIXED: return pulse::l10n::Get(StringId::LocalDisk);
+        case DRIVE_REMOVABLE: return pulse::l10n::Get(StringId::RemovableDisk);
+        case DRIVE_REMOTE: return pulse::l10n::Get(StringId::NetworkDrive);
+        case DRIVE_CDROM: return pulse::l10n::Get(StringId::CdDrive);
+        case DRIVE_RAMDISK: return pulse::l10n::Get(StringId::RamDisk);
+        default: return pulse::l10n::Get(StringId::Drive);
+        }
+    }
+
     const ListEntryView& MakeVisibleEntry(const PaneViewModel& vm, size_t index) {
         if (!vm.snapshot) return vm.entries[index];
 
@@ -253,8 +266,8 @@ void ClearTextWidthCache() {
         entry.size_text = penetrated
             ? (source.link_target_is_dir ? L"" : pulse::format::ByteSize(source.link_target_size, true))
             : (source.is_dir ? L"" : pulse::format::ByteSize(source.size, true));
-        // A zero creation / access time means "no time" (index rows and the
-        // recycle bin carry none), not 1601-01-01.
+        // A zero FILETIME means "no time" (drives, servers, index rows without
+        // it), not 1601-01-01.
         const auto list_time = [](const FILETIME& time) {
             return time.dwLowDateTime || time.dwHighDateTime ? pulse::format::LocalFileTime(time)
                                                              : std::wstring();
@@ -262,7 +275,7 @@ void ClearTextWidthCache() {
         const auto time_value = [](const FILETIME& time) {
             return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
         };
-        entry.date_text = pulse::format::LocalFileTime(source.mtime);
+        entry.date_text = list_time(source.mtime);
         entry.created_text = list_time(source.ctime);
         entry.accessed_text = list_time(source.atime);
         entry.created_value = time_value(source.ctime);
@@ -289,6 +302,7 @@ void ClearTextWidthCache() {
             entry.type_text = FormatListType(
                 penetrated ? fs::StripLnkSuffix(source.name) : source.name, entry.is_dir);
         }
+        if (source.drive_type != 0) entry.type_text = DriveTypeText(source.drive_type);
         entry.record_only = source.change_record_only;
         if (!source.change_type_text.empty()) entry.type_text = source.change_type_text;
         entry.starred = vm.tag_catalog && !entry.path.empty() &&
