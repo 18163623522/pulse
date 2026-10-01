@@ -152,3 +152,8 @@ $arguments = @("/DAppVersion=$version", "/DBuildDir=$build")
 if ($Channel -eq 'win81') { $arguments += '/DWin81Candidate=1' }
 & $iscc @arguments installer/PulseSetup.iss
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+# The portable ZIP targets Windows 10/11 x64, so only the normal channel packages it,
+# from the same verified production build as the installer.
+if ($Channel -eq 'windows') {
+    & (Join-Path $repo 'scripts/package_portable.ps1') -BuildDir $build
+}

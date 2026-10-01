@@ -27,7 +27,9 @@ GitHub Actions 的 **Build and publish Pulse** 工作流会构建、测试并打
 | Windows 10 / Windows 11 x64 | `PulseSetup-版本.exe` | `update-manifest.json` |
 | Windows 8.1 x64 | `PulseSetup-版本-win81.exe` | `update-manifest-win81.json` |
 
-Release 正文自动提供上述系统说明与两个下载入口。不要重复覆盖已经公开发布的版本；修复发布问题时递增版本号。
+Windows 10 / 11 x64 免安装版 `Pulse-版本-portable-win-x64.zip` 由普通版构建一并打包，与安装包使用同一份通过测试的正式构建；Windows 8.1 版不提供免安装包。
+
+Release 正文自动提供上述系统说明与下载入口。不要重复覆盖已经公开发布的版本；修复发布问题时递增版本号。
 
 ## 更新校验
 
