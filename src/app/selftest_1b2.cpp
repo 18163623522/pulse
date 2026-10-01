@@ -2337,6 +2337,70 @@ void TestContextMenuPrefs() {
           loaded.explorer_cap == ipc::kDefaultExplorerCap,
           L"prefs: factory Explorer cap keeps the whole shell list");
 
+    // Pulse's own commands (#41, #44-⑩): hide, persist, filter, restore.
+    {
+        ContextMenuPrefs builtin;
+        builtin.persist = false;
+        builtin.SetBuiltinVisible(BuiltinMenuItem::PinWorkspace, false);
+        builtin.SetBuiltinVisible(BuiltinMenuItem::PinNetwork, false);
+        builtin.SetBuiltinVisible(BuiltinMenuItem::Tags, false);
+        builtin.SetBuiltinVisible(BuiltinMenuItem::Undo, false);
+        builtin.SetBuiltinVisible(BuiltinMenuItem::RowStar, false);
+        ContextMenuPrefs reread;
+        reread.persist = false;
+        Check(reread.FromJson(builtin.ToJson()) && reread.builtin_hidden == builtin.builtin_hidden &&
+                  !reread.BuiltinVisible(BuiltinMenuItem::Tags) &&
+                  reread.BuiltinVisible(BuiltinMenuItem::CopyPath),
+              L"prefs: hidden Pulse commands round-trip");
+        Check(RowActionMask(reread.builtin_hidden) == (kRowActionNewTab | kRowActionMore) &&
+                  RowActionMask(0) == kRowActionsAll,
+              L"prefs: hiding the row star keeps the new-tab and more buttons");
+
+        auto menu = BuildItemMenu(true, L"撤销移动 a.txt", true);
+        ApplyBuiltinMenuPrefs(menu, builtin);
+        const std::vector<int> kept_ids{ CmdOpen, CmdNone, CmdOpenInNewTab, CmdCopyPath,
+                                         CmdOpenTerminal, CmdProperties };
+        bool kept_ok = menu.size() == kept_ids.size();
+        for (size_t i = 0; kept_ok && i < menu.size(); ++i) kept_ok = menu[i].command == kept_ids[i];
+        Check(kept_ok, L"menu: hidden Pulse commands are dropped, the rest keep their order");
+        Check(!menu.empty() && menu[1].separator_after && !menu.back().separator_after,
+              L"menu: dropping the tail leaves no trailing separator");
+
+        ContextMenuPrefs select_off;
+        select_off.persist = false;
+        select_off.SetBuiltinVisible(BuiltinMenuItem::SelectCommands, false);
+        auto bg = BuildBackgroundMenu(true, true, L"撤销移动 a.txt");
+        ApplyBuiltinMenuPrefs(bg, select_off);
+        size_t copy_at = bg.size(), terminal_at = bg.size();
+        bool select_gone = true;
+        for (size_t i = 0; i < bg.size(); ++i) {
+            if (bg[i].command == CmdCopyPath) copy_at = i;
+            if (bg[i].command == CmdOpenTerminal) terminal_at = i;
+            if (bg[i].command == CmdSelectAll || bg[i].command == CmdInvertSelection ||
+                bg[i].command == CmdSelectWildcard) select_gone = false;
+        }
+        Check(select_gone && copy_at + 1 == terminal_at && terminal_at < bg.size() &&
+                  bg[copy_at].separator_after && bg.back().command == CmdUndo,
+              L"menu: a hidden middle group folds into the separator above it");
+
+        auto untouched = BuildItemMenu(false, L"");
+        const size_t untouched_size = untouched.size();
+        ApplyBuiltinMenuPrefs(untouched, ContextMenuPrefs{});
+        Check(untouched.size() == untouched_size, L"menu: default prefs keep every Pulse command");
+        Check(BuiltinItemForCommand(CmdOpen) == BuiltinMenuItem::Count &&
+                  BuiltinItemForCommand(CmdProperties) == BuiltinMenuItem::Count &&
+                  BuiltinItemForCommand(CmdUnpinQuickAccess) == BuiltinMenuItem::QuickAccess,
+              L"menu: 打开 and 属性 can never be hidden");
+
+        builtin.ResetToDefaults();
+        Check(builtin.builtin_hidden == 0, L"prefs: restore defaults shows every Pulse command again");
+        ContextMenuPrefs legacy;
+        legacy.persist = false;
+        Check(legacy.FromJson(L"{\"version\":1,\"categories\":{\"software\":true}}") &&
+                  legacy.builtin_hidden == 0,
+              L"prefs: files without pulse_items show every Pulse command");
+    }
+
     std::vector<ShellMenuEntry> many;
     for (int i = 0; i < 20; ++i)
         many.push_back({ CmdShellComBase + 200 + i, L"动词 " + std::to_wstring(i), true, {}, L"", true });

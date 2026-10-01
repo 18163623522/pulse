@@ -139,6 +139,15 @@ struct ShellMenuEntry {
 std::vector<ui::FluentMenuItem> BuildItemMenu(bool can_undo, const std::wstring& undo_label,
                                               bool folder = false);
 
+// Which settings switch owns a built-in row (BuiltinMenuItem::Count: none,
+// the row always stays).
+BuiltinMenuItem BuiltinItemForCommand(int command);
+// Drops the built-in rows the user hid on the 右键菜单 page from an item or
+// background menu, before the Explorer section is appended. A dropped row's
+// separator moves to the row above it, so groups stay apart without doubling.
+void ApplyBuiltinMenuPrefs(std::vector<ui::FluentMenuItem>& items,
+                           const ContextMenuPrefs& prefs);
+
 struct Tab;
 // Uses snapshot metadata only; never probes the filesystem on the UI thread.
 std::wstring RecentChangesMenuPath(const Tab& tab, bool background);

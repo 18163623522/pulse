@@ -1690,7 +1690,11 @@ constexpr float kSettingsNavW = 200.0f;
 constexpr int kSettingsNavCount = 5;
 
 struct SettingsLayout {
-    D2D1_RECT_F context_cards[5]{}, context_header[5]{}, context_toggle[5]{}, context_empty[5]{}, context_restore{};
+    // Cards 0-4: Explorer groups (with a master switch). Card 5: Pulse's own
+    // commands, rows only (context_toggle[5] stays empty).
+    static constexpr int kContextCards = 6;
+    D2D1_RECT_F context_cards[kContextCards]{}, context_header[kContextCards]{}, context_toggle[kContextCards]{},
+        context_empty[kContextCards]{}, context_restore{};
     std::vector<D2D1_RECT_F> context_rows;
     D2D1_RECT_F duplicate_options{};
     D2D1_RECT_F section[4]{}, group[3]{}, footer{};
@@ -1960,10 +1964,10 @@ SettingsLayout MakeSettingsLayout(const WindowViewModel& vm, const D2D1_RECT_F& 
     } else if (vm.settings_page == 2) {
         y += 30*scale;
         l.context_rows.resize(vm.settings_items.size());
-        for(int g=0;g<5;++g) {
+        for(int g=0;g<SettingsLayout::kContextCards;++g) {
             const float top=y;
             l.context_header[g]=D2D1::RectF(l.content.left+pad,y,l.content.right-pad,y+76*scale);
-            l.context_toggle[g]=D2D1::RectF(l.content.right-pad-100*scale,y+20*scale,l.content.right-pad-56*scale,y+52*scale);
+            if(g<5) l.context_toggle[g]=D2D1::RectF(l.content.right-pad-100*scale,y+20*scale,l.content.right-pad-56*scale,y+52*scale);
             y+=76*scale;
             if(vm.settings_expanded & (1u<<(g+8))) {
                 for(size_t i=0;i<vm.settings_items.size();++i) if(vm.settings_items[i].group==g) {
@@ -2386,7 +2390,13 @@ NameTrail LayoutNameTrail(float name_x, float text_y, float text_h,
                                  bool show_star, bool show_new_tab, bool show_more,
                                  Compositor* compositor, IDWriteFactory2* factory,
                                  IDWriteTextFormat* fmt, bool change_badge = false, int action_slots = 0,
-                                 const std::vector<NameMatchRange>& matches = {}) {
+                                 const std::vector<NameMatchRange>& matches = {},
+                                 unsigned allowed_actions = 7u) {
+    // allowed_actions: hover buttons the user keeps (bit 0 star, bit 1 new
+    // tab, bit 2 more). A turned-off button is neither drawn nor reserved.
+    show_star = show_star && (allowed_actions & 1u);
+    show_new_tab = show_new_tab && (allowed_actions & 2u);
+    show_more = show_more && (allowed_actions & 4u);
     NameTrail t;
     t.name_x = name_x;
     t.show_star = show_star;
@@ -2424,15 +2434,15 @@ NameTrail LayoutNameTrail(float name_x, float text_y, float text_h,
     t.show_star = show_star;
     t.show_more = show_more;
     t.show_new_tab = show_new_tab;
-    if (show_more || reserve_actions) {
+    if ((allowed_actions & 4u) && (show_more || reserve_actions)) {
         t.more = D2D1::RectF(dock - btn, by, dock, by + btn);
         dock = t.more.left - gap;
     }
-    if (show_star || reserve_actions) {
+    if ((allowed_actions & 1u) && (show_star || reserve_actions)) {
         t.star = D2D1::RectF(dock - btn, by, dock, by + btn);
         dock = t.star.left - gap;
     }
-    if (show_new_tab || (reserve_actions && !compact_actions)) {
+    if ((allowed_actions & 2u) && (show_new_tab || (reserve_actions && !compact_actions))) {
         t.new_tab = D2D1::RectF(dock - btn, by, dock, by + btn);
         dock = t.new_tab.left - gap;
     }
