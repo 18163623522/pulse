@@ -63,10 +63,15 @@ struct FluentMenuItem {
     std::wstring tooltip;
 };
 
-// Windowless menu layout + hit-testing (theme.row_menu = 36 DIP rows).
+// Windowless menu layout + hit-testing (theme.row_menu = 36 DIP rows by default).
 class FluentMenuModel {
 public:
     void SetItems(std::vector<FluentMenuItem> items);
+    // Row height in DIPs (clamped to kMinRowDip..kMaxRowDip); applies on the next Layout.
+    void SetRowHeightDip(float dip);
+    static constexpr float kDefaultRowDip = 36.0f;
+    static constexpr float kMinRowDip = 28.0f;
+    static constexpr float kMaxRowDip = 40.0f;
     // Measures text; dwrite may be nullptr (falls back to an estimate).
     void Layout(IDWriteFactory2* dwrite, float scale, float min_width_px = 0);
 
@@ -89,6 +94,7 @@ public:
 private:
     std::vector<FluentMenuItem> items_;
     float scale_ = 1.0f;
+    float row_dip_ = kDefaultRowDip;
     float row_h_ = 32.0f;
     float pad_v_ = 4.0f;      // surface inner padding (DIP*scale)
     float sep_h_ = 5.0f;      // separator slot height (line + gaps)
@@ -111,6 +117,8 @@ public:
     // (drawing happens on the UI thread between its own BeginDraw/EndDraw).
     bool Create(HWND owner, Compositor* compositor, float scale);
     void SetTheme(bool dark, D2D1_COLOR_F accent);
+    // Row height of this menu and its submenus, in DIPs (follows list density, #27).
+    void SetRowHeightDip(float dip);
 
     // Modal; returns the invoked command id, or 0 when dismissed.
     // If filter is set, typing rebuilds the item list (Ctrl+K command palette).

@@ -114,9 +114,13 @@ bool FluentMenuModel::PatchCommands(const std::vector<FluentMenuItem>& src) {
     return true;
 }
 
+void FluentMenuModel::SetRowHeightDip(float dip) {
+    row_dip_ = std::clamp(dip, kMinRowDip, kMaxRowDip);
+}
+
 void FluentMenuModel::Layout(IDWriteFactory2* dwrite, float scale, float min_width_px) {
     scale_ = std::max(0.25f, scale);
-    row_h_ = 36.0f * scale_;     // theme.row_menu
+    row_h_ = row_dip_ * scale_;  // theme.row_menu
     pad_v_ = 4.0f * scale_;
     sep_h_ = 5.0f * scale_;
 
@@ -254,6 +258,11 @@ bool FluentMenu::Create(HWND owner, Compositor* compositor, float scale) {
 void FluentMenu::SetTheme(bool dark, D2D1_COLOR_F accent) {
     dark_ = dark;
     accent_ = accent;
+}
+
+void FluentMenu::SetRowHeightDip(float dip) {
+    model_.SetRowHeightDip(dip);
+    sub_model_.SetRowHeightDip(dip);
 }
 
 bool FluentMenu::EnsureWindow() {
@@ -552,8 +561,9 @@ bool FluentMenu::RenderSurface(const FluentMenuModel& model, int hover_row, int 
             painter_.DrawMenuItem(spec);
             if (it->trailing_command && i == hover_row && it->enabled) {
                 const float right = static_cast<float>(kShadowMargin + cw) - 8.0f * scale_;
+                const float glyph_top = y + (model.RowHeightPx() - 20.0f * scale_) * 0.5f;
                 painter_.DrawGlyph(L"\xE711", D2D1::RectF(right - 20.0f * scale_,
-                    y + 8.0f * scale_, right, y + 28.0f * scale_), theme.text_secondary);
+                    glyph_top, right, glyph_top + 20.0f * scale_), theme.text_secondary);
             }
             if (!it->quick_swatches.empty()) {
                 const float spacing = SwatchSpacingDip(*it) * scale_;

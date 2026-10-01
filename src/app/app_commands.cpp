@@ -74,6 +74,7 @@ bool EnsureMenu(AppState& s) {
         }
     }
     s.menu->SetTheme(s.darkMode, s.accentColor);
+    s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(s.appPrefs.row_height)));
     return true;
 }
 
@@ -2304,8 +2305,11 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
         s.renderer.InvalidateWallpaper();
         ApplyAppWindowChrome(s);
     }
-    if (app::HasEffect(effects, app::SettingsEffect::RowHeight))
+    if (app::HasEffect(effects, app::SettingsEffect::RowHeight)) {
         s.renderer.SetRowHeightDip(static_cast<float>(s.appPrefs.row_height));
+        if (s.menu)
+            s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(s.appPrefs.row_height)));
+    }
     if (app::HasEffect(effects, app::SettingsEffect::ListStyle)) {
         s.renderer.SetListStyle(s.appPrefs.list_smart_date, s.appPrefs.list_zebra_rows,
                                 s.appPrefs.list_size_bar, s.appPrefs.list_tag_name_color);

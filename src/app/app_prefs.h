@@ -111,5 +111,8 @@ struct AppPrefs {
 std::wstring FolderOpenCommandLine(const std::wstring& exe);
 bool FolderOpenCommandIsOurs(const std::wstring& command, const std::wstring& exe);
 bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept;
+// Menu row height for a file-list row height: 2 DIPs taller, kept within
+// 28..40, so 紧凑/标准/宽松 (28/34/40) give 30/36/40 (#27).
+int MenuRowHeightDip(int list_row_height) noexcept;
 
 } // namespace pulse::app

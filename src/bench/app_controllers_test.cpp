@@ -660,6 +660,10 @@ int wmain(int argc, wchar_t** argv) {
         lifecycle_completed);
 
     passed &= TestAddressBarCommands();
+    passed &= Report("menu row height follows list density (28/34/40 -> 30/36/40, clamped)",
+        pulse::app::MenuRowHeightDip(28) == 30 && pulse::app::MenuRowHeightDip(34) == 36 &&
+        pulse::app::MenuRowHeightDip(40) == 40 && pulse::app::MenuRowHeightDip(24) == 28 &&
+        pulse::app::MenuRowHeightDip(48) == 40);
 
     std::printf("\n== app controller tests: %s ==\n", passed ? "PASS" : "FAIL");
     return passed ? 0 : 1;
