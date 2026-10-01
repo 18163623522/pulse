@@ -221,6 +221,7 @@ struct AppState {
     ULONGLONG whatsNewAt = 0;
     app::TabController tabs;
     app::TrayController tray_controller;
+    bool hidden_to_tray = false;       // the close button hid the window (tray_reveal.h)
     GlobalSearchHotkey globalSearchHotkey;
     GlobalSearchWindow globalSearchWindow;
     app::SingleInstanceCoordinator single_instance;

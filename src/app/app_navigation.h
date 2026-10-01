@@ -82,6 +82,8 @@ std::wstring NewTabPath(const AppState& s);
 // A tab the user asked for (Ctrl+T, the + buttons): opens NewTabPath, where an
 // empty path means This PC rather than NewTab's C:\ fallback.
 void OpenNewTab(AppState& s);
+// Opens `path` in a new active tab; empty means This PC (not C:\\).
+void OpenTabAt(AppState& s, const std::wstring& path);
 void NewTab(AppState& s, const std::wstring& path);
 void NewBackgroundTab(AppState& s, const std::wstring& path);
 void OpenSettingsTab(AppState& s, int page);

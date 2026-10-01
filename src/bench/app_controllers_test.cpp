@@ -235,9 +235,14 @@ int wmain(int argc, wchar_t** argv) {
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     TrayController tray;
     tray.Attach(hwnd, GetModuleHandleW(nullptr));
+    int before_restore = 0;
+    tray.SetBeforeRestore([&before_restore] { ++before_restore; });
     tray.RestoreWindow();
     passed &= Report("tray controller owns window restore behavior",
         hwnd && IsWindowVisible(hwnd));
+    tray.RestoreWindow();
+    passed &= Report("tray restore hook runs only while the window is hidden",
+        before_restore == 1);
     ShowWindow(hwnd, SW_HIDE);
     tray.Detach();
     if (hwnd) DestroyWindow(hwnd);

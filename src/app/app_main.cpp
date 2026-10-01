@@ -101,6 +101,7 @@
 #include "duplicate_scan.h"
 #include "shell_tag_menu.h"
 #include "hang_watch.h"
+#include "tray_reveal.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -368,6 +369,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
         s->hwnd = hwnd;
         s->tray_controller.Attach(hwnd, cs->hInstance);
+        InstallTrayRevealHook(*s);
 
         s->scale = s->shot_scale_override > 0.0f
             ? s->shot_scale_override : (float)pulse::compat::WindowDpi(hwnd) / 96.0f;
@@ -839,7 +841,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (wParam == HTCLOSE) {
             SuspendContentSearches(*s);
             s->globalSearchWindow.Hide();
-            if (s->appPrefs.keep_running_on_close || s->appPrefs.global_search_enabled) s->tray_controller.HideWindow();
+            if (s->appPrefs.keep_running_on_close || s->appPrefs.global_search_enabled) HideMainWindowToTray(*s);
             else DestroyWindow(hwnd);
             return 0;
         }
@@ -849,7 +851,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_CLOSE: {
         if (s) { SuspendContentSearches(*s); s->globalSearchWindow.Hide(); }
         if (s && (s->appPrefs.keep_running_on_close || s->appPrefs.global_search_enabled)) {
-            s->tray_controller.HideWindow();
+            HideMainWindowToTray(*s);
             return 0;
         }
         break;
