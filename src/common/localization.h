@@ -580,6 +580,8 @@ enum class StringId : UINT {
     NetworkDrive = IDS_NETWORK_DRIVE,
     CdDrive = IDS_CD_DRIVE,
     RamDisk = IDS_RAM_DISK,
+    GlobalSearchHandoff = IDS_GLOBAL_SEARCH_HANDOFF,
+    GlobalSearchTruncatedShort = IDS_GLOBAL_SEARCH_TRUNCATED_SHORT,
     DetailsColumnNoRoom = IDS_DETAILS_COLUMN_NO_ROOM,
     DetailsColumnNoRoomTip = IDS_DETAILS_COLUMN_NO_ROOM_TIP,
     DetailsColumnNotInSearch = IDS_DETAILS_COLUMN_NOT_IN_SEARCH,

@@ -100,6 +100,9 @@ struct GlobalSearchWindow::Impl {
     D2D1_COLOR_F accent_color = ui::GetAccentColor();
     bool backdrop = false;
     bool scope_hover = false, scope_tooltip_visible = false, tracking_mouse = false;
+    GlobalSearchHandoffHandler handoff;
+    D2D1_RECT_F handoff_rect{};
+    bool handoff_hover = false;
     float scope_pointer_x = 0, scope_pointer_y = 0;
 
     ui::Theme Theme() const { return ui::IsHighContrast() ? ui::MakeHighContrastTheme() : ui::MakeTheme(dark, accent_color); }
@@ -145,6 +148,7 @@ struct GlobalSearchWindow::Impl {
     void Hide() {
         Cancel();
         HideScopeTooltip();
+        handoff_hover = false;
         if (hwnd) ShowWindow(hwnd, SW_HIDE);
     }
     void Changed() {
@@ -203,6 +207,27 @@ struct GlobalSearchWindow::Impl {
         auto path = rows[static_cast<size_t>(selected)].path;
         Hide(); OpenResult(std::move(path), location);
     }
+    // Leading/trailing blanks would only make the main window's query differ
+    // from what the popup searched for.
+    GlobalSearchHandoff MakeHandoff() const {
+        GlobalSearchHandoff out;
+        const auto begin = query.find_first_not_of(L" \t");
+        if (begin != std::wstring::npos) out.query = query.substr(begin, query.find_last_not_of(L" \t") - begin + 1);
+        out.content = content_mode;
+        if (current_only && !current_folder.empty()) out.folder = current_folder;
+        return out;
+    }
+    void Handoff() {
+        if (!handoff) return;
+        const auto request = MakeHandoff();
+        const auto handler = handoff; // the handler may replace handoff
+        Hide();
+        handler(request);
+    }
+    bool InHandoff(float x, float y) const {
+        return handoff && handoff_rect.right > handoff_rect.left &&
+            x >= handoff_rect.left && x < handoff_rect.right && y >= handoff_rect.top && y < handoff_rect.bottom;
+    }
     void HideScopeTooltip() {
         if (hwnd) KillTimer(hwnd, kScopeTooltipTimer);
         const bool redraw = scope_tooltip_visible;
@@ -226,7 +251,11 @@ struct GlobalSearchWindow::Impl {
     bool Key(WPARAM key) {
         if (composing) return false;
         if (key == VK_ESCAPE) { Hide(); return true; }
-        if (key == VK_RETURN) { Open((GetKeyState(VK_CONTROL) & 0x8000) != 0); return true; }
+        if (key == VK_RETURN) {
+            if (GetKeyState(VK_SHIFT) & 0x8000) Handoff();
+            else Open((GetKeyState(VK_CONTROL) & 0x8000) != 0);
+            return true;
+        }
         if (key == VK_UP || key == VK_DOWN || key == VK_PRIOR || key == VK_NEXT) {
             selected += key == VK_UP ? -1 : key == VK_DOWN ? 1 : key == VK_PRIOR ? -PageSize() : PageSize();
             ClampSelection(); Invalidate(); return true;
@@ -364,20 +393,31 @@ struct GlobalSearchWindow::Impl {
         target->FillRoundedRectangle(D2D1::RoundedRect(rect, 4, 4), brush.Get());
         Label(text, rect, 12, color, false, L"Segoe UI", false, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
-    void DrawKeys(float bottom, UINT32 color) {
-        const std::wstring keys[] = {L"↑", L"↓", L"Enter", L"Ctrl + Enter"};
-        const std::wstring actions[] = {L"", Text(StringId::GlobalSearchSelect), Text(StringId::Open), Text(StringId::OpenLocation)};
+    // Returns the left edge of what was drawn. With handoff_only (the result
+    // list is truncated) only the "continue in Pulse" hint is shown.
+    float DrawKeys(float bottom, UINT32 color, UINT32 accent, bool handoff_only) {
+        const std::wstring keys[] = {L"↑", L"↓", L"Enter", L"Ctrl + Enter", L"Shift + Enter"};
+        const std::wstring actions[] = {L"", Text(StringId::GlobalSearchSelect), Text(StringId::Open),
+            Text(StringId::OpenLocation), Text(StringId::GlobalSearchHandoff)};
+        constexpr int kHandoffKey = 4;
+        const int last = handoff ? kHandoffKey : kHandoffKey - 1;
+        const int stop = handoff_only ? kHandoffKey : 0;
+        handoff_rect = {};
         float right = width - 22;
-        for (int i = 3; i >= 0; --i) {
+        for (int i = last; i >= stop; --i) {
+            const float group_right = right;
+            const UINT32 tint = i == kHandoffKey && handoff_hover ? accent : color;
             if (!actions[i].empty()) {
                 const float label_width = TextWidth(actions[i]);
-                Label(actions[i], {right - label_width, bottom + 10, right, bottom + 38}, 12, color);
+                Label(actions[i], {right - label_width, bottom + 10, right, bottom + 38}, 12, tint);
                 right -= label_width + 6;
             }
             const float key_width = std::max(24.0f, TextWidth(keys[i]) + 14);
-            Keycap(keys[i], {right - key_width, bottom + 12, right, bottom + 36}, color);
+            Keycap(keys[i], {right - key_width, bottom + 12, right, bottom + 36}, tint);
+            if (i == kHandoffKey) handoff_rect = {right - key_width - 4, bottom + 6, group_right + 4, height - 6};
             right -= key_width + (i == 1 ? 4 : 16);
         }
+        return right;
     }
     void DrawScopeTooltip(const ui::Theme& theme) {
         if (!scope_tooltip_visible || !current_only || current_folder_tip.empty()) return;
@@ -496,8 +536,14 @@ struct GlobalSearchWindow::Impl {
             }
             Fill({0, bottom, width, bottom + 1}, line);
             Label(!error.empty() ? error : busy ? Text(StringId::GlobalSearchLoading) : std::to_wstring(total) + Text(StringId::GlobalSearchResults), {25, bottom + 8, 155, height - 8}, 12, muted);
-            if (truncated) Label(Text(StringId::GlobalSearchTruncated), {165, bottom + 8, width - 22, height - 8}, 12, muted, false, L"Segoe UI", false, DWRITE_TEXT_ALIGNMENT_TRAILING);
-            else DrawKeys(bottom, muted);
+            if (truncated && handoff) {
+                // Too many hits for the popup: point at the main window, which pages through all of them.
+                const float keys_left = DrawKeys(bottom, muted, accent, true);
+                Label(Text(StringId::GlobalSearchTruncatedShort), {165, bottom + 8, std::max(165.0f, keys_left), height - 8}, 12, muted);
+            } else if (truncated) {
+                handoff_rect = {};
+                Label(Text(StringId::GlobalSearchTruncated), {165, bottom + 8, width - 22, height - 8}, 12, muted, false, L"Segoe UI", false, DWRITE_TEXT_ALIGNMENT_TRAILING);
+            } else DrawKeys(bottom, muted, accent, false);
             DrawScopeTooltip(theme);
             const HRESULT rendered = target->EndDraw();
             if (FAILED(rendered)) { compositor.NotifyDeviceLost(rendered); empty_art.Reset(); empty_art_target = nullptr; logo.Reset(); logo_target = nullptr; brush.Reset(); target.Reset(); }
@@ -547,14 +593,19 @@ struct GlobalSearchWindow::Impl {
                 TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
                 tracking_mouse = TrackMouseEvent(&tracking) != FALSE;
             }
-            UpdateScopeHover(static_cast<float>(GET_X_LPARAM(lp)) / scale,
-                static_cast<float>(GET_Y_LPARAM(lp)) / scale);
+            const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale, y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
+            UpdateScopeHover(x, y);
+            if (const bool hover = InHandoff(x, y); hover != handoff_hover) { handoff_hover = hover; Invalidate(); }
             return 0;
         }
         case WM_MOUSELEAVE:
             tracking_mouse = false;
             HideScopeTooltip();
+            if (handoff_hover) { handoff_hover = false; Invalidate(); }
             return 0;
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT && handoff_hover) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+            break;
         case WM_LBUTTONDOWN: {
             const float x = static_cast<float>(GET_X_LPARAM(lp)) / scale, y = static_cast<float>(GET_Y_LPARAM(lp)) / scale;
             HideScopeTooltip();
@@ -568,6 +619,10 @@ struct GlobalSearchWindow::Impl {
                 }
             } else if (y >= 136 && y < height - kFooter) {
                 selected = first + static_cast<int>((y - 136) / kRow); ClampSelection(); Invalidate();
+            } else if (InHandoff(x, y)) {
+                handoff_hover = false;
+                Handoff();
+                return 0;
             }
             if (IsWindowVisible(hwnd)) SetFocus(edit); return 0;
         }
@@ -689,6 +744,10 @@ void GlobalSearchWindow::SetAppearance(bool dark, ui::WindowEffect effect, const
     if (!impl_) impl_ = std::make_unique<Impl>();
     impl_->dark = dark; impl_->effect = effect; impl_->background_image = background_image; impl_->accent_color = accent;
     impl_->ApplyAppearance();
+}
+void GlobalSearchWindow::SetHandoffHandler(GlobalSearchHandoffHandler handler) {
+    if (!impl_) impl_ = std::make_unique<Impl>();
+    impl_->handoff = std::move(handler);
 }
 void GlobalSearchWindow::Hide() { if (impl_) impl_->Hide(); }
 void GlobalSearchWindow::Shutdown() { impl_.reset(); }

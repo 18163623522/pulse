@@ -1,10 +1,25 @@
 #include "global_search_controller.h"
+#include "global_search_handoff.h"
 #include "app_internal.h"
 #include "../common/localization.h"
 
 namespace pulse {
+namespace {
+// Test instances leave the hotkey to the installed Pulse. Selftest builds can
+// opt in (PULSE_TEST_GLOBAL_HOTKEY) to drive the popup with the hotkey stored
+// in their own isolated data dir.
+bool HotkeyAllowed(const AppState& s) {
+    if (!s.isolatedTest) return true;
+#ifdef PULSE_WITH_SELFTEST
+    return GetEnvironmentVariableW(L"PULSE_TEST_GLOBAL_HOTKEY", nullptr, 0) > 0;
+#else
+    return false;
+#endif
+}
+}
+
 void ApplyGlobalSearchSettings(AppState& s) {
-    if (s.isolatedTest) return;
+    if (!HotkeyAllowed(s)) return;
     const bool enabled = s.appPrefs.global_search_enabled;
     const bool ok = s.globalSearchHotkey.Update(s.hwnd, enabled,
         s.appPrefs.global_search_modifiers, s.appPrefs.global_search_key);
@@ -42,6 +57,9 @@ void ToggleGlobalSearch(AppState& s) {
     s.globalSearchWindow.SetAppearance(s.darkMode, ui::WindowEffectFromId(s.appPrefs.window_effect),
         s.appPrefs.background_image, s.accentColor);
     if (const auto* tab = ActiveTab(s); tab && !fs::IsVirtualPath(tab->current_path)) folder = tab->current_path;
+    s.globalSearchWindow.SetHandoffHandler([&s](const GlobalSearchHandoff& request) {
+        ContinueGlobalSearchInMain(s, request);
+    });
     if (!s.globalSearchWindow.Show(s.hwnd, s.darkMode, s.scale, folder, s.appPrefs.search_pinyin)) {
         s.tray_controller.RestoreWindow();
         s.notification_toast.ShowError(s.hwnd, l10n::Get(l10n::StringId::GlobalSearch),

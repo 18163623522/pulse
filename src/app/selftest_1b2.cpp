@@ -37,6 +37,7 @@
 #include "context_menu.h"
 #include "context_menu_controller.h"
 #include "context_menu_prefs.h"
+#include "global_search_handoff.h"
 #include "shell_verbs.h"
 #include "places.h"
 #include "batch_rename.h"
@@ -1402,6 +1403,35 @@ void TestAddressSearchHistoryInteraction(float scale = 1.0f, bool dark = false) 
     state->pane = nullptr;
     if (state->editFont) DeleteObject(state->editFont);
     if (state->editBrush) DeleteObject(state->editBrush);
+}
+
+void TestGlobalSearchHandoff() {
+    Check(GlobalSearchHandoffPath({}).empty() && GlobalSearchHandoffPath({L"", true, L"C:\\Docs"}).empty(),
+          L"global search handoff: empty query opens the search box, not a results tab");
+    GlobalSearchHandoff request;
+    request.query = L"季度 预算";
+    std::wstring kind, rest;
+    bool parsed = ParsePulsePath(GlobalSearchHandoffPath(request), &kind, &rest);
+    auto spec = ParseSearchQuery(rest);
+    Check(parsed && kind == L"search" && spec.name == request.query && spec.content.empty() &&
+          spec.location == LocationScope::Indexed,
+          L"global search handoff: name query searches every indexed location");
+    request.content = true;
+    request.folder = L"C:\\Users\\TestUser\\Documents";
+    const auto scoped = GlobalSearchHandoffPath(request);
+    parsed = ParsePulsePath(scoped, &kind, &rest);
+    spec = ParseSearchQuery(rest, request.folder);
+    Check(parsed && kind == L"search" && spec.content == request.query && spec.name.empty() &&
+          spec.location == LocationScope::CurrentFolder && spec.custom_folder == request.folder,
+          L"global search handoff: content query keeps the current-folder scope");
+    auto state = std::make_unique<AppState>();
+    Pane pane;
+    state->pane = &pane;
+    pane.view.current_path = scoped;
+    ui::WindowViewModel vm;
+    FillAddressSearchView(*state, vm);
+    Check(vm.address_search_text == request.query && vm.address_search_current && vm.address_search_content,
+          L"global search handoff: main search box shows the same text, mode and scope");
 }
 
 void TestContinuousSearch() {
@@ -6416,6 +6446,7 @@ int RunSelfTest1B2() {
     TestAddressSearchHistoryInteraction();
     TestAddressSearchHistoryInteraction(1.5f, true);
     TestContinuousSearch();
+    TestGlobalSearchHandoff();
     TestLiveAddressSearch();
     TestAdvancedSearchDialog();
     TestAdvancedEditClicks();
