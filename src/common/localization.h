@@ -282,6 +282,7 @@ enum class StringId : UINT {
     Search = IDS_SEARCH,
     Tag = IDS_TAG,
     Desktop = IDS_DESKTOP,
+    Downloads = IDS_DOWNLOADS,
     LocalDisk = IDS_LOCAL_DISK,
     SidebarWorkspaces = IDS_SIDEBAR_WORKSPACES,
     SidebarQuickAccess = IDS_SIDEBAR_QUICK_ACCESS,

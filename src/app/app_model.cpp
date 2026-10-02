@@ -1165,8 +1165,9 @@ SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
     desktop.badge_rgb = 0x0078D4;
     desktop.builtin = static_cast<int>(BuiltinQuickAccess::Desktop);
     m.quick_access.push_back(std::move(desktop));
+    // Explorer shows the localized name ("下载"), not the folder name on disk.
     SidebarEntry downloads = MakeKnownEntry(FOLDERID_Downloads, L"\xE896", L"Downloads",
-        ui::HexColor(0xC084FC), L"Downloads");
+        ui::HexColor(0xC084FC), l10n::Get(l10n::StringId::Downloads).c_str());
     downloads.builtin = static_cast<int>(BuiltinQuickAccess::Downloads);
     m.quick_access.push_back(std::move(downloads));
     // OneDrive leads its own section: one row per signed-in account, the way

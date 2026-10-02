@@ -4446,6 +4446,21 @@ void TestQuickAccess() {
         }
         Check(desktop_default_present,
               L"sidebar sections: built-in links stay visible by default");
+        // The Downloads link shows its localized name like Explorer ("下载"),
+        // not the folder name on disk.
+        PWSTR downloads_raw = nullptr;
+        std::wstring downloads_path;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &downloads_raw)) && downloads_raw)
+            downloads_path = fs::NormalizePath(downloads_raw);
+        CoTaskMemFree(downloads_raw);
+        std::wstring downloads_label;
+        for (const auto& section : with_desktop.sidebar) {
+            for (const auto& item : section.items)
+                if (!downloads_path.empty() && item.path == downloads_path) downloads_label = item.label;
+        }
+        Check(downloads_path.empty() ||
+              (!downloads_label.empty() && downloads_label == l10n::Get(l10n::StringId::Downloads)),
+              L"quick access: Downloads uses the localized name");
 
         // A quick-access badge survives the sidebar model rebuild (#41). Use
         // whichever quick-access row this machine shows, not a fixed built-in.

@@ -55,6 +55,7 @@
 #define IDS_SEARCH                      1051
 #define IDS_TAG                         1052
 #define IDS_DESKTOP                     1053
+#define IDS_DOWNLOADS 2407 // reuses a free id inside the l10n range
 #define IDS_LOCAL_DISK                  1054
 #define IDS_SIDEBAR_WORKSPACES          1055
 #define IDS_SIDEBAR_QUICK_ACCESS        1056
