@@ -1050,7 +1050,7 @@ bool FluentMenu::EnsureFilterEdit() {
         SetLayeredWindowAttributes(edit_, 0, 255, LWA_ALPHA);
     SendMessageW(edit_, WM_SETFONT, (WPARAM)edit_font_, TRUE);
     SendMessageW(edit_, EM_SETCUEBANNER, TRUE,
-        reinterpret_cast<LPARAM>(L"\u641C\u7D22\u547D\u4EE4\u3001\u6587\u4EF6\u5939\u2026"));
+        reinterpret_cast<LPARAM>(l10n::Get(l10n::StringId::TabMenuSearch).c_str()));
     SetWindowSubclass(edit_, FilterEditProc, 1, reinterpret_cast<DWORD_PTR>(this));
     return true;
 }

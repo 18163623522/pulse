@@ -1,5 +1,6 @@
 // fs_enum.cpp
 #include "fs_enum.h"
+#include "../common/localization.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -334,8 +335,8 @@ static void EnumerateThisPc(std::vector<DirEntry>& out) {
         wchar_t volName[MAX_PATH + 1] = {};
         GetVolumeInformationW(root, volName, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0);
         DirEntry e;
-        e.name = std::wstring(volName[0] ? volName : L"本地磁盘") +
-                 L" (" + root[0] + L":)"; // 本地磁盘
+        e.name = std::wstring(volName[0] ? volName : l10n::Cn(L"本地磁盘")) +
+                 L" (" + root[0] + L":)";
         e.full_path = NormalizePath(root);
         e.is_dir = true;
         e.attrs = FILE_ATTRIBUTE_DIRECTORY;

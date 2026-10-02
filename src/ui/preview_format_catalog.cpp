@@ -20,8 +20,7 @@
 namespace pulse::ui {
 namespace {
 
-bool Chinese() { return l10n::effective_language() == l10n::Language::ZhCN; }
-const wchar_t* Pick(const wchar_t* zh, const wchar_t* en) { return Chinese() ? zh : en; }
+const wchar_t* Pick(const wchar_t* zh, const wchar_t* en) { return l10n::Pick(zh, en); }
 
 template <size_t N>
 void AppendTable(std::vector<std::wstring>& out, const std::wstring_view (&table)[N]) {
@@ -103,7 +102,7 @@ std::vector<PreviewFormatGroup> BuildGroups() {
 
 struct GroupCache {
     std::mutex mutex;
-    bool chinese = false;
+    l10n::Language language = l10n::Language::System;
     bool built = false;
     std::vector<PreviewFormatGroup> groups;
 };
@@ -219,9 +218,10 @@ float EstimateWidth(const std::wstring& text, float scale) {
 const std::vector<PreviewFormatGroup>& PreviewFormatGroups() {
     auto& cache = Cache();
     std::lock_guard lock(cache.mutex);
-    if (!cache.built || cache.chinese != Chinese()) {
+    const l10n::Language language = l10n::effective_language();
+    if (!cache.built || cache.language != language) {
         cache.groups = BuildGroups();
-        cache.chinese = Chinese();
+        cache.language = language;
         cache.built = true;
     }
     return cache.groups;

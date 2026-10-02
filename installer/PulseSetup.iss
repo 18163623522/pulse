@@ -67,12 +67,64 @@ UninstallDisplayIcon={app}\pulse.exe
 ; ChineseSimplified.isl is bundled in installer/Languages (community translation,
 ; https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation).
 Name: "chinesesimp"; MessagesFile: "installer\Languages\ChineseSimplified.isl"
+; ChineseTraditional.isl: official Inno Setup 6.5+ translation (jrsoftware/issrc,
+; Files/Languages), bundled because older compiler installs lack it.
+Name: "chinesetrad"; MessagesFile: "installer\Languages\ChineseTraditional.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+
+[CustomMessages]
+; Unprefixed values are the shared (Simplified + English) texts used by the
+; chinesesimp and english setups; chinesetrad overrides them.
+TaskIndex=启用全盘文件索引（安装 PulseIndex 后台服务，推荐） / Enable full-disk file index (installs the PulseIndex background service, recommended)
+GroupSearch=搜索与索引 / Search && indexing:
+TaskStartup=开机自动启动 Pulse / Launch Pulse at sign-in
+GroupOther=其他 / Other:
+StatusSeedVerbs=正在缓存右键菜单项… / Caching context-menu verbs…
+UninstHeading=卸载 Pulse
+UninstDetail=Pulse 将停止并移除索引服务。你也可以删除 Pulse 创建的设置、缓存、日志和索引数据。
+UninstCleanup=同时删除 Pulse 设置、缓存和索引数据（推荐）
+UninstContinue=继续
+UninstCancel=取消
+IndexPageCaption=搜索索引位置 / Search index location
+IndexPageDescription=选择 Pulse 索引数据库的存储目录 / Choose where Pulse stores its index database
+IndexPageSubCaption=默认覆盖全部本地 NTFS 固定盘和移动盘。服务器文件夹可稍后在 Pulse 设置中按当前 Windows 用户凭据添加。
+IndexPageDir=索引目录 / Index directory:
+PrevUninstParse=无法识别旧版本卸载程序，安装已停止。 / Could not parse the previous uninstaller.
+PrevUninstMissing=找不到旧版本卸载程序，安装已停止。 / The previous uninstaller could not be found.
+PrevUninstStart=无法启动旧版本卸载程序，安装已停止。 / Could not start the previous uninstaller.
+PrevUninstFailed=旧版本卸载失败（错误码 %1），安装已停止。 / The previous uninstall failed (exit code %1).
+StatusIndexPath=正在设置索引位置… / Configuring index location…
+IndexPathFailed=索引位置设置未完全完成，错误码：%1。请在 Pulse 设置中查看实际位置后重试。 / Index relocation needs attention. Check Settings.
+StatusIndexService=正在准备索引服务… / Preparing index service…
+IndexServiceFailed=索引服务启动失败，错误码：%1。软件已安装，可稍后在设置中重试。 / Index service setup failed. Retry in Settings.
+chinesetrad.TaskIndex=啟用全磁碟檔案索引（安裝 PulseIndex 背景服務，建議） / Enable full-disk file index (installs the PulseIndex background service, recommended)
+chinesetrad.GroupSearch=搜尋與索引 / Search && indexing:
+chinesetrad.TaskStartup=開機自動啟動 Pulse / Launch Pulse at sign-in
+chinesetrad.GroupOther=其他 / Other:
+chinesetrad.StatusSeedVerbs=正在快取右鍵選單項目… / Caching context-menu verbs…
+chinesetrad.UninstHeading=解除安裝 Pulse
+chinesetrad.UninstDetail=Pulse 將停止並移除索引服務。你也可以刪除 Pulse 建立的設定、快取、記錄檔和索引資料。
+chinesetrad.UninstCleanup=同時刪除 Pulse 設定、快取和索引資料（建議）
+chinesetrad.UninstContinue=繼續
+chinesetrad.UninstCancel=取消
+chinesetrad.IndexPageCaption=搜尋索引位置 / Search index location
+chinesetrad.IndexPageDescription=選擇 Pulse 索引資料庫的儲存目錄 / Choose where Pulse stores its index database
+chinesetrad.IndexPageSubCaption=預設涵蓋所有本機 NTFS 固定磁碟和卸除式磁碟。伺服器資料夾可稍後在 Pulse 設定中以目前 Windows 使用者認證新增。
+chinesetrad.IndexPageDir=索引目錄 / Index directory:
+chinesetrad.PrevUninstParse=無法識別舊版解除安裝程式，安裝已停止。 / Could not parse the previous uninstaller.
+chinesetrad.PrevUninstMissing=找不到舊版解除安裝程式，安裝已停止。 / The previous uninstaller could not be found.
+chinesetrad.PrevUninstStart=無法啟動舊版解除安裝程式，安裝已停止。 / Could not start the previous uninstaller.
+chinesetrad.PrevUninstFailed=舊版解除安裝失敗（錯誤碼 %1），安裝已停止。 / The previous uninstall failed (exit code %1).
+chinesetrad.StatusIndexPath=正在設定索引位置… / Configuring index location…
+chinesetrad.IndexPathFailed=索引位置設定未完全完成，錯誤碼：%1。請在 Pulse 設定中查看實際位置後重試。 / Index relocation needs attention. Check Settings.
+chinesetrad.StatusIndexService=正在準備索引服務… / Preparing index service…
+chinesetrad.IndexServiceFailed=索引服務啟動失敗，錯誤碼：%1。軟體已安裝，可稍後在設定中重試。 / Index service setup failed. Retry in Settings.
+
 [Tasks]
-Name: "indexservice"; Description: "启用全盘文件索引（安装 PulseIndex 后台服务，推荐） / Enable full-disk file index (installs the PulseIndex background service, recommended)"; GroupDescription: "搜索与索引 / Search && indexing:"
-Name: "startup"; Description: "开机自动启动 Pulse / Launch Pulse at sign-in"; GroupDescription: "其他 / Other:"; Flags: unchecked
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "其他 / Other:"; Flags: unchecked
+Name: "indexservice"; Description: "{cm:TaskIndex}"; GroupDescription: "{cm:GroupSearch}"
+Name: "startup"; Description: "{cm:TaskStartup}"; GroupDescription: "{cm:GroupOther}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:GroupOther}"; Flags: unchecked
 
 [Files]
 #ifdef AppLocalRuntime
@@ -112,7 +164,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 ; Index configuration runs in CurStepChanged so helper failures are not ignored.
-Filename: "{app}\pulse.exe"; Parameters: "--seed-shell-verbs"; StatusMsg: "正在缓存右键菜单项… / Caching context-menu verbs…"; Flags: runhidden waituntilterminated
+Filename: "{app}\pulse.exe"; Parameters: "--seed-shell-verbs"; StatusMsg: "{cm:StatusSeedVerbs}"; Flags: runhidden waituntilterminated
 Filename: "{app}\pulse.exe"; Description: "{cm:LaunchProgram,Pulse}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
@@ -222,7 +274,7 @@ end;
 
 function IsChinese: Boolean;
 begin
-  Result := ActiveLanguage = 'chinesesimp';
+  Result := (ActiveLanguage = 'chinesesimp') or (ActiveLanguage = 'chinesetrad');
 end;
 
 function ReadJsonString(const Json, Key: String): String;
@@ -387,7 +439,7 @@ begin
     HeadingLabel.AutoSize := False;
     HeadingLabel.Font.Style := [fsBold];
     if IsChinese then
-      HeadingLabel.Caption := '卸载 Pulse'
+      HeadingLabel.Caption := CustomMessage('UninstHeading')
     else
       HeadingLabel.Caption := 'Uninstall Pulse';
 
@@ -400,7 +452,7 @@ begin
     DetailLabel.AutoSize := False;
     DetailLabel.WordWrap := True;
     if IsChinese then
-      DetailLabel.Caption := 'Pulse 将停止并移除索引服务。你也可以删除 Pulse 创建的设置、缓存、日志和索引数据。'
+      DetailLabel.Caption := CustomMessage('UninstDetail')
     else
       DetailLabel.Caption := 'Pulse will stop and remove its index service. You can also delete settings, caches, logs, and index data created by Pulse.';
 
@@ -411,7 +463,7 @@ begin
     CleanupCheck.Width := ScaleX(360);
     CleanupCheck.Checked := True;
     if IsChinese then
-      CleanupCheck.Caption := '同时删除 Pulse 设置、缓存和索引数据（推荐）'
+      CleanupCheck.Caption := CustomMessage('UninstCleanup')
     else
       CleanupCheck.Caption := 'Also delete Pulse settings, caches, and index data (recommended)';
 
@@ -424,7 +476,7 @@ begin
     ContinueButton.Default := True;
     ContinueButton.ModalResult := mrOk;
     if IsChinese then
-      ContinueButton.Caption := '继续'
+      ContinueButton.Caption := CustomMessage('UninstContinue')
     else
       ContinueButton.Caption := 'Continue';
 
@@ -437,7 +489,7 @@ begin
     CancelButton.Cancel := True;
     CancelButton.ModalResult := mrCancel;
     if IsChinese then
-      CancelButton.Caption := '取消'
+      CancelButton.Caption := CustomMessage('UninstCancel')
     else
       CancelButton.Caption := 'Cancel';
 
@@ -569,11 +621,11 @@ end;
 procedure InitializeWizard;
 begin
   IndexDirPage := CreateInputDirPage(wpSelectTasks,
-    '搜索索引位置 / Search index location',
-    '选择 Pulse 索引数据库的存储目录 / Choose where Pulse stores its index database',
-    '默认覆盖全部本地 NTFS 固定盘和移动盘。服务器文件夹可稍后在 Pulse 设置中按当前 Windows 用户凭据添加。',
+    CustomMessage('IndexPageCaption'),
+    CustomMessage('IndexPageDescription'),
+    CustomMessage('IndexPageSubCaption'),
     False, '');
-  IndexDirPage.Add('索引目录 / Index directory:');
+  IndexDirPage.Add(CustomMessage('IndexPageDir'));
   IndexDirPage.Values[0] := ConfiguredIndexPath;
   if IndexDirPage.Values[0] = '' then
     IndexDirPage.Values[0] := ExpandConstant('{commonappdata}\Pulse\Index');
@@ -636,12 +688,12 @@ begin
     Exit;
   if not SplitCommandLine(CommandLine, FileName, Params) then
   begin
-    Result := '无法识别旧版本卸载程序，安装已停止。 / Could not parse the previous uninstaller.';
+    Result := CustomMessage('PrevUninstParse');
     Exit;
   end;
   if not FileExists(FileName) then
   begin
-    Result := '找不到旧版本卸载程序，安装已停止。 / The previous uninstaller could not be found.';
+    Result := CustomMessage('PrevUninstMissing');
     Exit;
   end;
 
@@ -651,10 +703,9 @@ begin
   if not Exec(FileName,
     Trim(Params + ' /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'),
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := '无法启动旧版本卸载程序，安装已停止。 / Could not start the previous uninstaller.'
+    Result := CustomMessage('PrevUninstStart')
   else if ResultCode <> 0 then
-    Result := '旧版本卸载失败（错误码 ' + IntToStr(ResultCode) + '），安装已停止。 / The previous uninstall failed (exit code ' +
-      IntToStr(ResultCode) + ').';
+    Result := FmtMessage(CustomMessage('PrevUninstFailed'), [IntToStr(ResultCode)]);
 end;
 
 function PulseImageRunning(const ImageName: String): Boolean;
@@ -749,23 +800,23 @@ begin
   if not WizardIsTaskSelected('indexservice') then Exit;
   IndexExe := ExpandConstant('{app}\Pulse.Index.exe');
   Path := RemoveBackslashUnlessRoot(GetIndexPath(''));
-  WizardForm.StatusLabel.Caption := '正在设置索引位置… / Configuring index location…';
+  WizardForm.StatusLabel.Caption := CustomMessage('StatusIndexPath');
   Code := -1;
   if not Exec(IndexExe, '--set-index-path "' + Path + '"', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
     Log('Index location configuration failed: ' + IntToStr(Code));
-    SuppressibleMsgBox('索引位置设置未完全完成，错误码：' + IntToStr(Code) +
-      '。请在 Pulse 设置中查看实际位置后重试。 / Index relocation needs attention. Check Settings.', mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(FmtMessage(CustomMessage('IndexPathFailed'), [IntToStr(Code)]),
+      mbError, MB_OK, IDOK);
     Exit;
   end;
   { Configure the location before starting the service: an upgrade must not
     start a full scan only to immediately stop it for the same index path. }
-  WizardForm.StatusLabel.Caption := '正在准备索引服务… / Preparing index service…';
+  WizardForm.StatusLabel.Caption := CustomMessage('StatusIndexService');
   Code := -1;
   if not Exec(IndexExe, '--install', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
-    SuppressibleMsgBox('索引服务启动失败，错误码：' + IntToStr(Code) +
-      '。软件已安装，可稍后在设置中重试。 / Index service setup failed. Retry in Settings.', mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(FmtMessage(CustomMessage('IndexServiceFailed'), [IntToStr(Code)]),
+      mbError, MB_OK, IDOK);
     Exit;
   end;
 end;

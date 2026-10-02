@@ -445,7 +445,7 @@ D2D1_RECT_F QuickPreviewWindow::ChromeButtonRect(ChromeButton button) const {
 }
 
 D2D1_RECT_F QuickPreviewWindow::MarkdownToggleRect(int segment) const {
-    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    const bool zh = pulse::l10n::IsChinese();
     const float inner = 2.0f * scale_;
     float w0 = zh ? 46.0f : 52.0f;  // "表格" / "Table"
     if (toggle_kind_ == ToggleKind::Markdown) w0 = zh ? 46.0f : 68.0f;
@@ -490,18 +490,17 @@ void QuickPreviewWindow::DrawMarkdownToggle(ID2D1DeviceContext* dc,
                                             ID2D1SolidColorBrush* text_brush) {
     IDWriteTextFormat* format = compositor_.SmallFormat();
     if (!dc || !text_brush || !format) return;
-    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
-    const wchar_t* labels[2] = {zh ? L"\x6E32\x67D3" : L"Rendered", zh ? L"\x6E90\x7801" : L"Source"};
+    const wchar_t* labels[2] = {pulse::l10n::Pick(L"\x6E32\x67D3", L"Rendered"), pulse::l10n::Pick(L"\x6E90\x7801", L"Source")};
     if (toggle_kind_ == ToggleKind::TableSource || toggle_kind_ == ToggleKind::TableHandler)
-        labels[0] = zh ? L"\x8868\x683C" : L"Table";
+        labels[0] = pulse::l10n::Pick(L"\x8868\x683C", L"Table");
     else if (toggle_kind_ == ToggleKind::TreeSource)
-        labels[0] = zh ? L"\x6811" : L"Tree";
+        labels[0] = pulse::l10n::Pick(L"\x6811", L"Tree");
     else if (toggle_kind_ == ToggleKind::NotebookSource)
-        labels[0] = zh ? L"\x7B14\x8BB0\x672C" : L"Notebook";
+        labels[0] = pulse::l10n::Pick(L"\x7B14\x8BB0\x672C", L"Notebook");
     else if (toggle_kind_ == ToggleKind::DocHandler)
-        labels[0] = zh ? L"\x6B63\x6587" : L"Document";
+        labels[0] = pulse::l10n::Pick(L"\x6B63\x6587", L"Document");
     if (toggle_kind_ == ToggleKind::TableHandler || toggle_kind_ == ToggleKind::DocHandler)
-        labels[1] = zh ? L"\x7CFB\x7EDF\x9884\x89C8" : L"System";
+        labels[1] = pulse::l10n::Pick(L"\x7CFB\x7EDF\x9884\x89C8", L"System");
     D2D1_COLOR_F color = text_brush->GetColor();
     ComPtr<ID2D1SolidColorBrush> track, thumb, dim;
     color.a = dark_ ? 0.08f : 0.06f;
@@ -1234,11 +1233,10 @@ void QuickPreviewWindow::ShowContextMenu(POINT screen) {
         add(kTextCmdFind, StringId::Search, kSearchGlyph, L"Ctrl+F", true,
             file_verbs && !line_toggle);
         if (line_toggle) {
-            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
             FluentMenuItem item;
             item.command = kTextCmdLineNumbers;
-            item.text = line_numbers_ ? (zh ? L"\x9690\x85CF\x884C\x53F7" : L"Hide line numbers")
-                                      : (zh ? L"\x663E\x793A\x884C\x53F7" : L"Show line numbers");
+            item.text = line_numbers_ ? (pulse::l10n::Pick(L"\x9690\x85CF\x884C\x53F7", L"Hide line numbers"))
+                                      : (pulse::l10n::Pick(L"\x663E\x793A\x884C\x53F7", L"Show line numbers"));
             item.glyph = L"\xE8FD";
             item.shortcut = L"";
             item.separator_after = file_verbs;
@@ -1417,13 +1415,12 @@ void QuickPreviewWindow::DrawTextStatus(ID2D1DeviceContext* dc, const D2D1_RECT_
                                         uint32_t encoding, ID2D1SolidColorBrush* text_brush) {
     IDWriteTextFormat* format = compositor_.SmallFormat();
     if (!dc || !format || !compositor_.DwriteFactory()) return;
-    const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
     std::vector<std::wstring> parts;
     if (hex) {
-        parts.push_back(zh ? L"\x5341\x516D\x8FDB\x5236" : L"Hex");
+        parts.push_back(pulse::l10n::Pick(L"\x5341\x516D\x8FDB\x5236", L"Hex"));
     } else {
         parts.push_back(!syntax_language_.empty() ? syntax_language_
-                                                  : std::wstring(zh ? L"\x7EAF\x6587\x672C" : L"Plain text"));
+                                                  : std::wstring(pulse::l10n::Pick(L"\x7EAF\x6587\x672C", L"Plain text")));
         std::wstring name;
         switch (static_cast<ipc::PreviewTextEncoding>(encoding)) {
         case ipc::PreviewTextEncoding::Utf8: name = L"UTF-8"; break;
@@ -1445,9 +1442,9 @@ void QuickPreviewWindow::DrawTextStatus(ID2D1DeviceContext* dc, const D2D1_RECT_
         if (!name.empty()) parts.push_back(std::move(name));
     }
     std::wstring size = hex ? std::wstring() : std::to_wstring(text_line_count_) +
-        (zh ? L" \x884C \x00B7 " : L" lines \x00B7 ");
+        (pulse::l10n::Pick(L" \x884C \x00B7 ", L" lines \x00B7 "));
     size += pulse::format::ByteSize(bytes_read, true);
-    if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+    if (truncated) size += pulse::l10n::Pick(L" \x00B7 \x5DF2\x622A\x65AD", L" \x00B7 truncated");
     parts.push_back(std::move(size));
     DrawStatusPill(dc, content, parts, text_brush);
 }
@@ -1888,40 +1885,39 @@ void QuickPreviewWindow::Render() {
                 InvalidateRect(hwnd_, nullptr, FALSE);
             if (markdown_.IsNotebook()) {
                 // Jupyter · Python 3  |  12 个单元格  |  86 KB
-                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
                 std::vector<std::wstring> parts;
                 parts.push_back(markdown_.NotebookKernel().empty()
                                     ? std::wstring(L"Jupyter")
                                     : L"Jupyter \x00B7 " + markdown_.NotebookKernel());
                 parts.push_back(std::to_wstring(markdown_.NotebookCells()) +
-                                (zh ? L" \x4E2A\x5355\x5143\x683C" : L" cells"));
+                                (pulse::l10n::Pick(L" \x4E2A\x5355\x5143\x683C", L" cells")));
                 std::wstring size = pulse::format::ByteSize(bytes_read, true);
-                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                if (truncated) size += pulse::l10n::Pick(L" \x00B7 \x5DF2\x622A\x65AD", L" \x00B7 truncated");
                 parts.push_back(std::move(size));
                 DrawStatusPill(dc, content, parts, text_brush.get());
             } else if (markdown_.DocFormat() == L"docx") {
                 // Word 文档  |  约 1,240 字  |  38 KB
-                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+                const bool zh = pulse::l10n::IsChinese();
                 std::vector<std::wstring> parts;
-                parts.push_back(zh ? L"Word \x6587\x6863" : L"Word document");
+                parts.push_back(pulse::l10n::Pick(L"Word \x6587\x6863", L"Word document"));
                 const std::wstring words = GroupedNumber(markdown_.WordCount());
-                parts.push_back(zh ? L"\x7EA6 " + words + L" \x5B57" : L"about " + words + L" words");
+                parts.push_back(zh ? pulse::l10n::Cn(L"\x7EA6 ") + words + pulse::l10n::Cn(L" \x5B57") : L"about " + words + L" words");
                 std::wstring size = pulse::format::ByteSize(item_.size ? item_.size : bytes_read, true);
-                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                if (truncated) size += pulse::l10n::Pick(L" \x00B7 \x5DF2\x622A\x65AD", L" \x00B7 truncated");
                 parts.push_back(std::move(size));
                 DrawStatusPill(dc, content, parts, text_brush.get());
             } else if (markdown_.DocFormat() == L"epub") {
                 // EPUB  |  第 1 / 27 章  |  author
-                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+                const bool zh = pulse::l10n::IsChinese();
                 std::vector<std::wstring> parts;
                 parts.push_back(L"EPUB");
                 const int count = (std::max)(1, markdown_.SectionCount());
                 const std::wstring at = std::to_wstring(markdown_.SectionIndex() + 1) + L" / " + std::to_wstring(count);
-                parts.push_back(zh ? L"\x7B2C " + at + L" \x7AE0" : L"Chapter " + at);
+                parts.push_back(zh ? pulse::l10n::Cn(L"\x7B2C ") + at + pulse::l10n::Cn(L" \x7AE0") : L"Chapter " + at);
                 std::wstring who = markdown_.DocAuthor();
                 if (who.size() > 40) who = who.substr(0, 39) + L"\x2026";
                 if (!who.empty()) parts.push_back(std::move(who));
-                if (truncated) parts.push_back(zh ? L"\x5DF2\x622A\x65AD" : L"truncated");
+                if (truncated) parts.push_back(pulse::l10n::Pick(L"\x5DF2\x622A\x65AD", L"truncated"));
                 DrawStatusPill(dc, content, parts, text_brush.get());
             }
         } else if (result == PreviewDrawResult::Markdown && markdown_.SetPayload(text, item_.path)) {
@@ -1975,7 +1971,6 @@ void QuickPreviewWindow::Render() {
                 if (!parts.empty()) DrawStatusPill(dc, content, parts, text_brush.get());
             }
         } else if (result == PreviewDrawResult::Tree && tree_.SetPayload(text)) {
-            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
             // The Tree | Source pill only when there is a tree to go back to.
             markdown_shown_ = kTreeView && !tree_.HasError();
             toggle_kind_ = ToggleKind::TreeSource;
@@ -2015,7 +2010,7 @@ void QuickPreviewWindow::Render() {
                 tree_.Draw(dc, compositor_.DwriteFactory(), content, CurrentTheme(), dark_, scale_, marks);
                 auto parts = tree_.StatusParts();
                 std::wstring size = pulse::format::ByteSize(bytes_read, true);
-                if (truncated) size += zh ? L" \x00B7 \x5DF2\x622A\x65AD" : L" \x00B7 truncated";
+                if (truncated) size += pulse::l10n::Pick(L" \x00B7 \x5DF2\x622A\x65AD", L" \x00B7 truncated");
                 parts.push_back(std::move(size));
                 DrawStatusPill(dc, content, parts, text_brush.get());
             }

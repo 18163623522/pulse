@@ -3,6 +3,7 @@
 #include "operation_presentation.h"
 #include "../ipc/shell_client.h"
 #include "../common/json_utils.h"
+#include "../common/localization.h"
 #include "../common/path_utils.h"
 #include "../common/utf8_file.h"
 #include <objbase.h>
@@ -184,18 +185,18 @@ std::wstring DisplayPath(const std::wstring& path) {
 
 const wchar_t* OpVerb(OpType t) {
     switch (t) {
-    case OpType::Copy: return L"复制";
-    case OpType::Move: return L"移动";
-    case OpType::RecycleDelete: return L"删除";
-    case OpType::RealDelete: return L"永久删除";
-    case OpType::Rename: return L"重命名";
-    case OpType::CreateFolder: return L"新建文件夹";
-    case OpType::CreateTextFile: return L"新建文本文档";
-    case OpType::RestoreRecycle: return L"还原";
-    case OpType::EmptyRecycle: return L"清空回收站";
-    case OpType::BatchRename: return L"批量重命名";
+    case OpType::Copy: return l10n::Cn(L"复制");
+    case OpType::Move: return l10n::Cn(L"移动");
+    case OpType::RecycleDelete: return l10n::Cn(L"删除");
+    case OpType::RealDelete: return l10n::Cn(L"永久删除");
+    case OpType::Rename: return l10n::Cn(L"重命名");
+    case OpType::CreateFolder: return l10n::Cn(L"新建文件夹");
+    case OpType::CreateTextFile: return l10n::Cn(L"新建文本文档");
+    case OpType::RestoreRecycle: return l10n::Cn(L"还原");
+    case OpType::EmptyRecycle: return l10n::Cn(L"清空回收站");
+    case OpType::BatchRename: return l10n::Cn(L"批量重命名");
     }
-    return L"操作";
+    return l10n::Cn(L"操作");
 }
 
 std::wstring Describe(const OpRequest& r) {
@@ -205,7 +206,7 @@ std::wstring Describe(const OpRequest& r) {
     if (!r.sources.empty()) s += FileName(r.sources.front());
     if (r.sources.size() > 1) {
         wchar_t buf[32];
-        swprintf_s(buf, L" 等 %zu 项", r.sources.size());
+        swprintf_s(buf, l10n::Cn(L" 等 %zu 项"), r.sources.size());
         s += buf;
     }
     if (r.type == OpType::Copy || r.type == OpType::Move) {
@@ -214,7 +215,7 @@ std::wstring Describe(const OpRequest& r) {
         s += L" → " + r.new_name;
     } else if (r.type == OpType::BatchRename && r.sources.size() > 1) {
         wchar_t buf[32];
-        swprintf_s(buf, L" %zu 项", r.sources.size());
+        swprintf_s(buf, l10n::Cn(L" %zu 项"), r.sources.size());
         s += buf;
     }
     return s;
@@ -242,24 +243,24 @@ enum class RenameResult { Completed, Rejected };
 RenameResult RenameInProcess(const std::wstring& source, const std::wstring& new_name,
                      std::wstring* error) {
     if (source.empty() || !IsRenameComponent(new_name)) {
-        if (error) *error = L"名称无效";
+        if (error) *error = l10n::Cn(L"名称无效");
         return RenameResult::Rejected;
     }
     const std::wstring target = JoinPath(ParentOf(source), new_name);
     if (target.empty()) {
-        if (error) *error = L"名称无效";
+        if (error) *error = l10n::Cn(L"名称无效");
         return RenameResult::Rejected;
     }
     // The current shell host suppresses confirmation UI, so sending an existing
     // target there could silently overwrite it. Reject that conflict here.
     if (CompareStringOrdinal(source.c_str(), -1, target.c_str(), -1, TRUE) != CSTR_EQUAL &&
         GetFileAttributesW(target.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        if (error) *error = L"目标名称已存在";
+        if (error) *error = l10n::Cn(L"目标名称已存在");
         return RenameResult::Rejected;
     }
     if (!MoveFileW(source.c_str(), target.c_str())) {
         const DWORD code = GetLastError();
-        if (error) *error = L"重命名失败（错误 " + std::to_wstring(code) + L"）";
+        if (error) *error = l10n::Cn(L"重命名失败（错误 ") + std::to_wstring(code) + L"）";
         return RenameResult::Rejected;
     }
     return RenameResult::Completed;
@@ -430,7 +431,7 @@ std::wstring Win32Message(DWORD code) {
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
                    nullptr, code, 0, reinterpret_cast<wchar_t*>(&raw), 0, nullptr);
-    std::wstring text = raw ? raw : L"文件操作失败";
+    std::wstring text = raw ? raw : l10n::Cn(L"文件操作失败");
     if (raw) LocalFree(raw);
     while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) text.pop_back();
     return text;
@@ -441,13 +442,13 @@ bool EnsureDirectories(const std::wstring& dir, std::wstring& failure) {
     bool is_directory = false;
     if (PathExists(dir, &is_directory)) {
         if (is_directory) return true;
-        failure = L"无法创建目标目录：" + dir + L" | 目标已存在且不是文件夹";
+        failure = l10n::Cn(L"无法创建目标目录：") + dir + l10n::Cn(L" | 目标已存在且不是文件夹");
         return false;
     }
     std::error_code error;
     std::filesystem::create_directories(std::filesystem::path(dir), error);
     if (error) {
-        failure = L"无法创建目标目录：" + dir + L" | " + Win32Message(error.value());
+        failure = l10n::Cn(L"无法创建目标目录：") + dir + L" | " + Win32Message(error.value());
         return false;
     }
     return true;
@@ -583,14 +584,14 @@ bool Sha256File(const std::wstring& path, const std::atomic<bool>& cancel,
                           reinterpret_cast<PUCHAR>(&hash_bytes), sizeof(hash_bytes),
                           &returned, 0) < 0 || hash_bytes != digest.size()) {
         if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
-        error = L"无法初始化 SHA-256 校验";
+        error = l10n::Cn(L"无法初始化 SHA-256 校验");
         return false;
     }
     std::vector<uint8_t> object(object_bytes);
     if (BCryptCreateHash(algorithm, &hash, object.data(), object_bytes,
                          nullptr, 0, 0) < 0) {
         BCryptCloseAlgorithmProvider(algorithm, 0);
-        error = L"无法初始化 SHA-256 校验";
+        error = l10n::Cn(L"无法初始化 SHA-256 校验");
         return false;
     }
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
@@ -1101,7 +1102,7 @@ bool OpsManager::PrepareLockRetry(OpRequest& req, uint64_t task_id) {
             st.task_id = task_id;
             st.phase = OpPhase::Running;
             st.percent = -1.0f;
-            st.summary = L"正在结束占用文件的进程…";
+            st.summary = l10n::Cn(L"正在结束占用文件的进程…");
             st.last_error.clear();
             st.locked_path.clear();
             st.lock_owners.clear();
@@ -1112,8 +1113,8 @@ bool OpsManager::PrepareLockRetry(OpRequest& req, uint64_t task_id) {
         DWORD error = ERROR_SUCCESS;
         const CloseOwnerResult result = CloseLockOwner(owner, 5000, &error);
         if (result == CloseOwnerResult::Closed || result == CloseOwnerResult::AlreadyGone) continue;
-        failure = L"无法结束进程 " + DescribeLockOwner(owner);
-        if (result == CloseOwnerResult::TimedOut) failure += L" | 进程没有及时退出";
+        failure = l10n::Cn(L"无法结束进程 ") + DescribeLockOwner(owner);
+        if (result == CloseOwnerResult::TimedOut) failure += l10n::Cn(L" | 进程没有及时退出");
         else if (error != ERROR_SUCCESS) failure += L" | " + Win32Message(error);
         break;
     }
@@ -1141,12 +1142,12 @@ bool OpsManager::PrepareLockRetry(OpRequest& req, uint64_t task_id) {
             st.phase = OpPhase::Completed;
             st.percent = 100.0f;
             st.last_error.clear();
-            st.summary = summary + L" 完成";
+            st.summary = summary + l10n::Cn(L" 完成");
         } else {
             st.phase = OpPhase::Failed;
             st.percent = -1.0f;
             st.last_error = failure;
-            st.summary = std::wstring(OpVerb(req.type)) + L"失败";
+            st.summary = std::wstring(OpVerb(req.type)) + l10n::Cn(L"失败");
         }
     });
     return false;
@@ -1174,13 +1175,13 @@ std::wstring OpsManager::UndoLabel() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (undo_.empty()) return L"";
     const UndoEntry& e = undo_.back();
-    if (!e.supported) return std::wstring(L"撤销") + OpVerb(e.type) + L"（不支持）";
+    if (!e.supported) return std::wstring(l10n::Cn(L"撤销")) + OpVerb(e.type) + l10n::Cn(L"（不支持）");
     OpRequest r;
     r.type = e.type;
     r.sources = e.sources;
     r.dest_dir = e.dest_dir;
     r.new_name = e.new_name;
-    return std::wstring(L"撤销") + Describe(r);
+    return std::wstring(l10n::Cn(L"撤销")) + Describe(r);
 }
 
 void OpsManager::PushUndo(const OpRequest& req,
@@ -1238,7 +1239,7 @@ void OpsManager::Undo() {
         e = undo_.back();
         if (!e.supported) {
             // Leave the entry; report why it cannot be undone.
-            status_.last_error = L"回收站删除暂不支持撤销（1B-2 恢复方案：枚举 $Recycle.Bin 还原）";
+            status_.last_error = l10n::Cn(L"回收站删除暂不支持撤销（1B-2 恢复方案：枚举 $Recycle.Bin 还原）");
         } else {
             undo_.pop_back();
         }
@@ -1734,7 +1735,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         st.task_id = task_id;
         st.phase = OpPhase::Scanning;
         st.percent = -1.0f;
-        st.summary = std::wstring(L"正在准备") + OpVerb(req.type) + L"…";
+        st.summary = std::wstring(l10n::Cn(L"正在准备")) + OpVerb(req.type) + L"…";
         st.last_error.clear();
         st.locked_path.clear();
         st.lock_owners.clear();
@@ -1762,7 +1763,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
     std::vector<ReplacementBackup> replacement_backups;
 
     if (req.sources.empty() || req.dest_dir.empty()) {
-        failure = L"复制或移动请求缺少来源/目标";
+        failure = l10n::Cn(L"复制或移动请求缺少来源/目标");
     }
 
     // A single unobstructed same-volume move is an atomic rename and should
@@ -1779,7 +1780,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                     st.phase = OpPhase::Completed;
                     st.percent = 100.0f;
                     st.total_items = st.completed_items = 1;
-                    st.summary = Describe(req) + L" 完成";
+                    st.summary = Describe(req) + l10n::Cn(L" 完成");
                     st.completed_ops++;
                 });
                 transfer_active_.store(false);
@@ -1817,7 +1818,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 root.destination = UniqueCopyPath(root.destination, root.directory);
             }
             if (root.directory && StartsWithPath(req.dest_dir, root.source)) {
-                failure = L"不能将目录复制或移动到其自身内部：" + source;
+                failure = l10n::Cn(L"不能将目录复制或移动到其自身内部：") + source;
                 break;
             }
             root_destination_preexisting.push_back(PathExists(root.destination));
@@ -1829,12 +1830,12 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 fsys::directory_options::skip_permission_denied, ec);
             fsys::recursive_directory_iterator end;
             if (ec) {
-                failure = L"无法读取来源目录：" + source + L" | " + Win32Message(ec.value());
+                failure = l10n::Cn(L"无法读取来源目录：") + source + L" | " + Win32Message(ec.value());
                 break;
             }
             for (; it != end; it.increment(ec)) {
                 if (ec) {
-                    failure = L"扫描来源目录失败：" + source + L" | " + Win32Message(ec.value());
+                    failure = l10n::Cn(L"扫描来源目录失败：") + source + L" | " + Win32Message(ec.value());
                     break;
                 }
                 TransferEntry child;
@@ -1884,8 +1885,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         if (failure.empty()) {
             st.phase = OpPhase::Running;
             st.percent = 0.0f;
-            st.summary = L"正在" + std::wstring(OpVerb(req.type)) + L" "
-                + std::to_wstring(entries.size()) + L" 个项目";
+            st.summary = l10n::Cn(L"正在") + std::wstring(OpVerb(req.type)) + L" "
+                + std::to_wstring(entries.size()) + l10n::Cn(L" 个项目");
         }
     });
 
@@ -2005,7 +2006,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             SetStatus([&](OpStatus& st) {
                 st.phase = OpPhase::WaitingForConflict;
                 st.current_item = FileName(entry.source);
-                st.summary = L"正在等待处理文件冲突";
+                st.summary = l10n::Cn(L"正在等待处理文件冲突");
                 st.bytes_per_second = 0.0;
                 st.eta_seconds = 0;
             });
@@ -2034,8 +2035,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             rate.Reset(GetTickCount64(), published_bytes);
             SetStatus([&](OpStatus& st) {
                 st.phase = OpPhase::Running;
-                st.summary = L"正在" + std::wstring(OpVerb(req.type)) + L" "
-                    + std::to_wstring(entries.size()) + L" 个项目";
+                st.summary = l10n::Cn(L"正在") + std::wstring(OpVerb(req.type)) + L" "
+                    + std::to_wstring(entries.size()) + l10n::Cn(L" 个项目");
             });
         }
 
@@ -2060,13 +2061,13 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         if (conflict && choice == ConflictChoice::Replace &&
             (entry.directory != destination_is_directory || entry.reparse)) {
             if (req.type == OpType::Move) {
-                failure = L"移动时无法原子替换不同类型或重解析目标：" + entry.destination;
+                failure = l10n::Cn(L"移动时无法原子替换不同类型或重解析目标：") + entry.destination;
                 break;
             }
             const std::wstring backup = UniqueTemporaryPath(
                 entry.destination, L".pulse-backup-", task_id, index);
             if (!MoveFileExW(entry.destination.c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)) {
-                failure = L"无法安全备份要替换的目标项目：" + entry.destination
+                failure = l10n::Cn(L"无法安全备份要替换的目标项目：") + entry.destination
                     + L" | " + Win32Message(GetLastError());
                 break;
             }
@@ -2153,7 +2154,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
             SetStatus([&](OpStatus& st) {
                 st.phase = OpPhase::Paused;
-                st.summary = std::wstring(OpVerb(req.type)) + L"已暂停";
+                st.summary = std::wstring(OpVerb(req.type)) + l10n::Cn(L"已暂停");
                 st.bytes_per_second = 0.0;
                 st.eta_seconds = 0;
             });
@@ -2169,8 +2170,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             reset_rate();
             SetStatus([&](OpStatus& st) {
                 st.phase = OpPhase::Running;
-                st.summary = L"正在" + std::wstring(OpVerb(req.type)) + L" "
-                    + std::to_wstring(entries.size()) + L" 个项目";
+                st.summary = l10n::Cn(L"正在") + std::wstring(OpVerb(req.type)) + L" "
+                    + std::to_wstring(entries.size()) + l10n::Cn(L" 个项目");
             });
         }
         if (cancelled || transfer_cancel_.load()) {
@@ -2188,7 +2189,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         if (verify_copies_.load()) {
             SetStatus([&](OpStatus& st) {
                 st.phase = OpPhase::Verifying;
-                st.summary = L"正在校验 " + FileName(entry.source);
+                st.summary = l10n::Cn(L"正在校验 ") + FileName(entry.source);
                 st.bytes_per_second = 0.0;
                 st.eta_seconds = 0;
             });
@@ -2202,7 +2203,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             }
             if (source_hash != copied_hash) {
                 DeleteFileW(copy_destination.c_str());
-                failure = L"SHA-256 校验失败 | " + entry.source;
+                failure = l10n::Cn(L"SHA-256 校验失败 | ") + entry.source;
                 break;
             }
             SetStatus([&](OpStatus& st) { st.phase = OpPhase::Running; });
@@ -2336,18 +2337,18 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         st.lock_owners = lock_report.owners;
         if (transfer_cancelled) {
             st.phase = OpPhase::Failed;
-            st.last_error = L"已取消";
-            st.summary = std::wstring(OpVerb(req.type)) + L"已取消";
+            st.last_error = l10n::Cn(L"已取消");
+            st.summary = std::wstring(OpVerb(req.type)) + l10n::Cn(L"已取消");
         } else if (!failure.empty()) {
             st.phase = OpPhase::Failed;
             st.last_error = failure;
-            st.summary = std::wstring(OpVerb(req.type)) + L"失败";
+            st.summary = std::wstring(OpVerb(req.type)) + l10n::Cn(L"失败");
         } else {
             st.phase = OpPhase::Completed;
             st.percent = 100.0f;
             st.transferred_bytes = st.total_bytes;
             st.completed_items = st.total_items;
-            st.summary = Describe(req) + L" 完成";
+            st.summary = Describe(req) + l10n::Cn(L" 完成");
             st.last_error.clear();
         }
     });
@@ -2435,11 +2436,11 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
             st.completed_ops++;
             if (FAILED(hr)) {
                 st.phase = OpPhase::Failed;
-                st.last_error = L"无法清空回收站";
+                st.last_error = l10n::Cn(L"无法清空回收站");
             } else {
                 st.phase = OpPhase::Completed;
                 st.completed_items = st.total_items;
-                st.summary = Describe(req) + L" 完成";
+                st.summary = Describe(req) + l10n::Cn(L" 完成");
             }
         });
         return;
@@ -2456,7 +2457,7 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         if (!valid || shell_cancel_requested_.load() || stopping_.load()) {
             SetStatus([&](OpStatus& st) {
                 st.active = false; st.phase = OpPhase::Failed; st.percent = -1.0f;
-                ++st.completed_ops; st.last_error = valid ? L"已取消" : L"名称无效";
+                ++st.completed_ops; st.last_error = valid ? l10n::Cn(L"已取消") : l10n::Cn(L"名称无效");
             });
             return;
         }
@@ -2505,13 +2506,13 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
             st.completed_items = ok_sources.size();
             if (cancelled) {
                 st.phase = OpPhase::Failed;
-                st.last_error = L"已取消";
+                st.last_error = l10n::Cn(L"已取消");
             } else if (ok_sources.empty()) {
                 st.phase = OpPhase::Failed;
-                st.last_error = last_error.empty() ? L"操作失败" : last_error;
+                st.last_error = last_error.empty() ? l10n::Cn(L"操作失败") : last_error;
             } else {
                 st.phase = OpPhase::Completed;
-                st.summary = Describe(req) + L" 完成";
+                st.summary = Describe(req) + l10n::Cn(L" 完成");
                 if (ok_sources.size() != req.sources.size())
                     st.last_error = last_error;
             }
@@ -2538,7 +2539,7 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
                 st.completed_ops++;
                 st.completed_items = st.total_items;
                 st.phase = OpPhase::Completed;
-                st.summary = Describe(req) + L" 完成";
+                st.summary = Describe(req) + l10n::Cn(L" 完成");
             });
             return;
         }
@@ -2573,7 +2574,7 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
             st.active = false;
             st.phase = OpPhase::Failed;
             st.percent = -1.0f;
-            st.last_error = L"操作层未启动";
+            st.last_error = l10n::Cn(L"操作层未启动");
             st.completed_ops++;
         });
         return;
@@ -2597,14 +2598,14 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         st.lock_owners = lock_report.owners;
         if (cancelled) {
             st.phase = OpPhase::Failed;
-            st.last_error = L"已取消";
+            st.last_error = l10n::Cn(L"已取消");
         } else if (FAILED((HRESULT)hr)) {
             st.phase = OpPhase::Failed;
-            st.last_error = error.empty() ? L"操作失败" : error;
+            st.last_error = error.empty() ? l10n::Cn(L"操作失败") : error;
         } else {
             st.phase = OpPhase::Completed;
             st.completed_items = st.total_items;
-            st.summary = Describe(req) + L" 完成";
+            st.summary = Describe(req) + l10n::Cn(L" 完成");
         }
     });
 }
@@ -2628,8 +2629,8 @@ bool OpsManager::WaitShellDone(uint32_t id, uint32_t& hr, bool& cancelled, std::
             SetStatus([](OpStatus& st) {
                 st.active = false;
                 st.phase = OpPhase::Failed;
-                st.last_error = L"操作已停止";
-                st.summary = L"操作已停止";
+                st.last_error = l10n::Cn(L"操作已停止");
+                st.summary = l10n::Cn(L"操作已停止");
                 st.completed_ops++;
             });
             return false;
@@ -2637,7 +2638,9 @@ bool OpsManager::WaitShellDone(uint32_t id, uint32_t& hr, bool& cancelled, std::
     }
     hr = done_hr_;
     cancelled = done_cancelled_;
-    error = std::move(done_error_);
+    // Shell host errors are Simplified text or a system message.
+    error = l10n::HantText(done_error_);
+    done_error_.clear();
     done_ready_ = false;
     current_req_id_.store(0);
     shell_cancel_requested_ = false;

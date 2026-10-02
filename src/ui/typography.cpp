@@ -18,6 +18,11 @@ namespace {
 std::mutex g_fallback_mutex;
 IDWriteFactory2* g_fallback_factory = nullptr;
 IDWriteFontFallback* g_fallback = nullptr;
+bool g_fallback_traditional = false;
+
+bool TraditionalChinese() noexcept {
+    return pulse::l10n::effective_language() == pulse::l10n::Language::ZhTW;
+}
 std::atomic_uint64_t g_generation{1};
 std::atomic_int g_text_render_mode{0};
 
@@ -41,9 +46,14 @@ bool FamilyExists(IDWriteFactory2* factory, const wchar_t* family) {
 }
 
 const wchar_t* ResolveFamily(IDWriteFactory2* factory, FontRole role) {
-    const bool chinese = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+    const bool traditional = TraditionalChinese();
+    const bool chinese = traditional ||
+        pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
     const wchar_t* const text_zh[] = {
         L"Microsoft YaHei UI", L"Microsoft YaHei", L"Segoe UI", nullptr};
+    // Taiwan glyph forms; YaHei only if JhengHei is missing.
+    const wchar_t* const text_tw[] = {
+        L"Microsoft JhengHei UI", L"Microsoft JhengHei", L"Microsoft YaHei UI", L"Segoe UI", nullptr};
     const wchar_t* const text_en[] = {
         L"Segoe UI Variable Text", L"Segoe UI", L"Microsoft YaHei UI",
         L"Microsoft YaHei", nullptr};
@@ -56,13 +66,15 @@ const wchar_t* ResolveFamily(IDWriteFactory2* factory, FontRole role) {
         L"Segoe Fluent Icons", L"Segoe MDL2 Assets", L"Segoe UI", nullptr};
     const wchar_t* const mono[] = {
         L"Cascadia Mono", L"Consolas", L"Microsoft YaHei UI", L"Segoe UI", nullptr};
+    const wchar_t* const mono_tw[] = {
+        L"Cascadia Mono", L"Consolas", L"Microsoft JhengHei UI", L"Segoe UI", nullptr};
 
     const wchar_t* const* candidates = nullptr;
     switch (role) {
-    case FontRole::Display: candidates = chinese ? display_zh : display_en; break;
+    case FontRole::Display: candidates = traditional ? text_tw : chinese ? display_zh : display_en; break;
     case FontRole::Icon: candidates = icons; break;
-    case FontRole::Monospace: candidates = mono; break;
-    default: candidates = chinese ? text_zh : text_en; break;
+    case FontRole::Monospace: candidates = traditional ? mono_tw : mono; break;
+    default: candidates = traditional ? text_tw : chinese ? text_zh : text_en; break;
     }
     for (size_t i = 0; candidates[i]; ++i) {
         if (FamilyExists(factory, candidates[i])) return candidates[i];
@@ -70,7 +82,7 @@ const wchar_t* ResolveFamily(IDWriteFactory2* factory, FontRole role) {
     return L"Segoe UI";
 }
 
-bool BuildFallback(IDWriteFactory2* factory, IDWriteFontFallback** fallback) {
+bool BuildFallback(IDWriteFactory2* factory, bool traditional, IDWriteFontFallback** fallback) {
     if (!factory || !fallback) return false;
     *fallback = nullptr;
     IDWriteFontFallbackBuilder* builder = nullptr;
@@ -80,12 +92,16 @@ bool BuildFallback(IDWriteFactory2* factory, IDWriteFontFallback** fallback) {
         {0x2E80, 0x303F}, {0x3400, 0x4DBF}, {0x4E00, 0x9FFF},
         {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
     };
-    const wchar_t* families[] = {L"Microsoft YaHei UI", L"Microsoft YaHei"};
+    const wchar_t* simplified[] = {L"Microsoft YaHei UI", L"Microsoft YaHei"};
+    const wchar_t* hant[] = {L"Microsoft JhengHei UI", L"Microsoft JhengHei",
+                             L"Microsoft YaHei UI", L"Microsoft YaHei"};
     // Locale must be empty: a zh-CN mapping is skipped when the UI language
     // (and therefore the text format locale) is en-US, so Chinese in an
     // English shell would miss YaHei.
-    builder->AddMapping(cjk, ARRAYSIZE(cjk), families, ARRAYSIZE(families),
-                        nullptr, nullptr);
+    if (traditional)
+        builder->AddMapping(cjk, ARRAYSIZE(cjk), hant, ARRAYSIZE(hant), nullptr, nullptr);
+    else
+        builder->AddMapping(cjk, ARRAYSIZE(cjk), simplified, ARRAYSIZE(simplified), nullptr, nullptr);
 
     IDWriteFontFallback* system = nullptr;
     if (SUCCEEDED(factory->GetSystemFontFallback(&system)) && system) {
@@ -100,10 +116,12 @@ bool BuildFallback(IDWriteFactory2* factory, IDWriteFontFallback** fallback) {
 void ApplyFallbackInternal(IDWriteFactory2* factory, IDWriteTextFormat* format) {
     if (!factory || !format) return;
     std::lock_guard lock(g_fallback_mutex);
-    if (g_fallback_factory != factory || !g_fallback) {
+    const bool traditional = TraditionalChinese();
+    if (g_fallback_factory != factory || !g_fallback || g_fallback_traditional != traditional) {
         Release(g_fallback);
         g_fallback_factory = factory;
-        BuildFallback(factory, &g_fallback);
+        g_fallback_traditional = traditional;
+        BuildFallback(factory, traditional, &g_fallback);
     }
     if (!g_fallback) return;
     IDWriteTextFormat1* format1 = nullptr;
@@ -126,8 +144,11 @@ bool HasIconFont(IDWriteFactory2* factory) {
 }
 
 const wchar_t* PreferredTextFamily() noexcept {
-    return pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN
-        ? L"Microsoft YaHei UI" : L"Segoe UI Variable Text";
+    switch (pulse::l10n::effective_language()) {
+    case pulse::l10n::Language::ZhCN: return L"Microsoft YaHei UI";
+    case pulse::l10n::Language::ZhTW: return L"Microsoft JhengHei UI";
+    default: return L"Segoe UI Variable Text";
+    }
 }
 
 HRESULT CreateTextFormat(IDWriteFactory2* factory, const TextFormatSpec& spec,

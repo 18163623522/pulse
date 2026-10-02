@@ -129,7 +129,7 @@ std::vector<ShellMenuEntry> ApplyExplorerPrefs(const ContextMenuPrefs& prefs,
         append_compress_children(kept[static_cast<size_t>(vendor_index)].entry);
     } else if (!compress_top.empty()) {
         ShellMenuEntry group;
-        group.text = ipc::CompressFlyoutText();
+        group.text = l10n::Cn(ipc::CompressFlyoutText());
         group.from_com = true;
         append_compress_children(group);
         if (!group.children.empty())
@@ -417,7 +417,7 @@ std::vector<ShellMenuEntry> ContextMenuController::ComposeEntries(
             continue;
         }
         if (flyout && entry.clsid.empty() &&
-            ipc::ToLowerVerb(entry.text) == ipc::ToLowerVerb(ipc::CompressFlyoutText())) {
+            ipc::ToLowerVerb(entry.text) == ipc::ToLowerVerb(l10n::Cn(ipc::CompressFlyoutText()))) {
             if (prefs.RecordSeen(ipc::CompressCatalogKey(), ipc::CompressCatalogText(),
                                  true, ipc::CtxMenuCategory::Software, true))
                 prefs_changed = true;

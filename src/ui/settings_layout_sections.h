@@ -68,8 +68,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         l.preview_formats=D2D1::RectF(left,y,right,y);
         y+=LayoutPreviewFormats(l.preview_formats,scale,nullptr,nullptr);
         l.preview_formats.bottom=y;
-        const bool zh=l10n::effective_language()==l10n::Language::ZhCN;
-        const float bw=painter ? painter->MeasureButtonWidth(zh ? L"获取" : L"Get") : 72*scale;
+        const float bw=painter ? painter->MeasureButtonWidth(l10n::Pick(L"获取", L"Get")) : 72*scale;
         for(int i=0;i<kPreviewCodecCount;++i) {
             l.preview_codec_row[i]=row(60);
             const bool detected=(vm.settings_preview_codecs & kPreviewCodecsDetected)!=0;

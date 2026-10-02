@@ -39,6 +39,18 @@
 using namespace pulse;
 
 namespace pulse {
+namespace {
+// Ops and Shell host errors are Simplified protocol text; zh-TW shows the
+// converted form, so classification accepts both.
+bool ErrorIs(const std::wstring& error, const wchar_t* simplified) {
+    return error == simplified || error == l10n::Cn(simplified);
+}
+bool ErrorHas(const std::wstring& error, const wchar_t* simplified) {
+    return error.find(simplified) != std::wstring::npos ||
+           error.find(l10n::Cn(simplified)) != std::wstring::npos;
+}
+} // namespace
+
 bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request) {
     // Copy/move conflict discovery is part of the transfer worker's recursive
     // scan. The UI only consumes immutable conflict snapshots.
@@ -385,7 +397,7 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
         // The ops notification shows the locked-item prompt; a timer tick
         // that sees the failure first must not open the failure window.
         if (locked_failure) return;
-        if (status.last_error == L"已取消") {
+        if (ErrorIs(status.last_error, L"已取消")) {
             s.operationWindow->Hide();
             return;
         }
@@ -407,17 +419,18 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
                 : file ? l10n::StringId::CannotCreateTextFile : l10n::StringId::CannotRename);
             std::wstring message;
             const std::wstring& err = status.last_error;
-            const bool no_access = err.find(L"没有权限") != std::wstring::npos
-                || err.find(L"拒绝访问") != std::wstring::npos
+            const bool no_access = ErrorHas(err, L"没有权限")
+                || ErrorHas(err, L"拒绝访问")
+                || err.find(L"存取被拒") != std::wstring::npos  // zh-TW system message
                 || err.find(L"Access is denied") != std::wstring::npos
                 || err == L"create failed";
             if (no_access) {
                 message = l10n::Get(folder || file
                     ? l10n::StringId::FolderNoWritePermission
                     : l10n::StringId::RenameNoPermission);
-            } else if (err == L"目标名称已存在") {
+            } else if (ErrorIs(err, L"目标名称已存在")) {
                 message = l10n::Get(l10n::StringId::RenameTargetExists);
-            } else if (err == L"名称无效") {
+            } else if (ErrorIs(err, L"名称无效")) {
                 message = l10n::Get(l10n::StringId::InvalidName);
             } else if (!err.empty()) {
                 message = err;

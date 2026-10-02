@@ -2697,6 +2697,7 @@ BEGIN
   IDS_PICKER_TITLE_FOLDER "选择文件夹"
   IDS_PICKER_DRIVE_FREE_FORMAT "可用 %s，共 %s"
   IDS_PICKER_PICK_IMAGE_HINT "请选择一张图片"
+  IDS_LANGUAGE_ZH_TW "繁體中文"
   IDS_DETAILS_COLUMN_NO_ROOM "空间不足"
   IDS_DETAILS_COLUMN_NO_ROOM_TIP "窗格太窄，加宽窗口或收起侧栏后显示"
   IDS_DETAILS_COLUMN_NOT_IN_SEARCH "搜索中不显示"
@@ -2958,7 +2959,11 @@ BEGIN
   IDS_PICKER_TITLE_FOLDER "Choose a folder"
   IDS_PICKER_DRIVE_FREE_FORMAT "%s free of %s"
   IDS_PICKER_PICK_IMAGE_HINT "Select a picture"
+  IDS_LANGUAGE_ZH_TW "繁體中文"
   IDS_DETAILS_COLUMN_NO_ROOM "No room"
   IDS_DETAILS_COLUMN_NO_ROOM_TIP "The pane is too narrow. Widen the window or collapse the sidebar to show it."
   IDS_DETAILS_COLUMN_NOT_IN_SEARCH "Not in search"
 END
+
+// Traditional Chinese (Taiwan), generated from the Simplified blocks above.
+#include "strings_zh_tw.rcinc"

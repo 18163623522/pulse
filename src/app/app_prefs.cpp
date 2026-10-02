@@ -297,7 +297,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     theme_mode = pulse::json::ExtractInt(json, L"theme_mode", -1);
     if (theme_mode < -1 || theme_mode > 2) theme_mode = -1;
     language = pulse::json::ExtractString(json, L"language", L"system");
-    if (language != L"system" && language != L"zh-CN" && language != L"en-US")
+    if (language != L"system" && language != L"zh-CN" && language != L"zh-TW" &&
+        language != L"en-US")
         language = L"system";
     window_effect = pulse::json::ExtractString(json, L"window_effect", L"mica-alt");
     if (window_effect == L"dwm-blur") window_effect = L"acrylic-material";

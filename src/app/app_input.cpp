@@ -2249,7 +2249,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             SetCapture(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::SettingsLanguage) {
-            static constexpr const wchar_t* languages[] = {L"system", L"zh-CN", L"en-US"};
+            static constexpr const wchar_t* languages[] = {L"system", L"zh-CN", L"zh-TW", L"en-US"};
             if (hit.index >= 0 && hit.index < static_cast<int>(std::size(languages)))
                 s->settings.Language(languages[hit.index]);
         } else if (hit.region == ui::HitTestResult::SettingsWallpaper) {

@@ -3,6 +3,7 @@
 #include "session.h"
 #include "../fs/fs_enum.h"
 #include "../common/json_utils.h"
+#include "../common/localization.h"
 #include "../common/utf8_file.h"
 #include <algorithm>
 #include <sstream>
@@ -243,7 +244,7 @@ void PlacesCatalog::EnsureDefaults() {
     for (const auto& d : kDefs) {
         ColorTag t;
         t.id = d.id;
-        t.name = d.name;
+        t.name = l10n::Cn(d.name);  // seeded once in the UI language, then user data
         t.rgb = d.rgb;
         tags.push_back(std::move(t));
     }
@@ -1407,7 +1408,7 @@ void PlacesCatalog::MergeAdsRecords(const std::wstring& path,
                 if (index < 0) {
                     ColorTag tag;
                     tag.id = record.id.empty() ? NewTagId() : record.id;
-                    tag.name = imported_name.empty() ? L"导入的标签" : imported_name;
+                    tag.name = imported_name.empty() ? std::wstring(l10n::Cn(L"导入的标签")) : imported_name;
                     tag.rgb = record.rgb;
                     tags.push_back(std::move(tag));
                     index = static_cast<int>(tags.size()) - 1;
