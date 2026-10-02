@@ -467,6 +467,7 @@ struct AppState {
     uint64_t operationUiTaskId = 0;
     uint64_t operationDismissedTaskId = 0;
     uint64_t conflictUiToken = 0;
+    uint64_t lockPromptTaskId = 0;   // failed op whose "file in use" prompt was shown
     bool operationAutoShown = false;
     bool operationPinnedByUser = false;
     std::chrono::steady_clock::time_point operationStartedAt{};

@@ -17,6 +17,7 @@
 #include "context_menu.h"
 #include "batch_rename.h"
 #include "link_resolve.h"
+#include "locked_item_prompt.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
@@ -338,6 +339,19 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
         }
     }
 
+    // Failed on an item other processes hold: name them and offer the retry
+    // instead of the plain failure window (the token guards modal re-entry).
+    const bool locked_failure = !status.active && status.phase == ops::OpPhase::Failed
+        && !status.lock_owners.empty() && status.task_id != 0;
+    if (locked_failure && allow_conflict_dialog && status.task_id != s.lockPromptTaskId) {
+        s.lockPromptTaskId = status.task_id;
+        s.operationDismissedTaskId = status.task_id;
+        s.operationPinnedByUser = false;
+        if (s.operationWindow->IsVisible()) s.operationWindow->Hide();
+        PromptLockedItem(s, status);
+        return;
+    }
+
     if (status.task_id != 0 && status.task_id == s.operationDismissedTaskId &&
         !s.operationPinnedByUser) {
         if (s.operationWindow->IsVisible()) s.operationWindow->Hide();
@@ -360,6 +374,9 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
                 s.operationWindow->Hide();
         }
     } else if (status.phase == ops::OpPhase::Failed) {
+        // The ops notification shows the locked-item prompt; a timer tick
+        // that sees the failure first must not open the failure window.
+        if (locked_failure) return;
         if (status.last_error == L"已取消") {
             s.operationWindow->Hide();
             return;
