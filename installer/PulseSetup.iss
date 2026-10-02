@@ -182,11 +182,18 @@ var
   UpgradeStartupCommand, UpgradePreviousExe: String;
   UpgradeFolderCommands: array[0..1] of String;
   UpgradeWinECommand, UpgradeWinEBackup: String;
+  UpgradeThisPcCommand, UpgradeThisPcBackup, UpgradeThisPcVerbBackup: String;
+  UpgradeThisPcDelegateBackup: String;
+  UpgradeThisPcDelegatePresent: Boolean;
 
 const
   { Win+E / taskbar File Explorer launch verb (AppPrefs::ApplyWinE). }
   WinEClsidKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}';
   WinEVerbKey = 'Software\Classes\CLSID\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\shell\opennewwindow';
+  { This PC open verb (default_file_manager.cpp ApplyThisPcOpen). }
+  ThisPcClsidKey = 'Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}';
+  ThisPcShellKey = 'Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell';
+  ThisPcCommandKey = 'Software\Classes\CLSID\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\shell\open\command';
 
 function FolderClass(Index: Integer): String;
 begin
@@ -223,6 +230,19 @@ begin
     if not RegQueryStringValue(HKCU, WinEVerbKey + '\command', 'PulseBackup',
       UpgradeWinEBackup) then
       UpgradeWinEBackup := '';
+  end;
+  { Same for This PC, with the other manager's values Pulse keeps for turn-off. }
+  Command := '';
+  if RegQueryStringValue(HKCU, ThisPcCommandKey, '', Command) and
+    (Pos(Lowercase(PreviousExe), Lowercase(Command)) > 0) then
+  begin
+    UpgradeThisPcCommand := Command;
+    if not RegQueryStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', UpgradeThisPcBackup) then
+      UpgradeThisPcBackup := '';
+    if not RegQueryStringValue(HKCU, ThisPcShellKey, 'PulseBackup', UpgradeThisPcVerbBackup) then
+      UpgradeThisPcVerbBackup := '';
+    UpgradeThisPcDelegatePresent := RegQueryStringValue(HKCU, ThisPcCommandKey,
+      'PulseBackupDelegateExecute', UpgradeThisPcDelegateBackup);
   end;
   UpgradePrefsCaptured := True;
 end;
@@ -269,6 +289,19 @@ begin
     RegWriteStringValue(HKCU, WinEVerbKey + '\command', 'DelegateExecute', '');
     if UpgradeWinEBackup <> '' then
       RegWriteStringValue(HKCU, WinEVerbKey + '\command', 'PulseBackup', UpgradeWinEBackup);
+  end;
+  if UpgradeThisPcCommand <> '' then
+  begin
+    RegWriteStringValue(HKCU, ThisPcCommandKey, '', UpgradeCommand(UpgradeThisPcCommand));
+    RegWriteStringValue(HKCU, ThisPcCommandKey, 'DelegateExecute', '');
+    RegWriteStringValue(HKCU, ThisPcShellKey, '', 'open');
+    if UpgradeThisPcBackup <> '' then
+      RegWriteStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', UpgradeThisPcBackup);
+    if UpgradeThisPcVerbBackup <> '' then
+      RegWriteStringValue(HKCU, ThisPcShellKey, 'PulseBackup', UpgradeThisPcVerbBackup);
+    if UpgradeThisPcDelegatePresent then
+      RegWriteStringValue(HKCU, ThisPcCommandKey, 'PulseBackupDelegateExecute',
+        UpgradeThisPcDelegateBackup);
   end;
 end;
 
@@ -546,6 +579,47 @@ begin
   end;
 end;
 
+{ This PC: put back the file manager Pulse replaced (command line, DelegateExecute
+  and default verb), or drop Pulse's verb so This PC opens in File Explorer again.
+  Mirrors ApplyThisPcOpen(off); never leave This PC pointing at a removed pulse.exe. }
+procedure DeleteThisPcOverride;
+var
+  Cmd, Backup, VerbBackup, DelegateBackup, DefaultVerb: String;
+  HasDelegateBackup: Boolean;
+begin
+  if not RegQueryStringValue(HKCU, ThisPcCommandKey, '', Cmd) then Exit;
+  if Pos(Lowercase(ExpandConstant('{app}\pulse.exe')), Lowercase(Cmd)) = 0 then Exit;
+  if not RegQueryStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', Backup) then
+    Backup := '';
+  HasDelegateBackup := RegQueryStringValue(HKCU, ThisPcCommandKey,
+    'PulseBackupDelegateExecute', DelegateBackup);
+  if (Backup <> '') or HasDelegateBackup then
+  begin
+    if Backup <> '' then
+      RegWriteStringValue(HKCU, ThisPcCommandKey, '', Backup)
+    else
+      RegDeleteValue(HKCU, ThisPcCommandKey, '');
+    RegDeleteValue(HKCU, ThisPcCommandKey, 'PulseBackup');
+    if HasDelegateBackup then
+    begin
+      RegWriteStringValue(HKCU, ThisPcCommandKey, 'DelegateExecute', DelegateBackup);
+      RegDeleteValue(HKCU, ThisPcCommandKey, 'PulseBackupDelegateExecute');
+    end else
+      RegDeleteValue(HKCU, ThisPcCommandKey, 'DelegateExecute');
+  end else
+    RegDeleteKeyIncludingSubkeys(HKCU, ThisPcShellKey + '\open');
+  if RegQueryStringValue(HKCU, ThisPcShellKey, 'PulseBackup', VerbBackup) and
+    (VerbBackup <> '') then
+  begin
+    RegWriteStringValue(HKCU, ThisPcShellKey, '', VerbBackup);
+    RegDeleteValue(HKCU, ThisPcShellKey, 'PulseBackup');
+  end else if (Backup = '') and RegQueryStringValue(HKCU, ThisPcShellKey, '', DefaultVerb) and
+    (CompareText(DefaultVerb, 'open') = 0) then
+    RegDeleteValue(HKCU, ThisPcShellKey, '');
+  RegDeleteKeyIfEmpty(HKCU, ThisPcShellKey);
+  RegDeleteKeyIfEmpty(HKCU, ThisPcClsidKey);
+end;
+
 { File Explorer "Pulse tags" submenu (shell_tag_menu.cpp) and its dot icons.
   Pulse reinstalls it on the next launch after an upgrade (app.json pref). }
 procedure DeleteShellTagMenu;
@@ -565,6 +639,7 @@ begin
     DeleteFolderOpenOverride('Directory');
     DeleteFolderOpenOverride('Drive');
     DeleteWinEOverride;
+    DeleteThisPcOverride;
     DeleteShellTagMenu;
     if CleanupUserData then
       CleanupPulseData;

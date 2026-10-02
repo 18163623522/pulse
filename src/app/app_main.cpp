@@ -1521,7 +1521,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         auto* result = reinterpret_cast<ShellVerbsResult*>(lParam);
         if (s && result) {
             if (s->context_menu.CompleteStaticVerbs(
-                    result->ext, std::move(result->verbs))) {
+                    result->ext, std::move(result->verbs), result->generation)) {
                 RefreshOpenCtxMenu(*s);
             }
         }

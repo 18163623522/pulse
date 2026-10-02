@@ -272,6 +272,31 @@ int wmain(int argc, wchar_t** argv) {
         Check(st.lock_owners.empty() && st.locked_path.empty(), "lock info cleared after success");
     }
     {
+        // A moves, B is locked. The user closes the owner and presses plain
+        // retry: the retry must skip A (already moved) and finish B.
+        const fsys::path a = root / L"partial-src" / L"a.txt";
+        const fsys::path b = root / L"partial-src" / L"b.txt";
+        const fsys::path dest = root / L"partial-dest";
+        Touch(a);
+        Touch(b);
+        fsys::create_directories(dest);
+        Holder holder;
+        Check(StartHolder(holder, b), "partial move holder started");
+        OpRequest move;
+        move.type = OpType::Move;
+        move.sources = {a.wstring(), b.wstring()};
+        move.dest_dir = dest.wstring();
+        OpStatus st = Run(ops, move);
+        std::printf("[INFO] partial move phase=%d a_moved=%d\n", static_cast<int>(st.phase),
+                    fsys::exists(dest / L"a.txt") ? 1 : 0);
+        Check(st.phase == OpPhase::Failed && fsys::exists(b), "partial move fails on the locked item");
+        holder.Stop();
+        st = Retry(ops, st.task_id, false);
+        Check(st.phase == OpPhase::Completed && fsys::exists(dest / L"a.txt") &&
+              fsys::exists(dest / L"b.txt") && !fsys::exists(a) && !fsys::exists(b),
+              "plain retry after the owner closed skips moved items and completes");
+    }
+    {
         const fsys::path folder = root / L"dir-src" / L"project";
         const fsys::path inner = folder / L"doc.txt";
         const fsys::path dest = root / L"dir-dest";

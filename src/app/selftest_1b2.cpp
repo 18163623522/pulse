@@ -2487,7 +2487,7 @@ void TestContextMenuPrefs() {
     seeded.MergeStaticCache({ { L".xlsx", { empty_row } } });
     Check(seeded.RequestStaticPrefetch(L".xlsx"),
           L"prefs: a seeded extension still re-enumerates from the registry");
-    seeded.CompleteStaticVerbs(L".xlsx", { empty_row });
+    seeded.CompleteStaticVerbs(L".xlsx", { empty_row }, seeded.cache_generation());
     Check(!seeded.RequestStaticPrefetch(L".xlsx"),
           L"prefs: a live pass clears the seeded marker");
 

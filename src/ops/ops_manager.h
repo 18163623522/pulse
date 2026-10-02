@@ -61,6 +61,9 @@ struct OpRequest {
     // Lock retry only: end these processes first (never journaled, so a
     // recovered operation cannot terminate anything).
     std::vector<LockOwner> close_first;
+    // Retry of a locked-file failure (with or without ending processes): the
+    // failed attempt may have handled part of the selection already.
+    bool lock_retry = false;
 };
 
 struct UndoEntry {

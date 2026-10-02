@@ -742,6 +742,7 @@ struct AppState {
 struct ShellVerbsResult {
     std::wstring ext;
     std::vector<app::StaticVerb> verbs;
+    uint32_t generation = 0;  // ContextMenuController::cache_generation() at request time
 };
 
 // WM_SHELL_VERB_SEED heap payload: the machine-wide verb cache, parsed on the

@@ -1083,8 +1083,9 @@ std::wstring StaticVerbKey(const app::Tab& tab, const std::vector<int>& indices)
 void PrefetchStaticVerbs(AppState& s, const std::wstring& ext) {
     if (!s.context_menu.RequestStaticPrefetch(ext)) return;
     HWND hwnd = s.hwnd;
-    std::thread([hwnd, ext] {
-        auto* result = new ShellVerbsResult{ ext, app::EnumerateStaticVerbs(ext) };
+    const uint32_t cache_generation = s.context_menu.cache_generation();
+    std::thread([hwnd, ext, cache_generation] {
+        auto* result = new ShellVerbsResult{ ext, app::EnumerateStaticVerbs(ext), cache_generation };
         if (!PostMessageW(hwnd, WM_SHELL_VERBS, 0, reinterpret_cast<LPARAM>(result)))
             delete result;
     }).detach();
@@ -1168,7 +1169,8 @@ void SeedShellVerbCache(AppState& s) {
     HWND hwnd = s.hwnd;
     // A newer seed supersedes this one; stop instead of piling up readers.
     const uint32_t generation = ++g_shell_seed_generation;
-    std::thread([hwnd, generation] {
+    const uint32_t cache_generation = s.context_menu.cache_generation();
+    std::thread([hwnd, generation, cache_generation] {
         // The cache file can be megabytes: read and parse it here, never on
         // the UI thread, which only merges the result (WM_SHELL_VERB_SEED).
         auto seed = std::make_unique<ShellVerbSeed>();
@@ -1185,7 +1187,7 @@ void SeedShellVerbCache(AppState& s) {
         size_t n = 0;
         for (const auto& ext : extensions) {
             if (n++ > 400 || g_shell_seed_generation.load() != generation) break;
-            auto* result = new ShellVerbsResult{ ext, app::EnumerateStaticVerbs(ext) };
+            auto* result = new ShellVerbsResult{ ext, app::EnumerateStaticVerbs(ext), cache_generation };
             if (!PostMessageW(hwnd, WM_SHELL_VERBS, 0, reinterpret_cast<LPARAM>(result)))
                 delete result;
         }

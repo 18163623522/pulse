@@ -1108,6 +1108,7 @@ bool OpsManager::RetryLockedOperation(uint64_t task_id, bool close_owners) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_ || !lock_retry_ || lock_retry_->task_id != task_id) return false;
         req = std::move(lock_retry_->req);
+        req.lock_retry = true;
         if (close_owners) {
             for (const auto& owner : lock_retry_->owners)
                 if (owner.closable) req.close_first.push_back(owner);
@@ -1118,9 +1119,10 @@ bool OpsManager::RetryLockedOperation(uint64_t task_id, bool close_owners) {
     return true;
 }
 
-// Ends the chosen lock owners, then drops delete/move sources that are already
-// gone (the failed attempt may have handled part of the selection). Returns
-// false when the operation must not run; the status is published here then.
+// Ends the chosen lock owners (if any), then drops delete/move sources that are
+// already gone (the failed attempt may have handled part of the selection).
+// Both retry buttons go through here. Returns false when the operation must
+// not run; the status is published here then.
 bool OpsManager::PrepareLockRetry(OpRequest& req, uint64_t task_id) {
     const std::vector<LockOwner> owners = std::move(req.close_first);
     req.close_first.clear();
@@ -1592,7 +1594,8 @@ void OpsManager::WorkerThread() {
         // Opens/verbs run on OpenThread — never block transfers.
         if (!item.open_path.empty()) continue;
 
-        const bool run = item.req.close_first.empty() || PrepareLockRetry(item.req, item.seq);
+        const bool run = (!item.req.lock_retry && item.req.close_first.empty()) ||
+                         PrepareLockRetry(item.req, item.seq);
         if (!run) {
             // PrepareLockRetry already published the outcome.
         } else if (item.req.type == OpType::Copy || item.req.type == OpType::Move) {

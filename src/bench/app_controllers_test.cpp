@@ -235,11 +235,28 @@ bool TestDefaultFileManager() {
             Read(kWinECommand, nullptr) == kForeign && Read(kWinECommand, L"PulseBackup") == L"<none>" &&
             Read(kThisPcCommand, nullptr) == kForeign && Read(kThisPcCommand, L"PulseBackup") == L"<none>" &&
             Read(kThisPcShell, nullptr) == L"openfm" && Read(kThisPcShell, L"PulseBackup") == L"<none>" &&
+            Read(kThisPcCommand, L"DelegateExecute") == L"<none>" &&
             !KeyExists(L"Software\\Classes\\Directory\\shell\\open"));
 
         // Off again with nobody else's command: leaves it alone entirely.
         const bool untouched = ApplyThisPcOpen(off, false) && Read(kThisPcCommand, nullptr) == kForeign;
         passed &= Report("default file manager: turning off never removes another program's verb", untouched);
+    }
+    {
+        // The other manager opens This PC through a DelegateExecute handler.
+        RegDeleteTreeW(HKEY_CURRENT_USER, kThisPcClsid);
+        constexpr wchar_t kForeignDelegate[] = L"{11111111-2222-3333-4444-555555555555}";
+        Write(kThisPcCommand, nullptr, kForeign);
+        Write(kThisPcCommand, L"DelegateExecute", kForeignDelegate);
+        AppPrefs prefs;
+        prefs.Load();
+        const bool on = ApplyThisPcOpen(prefs, true) && Read(kThisPcCommand, L"DelegateExecute").empty() &&
+            Read(kThisPcCommand, L"PulseBackupDelegateExecute") == kForeignDelegate;
+        const bool off = ApplyThisPcOpen(prefs, false);
+        passed &= Report("default file manager: turning off restores the other manager's DelegateExecute",
+            on && off && Read(kThisPcCommand, nullptr) == kForeign &&
+            Read(kThisPcCommand, L"DelegateExecute") == kForeignDelegate &&
+            Read(kThisPcCommand, L"PulseBackupDelegateExecute") == L"<none>");
     }
     {
         // Clean machine: on then off leaves no This PC / Win+E keys behind.
@@ -868,7 +885,22 @@ int wmain(int argc, wchar_t** argv) {
         context_menu.RequestStaticPrefetch(L".txt") &&
         !context_menu.RequestStaticPrefetch(L".txt"));
     context_menu.CompleteStaticVerbs(
-        L".txt", { { L"edit", L"Edit text", L"" } });
+        L".txt", { { L"edit", L"Edit text", L"" } }, context_menu.cache_generation());
+    {
+        // The registry changes while .doc is being read: the late result of the
+        // old read must not refill the invalidated cache or cancel the new read.
+        ContextMenuController stale;
+        const bool requested = stale.RequestStaticPrefetch(L".doc");
+        const uint32_t before = stale.cache_generation();
+        stale.InvalidateCaches();
+        const bool re_requested = stale.RequestStaticPrefetch(L".doc");
+        stale.CompleteStaticVerbs(L".doc", { { L"old", L"Old verb", L"" } }, before);
+        const bool old_dropped = !stale.HasCachedStaticVerbs(L".doc") &&
+                                 !stale.RequestStaticPrefetch(L".doc");  // new read still pending
+        stale.CompleteStaticVerbs(L".doc", { { L"new", L"New verb", L"" } }, stale.cache_generation());
+        passed &= Report("context menu drops static verbs read before a cache invalidation",
+            requested && re_requested && old_dropped && stale.HasCachedStaticVerbs(L".doc"));
+    }
     context_menu.StartQuery(context, nullptr, { L"C:\\one.txt" }, false, L".txt",
         false, [](const std::wstring& path) { return path; }, {});
     passed &= Report("context menu begins a typed shell session",
