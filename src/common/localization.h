@@ -12,6 +12,7 @@ enum class Language {
     System,
     ZhCN,
     EnUS,
+    ZhTW,   // Traditional Chinese, Taiwan vocabulary.
 };
 
 enum class StringId : UINT {
@@ -256,6 +257,7 @@ enum class StringId : UINT {
     SettingsLanguageDesc = IDS_SETTINGS_LANGUAGE_DESC,
     LanguageSystem = IDS_LANGUAGE_SYSTEM,
     LanguageZhCN = IDS_LANGUAGE_ZH_CN,
+    LanguageZhTW = IDS_LANGUAGE_ZH_TW,
     LanguageEnUS = IDS_LANGUAGE_EN_US,
     SettingsWallpaper = IDS_SETTINGS_WALLPAPER,
     SettingsWallpaperDesc = IDS_SETTINGS_WALLPAPER_DESC,
@@ -1279,6 +1281,8 @@ enum class StringId : UINT {
 };
 
 bool IsLanguageId(std::wstring_view id) noexcept;
+// Maps a Windows UI LANGID to a shipped language: zh-TW/HK/MO -> ZhTW, other Chinese -> ZhCN.
+Language LanguageFromLangId(LANGID language) noexcept;
 Language LanguageFromId(std::wstring_view id) noexcept;
 const wchar_t* LanguageId(Language language) noexcept;
 void Initialize(HINSTANCE module, std::wstring_view preference);
@@ -1287,5 +1291,19 @@ Language preference() noexcept;
 Language effective_language() noexcept;
 const wchar_t* LocaleName() noexcept;
 const std::wstring& Get(StringId id);
+
+// Chinese UI text that lives in code rather than the string table is written in
+// Simplified Chinese. These helpers convert it for the zh-TW UI (zh_hant.cpp).
+bool IsChinese() noexcept;
+// Returns `chinese` for zh-CN, its Traditional form for zh-TW, otherwise `english`.
+const wchar_t* Pick(const wchar_t* chinese, const wchar_t* english) noexcept;
+// Converts one Simplified UI literal for zh-TW; unchanged for other languages.
+const wchar_t* Cn(const wchar_t* chinese) noexcept;
+// Converts composed Simplified UI text for zh-TW, phrase by phrase. Only for text
+// that does not embed user data such as paths or file names.
+std::wstring HantText(std::wstring_view chinese);
+// Unconditional Simplified -> Traditional conversion behind HantText, for caches
+// built independently of the current language (e.g. release notes).
+std::wstring ToTraditional(std::wstring_view chinese);
 
 } // namespace pulse::l10n

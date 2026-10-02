@@ -1,0 +1,11 @@
+# 有歧義、需逐條指定的字串：IDS<TAB>繁體中文（台灣）。內容須為 RC 字串字面量。
+IDS_PROPERTIES	內容
+IDS_CONTEXT_OPEN_WITH_DESC	登錄檔中的「用某應用程式開啟」和「開啟方式...」。COM 重複項目預設關閉。
+IDS_SETTINGS_UI_1904	選擇應用程式的外觀主題
+IDS_OP_SOURCE_SHORT	來源
+IDS_TRAY_EXIT	結束
+IDS_COMPARE_EXIT	離開比較
+IDS_GLOBAL_SEARCH_DESC	啟用後關閉視窗仍可叫出；在系統匣選擇「結束」即可完全關閉
+IDS_ABOUT_HOMEPAGE	專案首頁
+IDS_SORT_WHEEL_SAMPLES	照片|專案資料|報告.pdf|旅行照片.jpg|預算.xlsx|會議記錄.docx|音樂.mp3
+IDS_SETTINGS_CONTEXT_MENU	右鍵選單

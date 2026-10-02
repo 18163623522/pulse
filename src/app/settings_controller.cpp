@@ -372,7 +372,7 @@ void SettingsController::EndSlider() {
 }
 
 void SettingsController::Language(std::wstring_view language_id) {
-    static constexpr std::wstring_view ids[] = {L"system", L"zh-CN", L"en-US"};
+    static constexpr std::wstring_view ids[] = {L"system", L"zh-CN", L"zh-TW", L"en-US"};
     if (!prefs_ || prefs_->language == language_id ||
         std::find(std::begin(ids), std::end(ids), language_id) == std::end(ids)) return;
     prefs_->language.assign(language_id);

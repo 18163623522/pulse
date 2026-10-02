@@ -81,10 +81,9 @@ std::wstring DefaultFileManagerSummary(const AppPrefs& prefs) {
     using I = l10n::StringId;
     if (DefaultFileManagerState(prefs) != DefaultManagerState::Partial)
         return l10n::Get(I::SettingsDefaultManagerDesc);
-    const bool zh = l10n::effective_language() == l10n::Language::ZhCN;
     std::wstring missing;
     auto add = [&](const std::wstring& part) {
-        if (!missing.empty()) missing += zh ? L"、" : L", ";
+        if (!missing.empty()) missing += l10n::Pick(L"、", L", ");
         missing += part;
     };
     if (!prefs.open_folders_in_pulse) add(l10n::Get(I::SettingsTakeoverFolders));

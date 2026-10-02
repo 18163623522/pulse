@@ -158,18 +158,19 @@ add_library(pulse_crash_reporter STATIC
     src/common/crash_reporter.cpp
     src/common/diagnostics_exporter.cpp)
 target_include_directories(pulse_crash_reporter PUBLIC "${CMAKE_BINARY_DIR}/generated")
-target_link_libraries(pulse_crash_reporter PUBLIC dbghelp shell32)
+target_link_libraries(pulse_crash_reporter PUBLIC dbghelp shell32 pulse_localization)
 
 add_library(pulse_text STATIC src/common/text_decode.cpp)
 
-add_library(pulse_localization STATIC src/common/localization.cpp)
+add_library(pulse_localization STATIC src/common/localization.cpp src/common/zh_hant.cpp)
 target_link_libraries(pulse_localization PUBLIC user32)
 
 add_executable(pulse_localization_test
     src/bench/localization_test.cpp
     src/bench/localization_test.rc)
 set_property(SOURCE src/bench/localization_test.rc APPEND PROPERTY OBJECT_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings.rcinc")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings.rcinc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings_zh_tw.rcinc")
 target_link_libraries(pulse_localization_test PRIVATE pulse_localization)
 
 add_executable(pulse_crash_test src/bench/crash_reporter_test.cpp)
@@ -209,7 +210,7 @@ add_executable(pulse_index_engine_test
     src/index/index_delta.cpp
     src/index/index_shard.cpp
     src/fs/fs_enum.cpp)
-target_link_libraries(pulse_index_engine_test PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr)
+target_link_libraries(pulse_index_engine_test PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr pulse_localization)
 
 # End-to-end index latency probe. It talks to the installed/running service so
 # timings include the production pipe, query engine, paging, and serialization.
@@ -295,6 +296,7 @@ target_link_libraries(pulse_dialog_gallery PRIVATE
 # Pulse's manifest: layered child EDITs need the Windows 8+ compatibility id.
 set_property(SOURCE src/bench/dialog_gallery.rc APPEND PROPERTY OBJECT_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings.rcinc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings_zh_tw.rcinc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/pulse.manifest")
 target_link_options(pulse_dialog_gallery PRIVATE /MANIFEST:NO)
 pulse_enable_lumatext(pulse_dialog_gallery)
@@ -353,6 +355,7 @@ if(PULSE_APP_SOURCES)
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/global-search-logo.png"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/app/pulse.ico"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings.rcinc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings_zh_tw.rcinc"
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent/cut_24_color.svg"
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent/copy_24_color.svg"
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/fluent/clipboard_paste_24_color.svg"
@@ -410,7 +413,7 @@ add_executable(pulse_index WIN32
 target_sources(pulse_index PRIVATE src/index/index_host.rc)
 target_link_options(pulse_index PRIVATE /MANIFEST:NO)
 set_target_properties(pulse_index PROPERTIES OUTPUT_NAME "Pulse.Index")
-target_link_libraries(pulse_index PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr bcrypt
+target_link_libraries(pulse_index PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr bcrypt pulse_localization
     pulse_crash_reporter pulse_text)
 pulse_add_version_resource(pulse_index "Pulse index host" "Pulse.Index" "Pulse.Index.exe")
 add_dependencies(pulse_index_host_stress pulse_index)
@@ -427,16 +430,16 @@ add_executable(pulse_ops_test
     src/ops/file_lock_owner.cpp
     src/ops/clipboard.cpp
     src/ipc/shell_client.cpp)
-target_link_libraries(pulse_ops_test PRIVATE ole32 shell32 uuid bcrypt)
+target_link_libraries(pulse_ops_test PRIVATE ole32 shell32 uuid bcrypt pulse_localization)
 
 add_executable(pulse_rename_ops_test src/bench/rename_ops_test.cpp
     src/ops/ops_manager.cpp src/ops/file_lock_owner.cpp src/ipc/shell_client.cpp)
-target_link_libraries(pulse_rename_ops_test PRIVATE ole32 shell32 uuid bcrypt)
+target_link_libraries(pulse_rename_ops_test PRIVATE ole32 shell32 uuid bcrypt pulse_localization)
 
 # Locked-item lookup (Restart Manager) + end-process-and-retry through OpsManager.
 add_executable(pulse_file_lock_test src/bench/file_lock_owner_test.cpp
     src/ops/file_lock_owner.cpp src/ops/ops_manager.cpp src/ipc/shell_client.cpp)
-target_link_libraries(pulse_file_lock_test PRIVATE ole32 shell32 uuid bcrypt rstrtmgr)
+target_link_libraries(pulse_file_lock_test PRIVATE ole32 shell32 uuid bcrypt rstrtmgr pulse_localization)
 
 # ---- Pulse.Shell.exe: COM isolation process (stage 1: recycle bin / IFileOperation) ----
 file(GLOB_RECURSE PULSE_SHELL_SOURCES CONFIGURE_DEPENDS src/shell_host/*.cpp)
@@ -626,7 +629,7 @@ add_executable(pulse_index_pinyin_test
     src/index/change_tracking.cpp src/index/index_visibility.cpp src/index/index_config.cpp
     src/index/index_query.cpp src/index/search_kinds.cpp src/index/index_mft.cpp
     src/index/index_paths.cpp src/index/index_delta.cpp src/index/index_shard.cpp src/fs/fs_enum.cpp)
-target_link_libraries(pulse_index_pinyin_test PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr)
+target_link_libraries(pulse_index_pinyin_test PRIVATE advapi32 shlwapi ole32 shell32 netapi32 mpr pulse_localization)
 foreach(folder_size_target pulse_index pulse_index_engine_test pulse_index_pinyin_test)
     target_sources(${folder_size_target} PRIVATE src/index/index_folder_sizes.cpp)
 endforeach()
@@ -722,7 +725,7 @@ foreach(task_target pulse_index pulse_content_search_test pulse_content_index_te
 endforeach()
 
 add_library(pulse_fs_watch STATIC src/fs/fs_watch.cpp src/fs/fs_enum.cpp)
-target_link_libraries(pulse_fs_watch PUBLIC shell32 shlwapi netapi32)
+target_link_libraries(pulse_fs_watch PUBLIC shell32 shlwapi netapi32 pulse_localization)
 foreach(watch_target pulse pulse_index pulse_content_search_test pulse_content_index_test pulse_content_paging_test pulse_office_index_test)
     target_link_libraries(${watch_target} PRIVATE pulse_fs_watch)
 endforeach()

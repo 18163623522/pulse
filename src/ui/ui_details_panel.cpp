@@ -245,9 +245,9 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
             pageDelay == 0 && compositor_->DwriteFactory() && compositor_->SmallFormat()) {
             // PDF: the pane keeps its fast first page; the badge tells how many
             // pages Space opens.
-            const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
+            const bool zh = pulse::l10n::IsChinese();
             const std::wstring label = zh
-                ? L"\x5171 " + std::to_wstring(pageCount) + L" \x9875"
+                ? pulse::l10n::Cn(L"\x5171 ") + std::to_wstring(pageCount) + pulse::l10n::Cn(L" \x9875")
                 : std::to_wstring(pageCount) + L" pages";
             ComPtr<IDWriteTextLayout> badgeLayout;
             compositor_->DwriteFactory()->CreateTextLayout(label.data(),
@@ -608,7 +608,7 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
                 infoRow(pulse::l10n::Get(pulse::l10n::StringId::ModifiedTime).c_str(), d.modified_text, iy);
                 infoRow(pulse::l10n::Get(pulse::l10n::StringId::LastAccessed).c_str(), d.accessed_text, iy);
                 for (const auto& property : d.preview_properties)
-                    infoRow(property.label.c_str(), property.value, iy);
+                    infoRow(pulse::l10n::HantText(property.label).c_str(), property.value, iy);
                 y = iy + 8.0f * s;
                 break;
             }

@@ -141,7 +141,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         if(vm.settings_bloom) {vm.settings_bloom->SetDisk(lay.accent_picker);vm.settings_bloom->Draw(dc,theme);}
         divider(lay.accent_card);
         const I effects[]={I::EffectNone,I::EffectAcrylic,I::EffectMica,I::EffectMicaAlt};
-        const I languages[]={I::LanguageSystem,I::LanguageZhCN,I::LanguageEnUS};
+        const I languages[]={I::LanguageSystem,I::LanguageZhCN,I::LanguageZhTW,I::LanguageEnUS};
         const auto dropdown=[&](D2D1_RECT_F r,D2D1_RECT_F c,I title,I desc,const std::wstring& value,int id) {
             label(r,l10n::Get(title),l10n::Get(desc),id==0 ? L"\xE790" : L"\xE8C1",c.left<r.left+100*scale_ ? r.right-16*scale_ : c.left-12*scale_);
             fluent::ButtonSpec control{};
@@ -242,23 +242,23 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         segmented(lay.folder_sort_card,lay.folder_sort_row,folder_sort,folder_sort_values,vm.settings_folder_sort,H::SettingsFolderSort,I::SettingsFolderSort,I::SettingsFolderSortDesc);
         if(lay.preview_group.bottom>lay.preview_group.top) {
             // Quick Look: read-only list of supported formats + system extension status.
-            const bool zh=l10n::effective_language()==l10n::Language::ZhCN;
-            text(zh ? L"快速预览" : L"Quick Look",lay.preview_section);
+            const bool zh=l10n::IsChinese();
+            text(l10n::Pick(L"快速预览", L"Quick Look"),lay.preview_section);
             draw_card(lay.preview_group);
             const unsigned codecs=vm.settings_preview_codecs;
             const bool detected=(codecs & kPreviewCodecsDetected)!=0;
             int installed=0;
             for(int i=0;i<kPreviewCodecCount;++i) if(codecs & (1u<<i)) ++installed;
             const auto count=std::to_wstring(PreviewFormatCount());
-            std::wstring summary=zh ? L"共 "+count+L" 种格式" : count+L" formats";
-            if(detected) summary+=zh ? L" · 系统扩展已安装 "+std::to_wstring(installed)+L"/"+std::to_wstring(kPreviewCodecCount)
+            std::wstring summary=zh ? l10n::Cn(L"共 ")+count+l10n::Cn(L" 种格式") : count+L" formats";
+            if(detected) summary+=zh ? l10n::Cn(L" · 系统扩展已安装 ")+std::to_wstring(installed)+L"/"+std::to_wstring(kPreviewCodecCount)
                                      : L" · "+std::to_wstring(installed)+L" of "+std::to_wstring(kPreviewCodecCount)+L" system extensions installed";
             const auto head=lay.disclosure[2];
             if(IsHovered(vm,H::SettingsDisclosure,2)) {
                 MakeBrush(dc,theme.fill_hover,brFillHover_);
                 FillRoundedRect(dc,brFillHover_.get(),head.left+2*scale_,head.top+2*scale_,head.right-head.left-4*scale_,head.bottom-head.top-4*scale_,6*scale_);
             }
-            label(head,zh ? L"支持的格式" : L"Supported formats",summary,L"\xE890");
+            label(head,l10n::Pick(L"支持的格式", L"Supported formats"),summary,L"\xE890");
             const bool open=(vm.settings_expanded & 4u)!=0;
             DrawIconText(head.right-38*scale_,head.top+22*scale_,18*scale_,18*scale_,open ? L"\xE70D" : L"\xE76C",L"",theme.text_secondary,0.75f);
             if(open) {
@@ -299,7 +299,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
                     const auto info=PreviewCodec(i);
                     const auto& button_rect=lay.preview_codec_button[i];
                     const bool has=(codecs & (1u<<i))!=0;
-                    const std::wstring status=!detected ? L"" : has ? (zh ? L"已安装" : L"Installed") : (zh ? L"未安装" : L"Not installed");
+                    const std::wstring status=!detected ? L"" : has ? (l10n::Pick(L"已安装", L"Installed")) : (l10n::Pick(L"未安装", L"Not installed"));
                     const float pill_w=status.empty() ? 0.0f : (zh ? 56.0f : (has ? 76.0f : 96.0f))*scale_;
                     const float pill_right=button_rect.right>button_rect.left ? button_rect.left-10*scale_ : r.right-16*scale_;
                     label(r,info.name,info.description,i==1 || i==2 ? L"\xE714" : L"\xE91B",pill_right-pill_w-12*scale_);
@@ -309,7 +309,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
                         FillRoundedRect(dc,brFillHover_.get(),pill.left,pill.top,pill.right-pill.left,pill.bottom-pill.top,11*scale_);
                         painter_.DrawText(status,pill,compositor_->SmallFormat(),has ? ok_color : missing_color,fluent::HorizontalAlignment::Center);
                     }
-                    if(button_rect.right>button_rect.left) button(button_rect,zh ? L"获取" : L"Get",H::SettingsPreviewStore,i,true);
+                    if(button_rect.right>button_rect.left) button(button_rect,l10n::Pick(L"获取", L"Get"),H::SettingsPreviewStore,i,true);
                     if(i+1<kPreviewCodecCount) divider(r);
                 }
             }

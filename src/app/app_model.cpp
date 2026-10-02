@@ -1370,8 +1370,9 @@ static bool TagMatchesNeedle(const ColorTag& tag, int index, const std::wstring&
     if (needle.empty()) return true;
     if (ToLowerCopy(tag.name).find(needle) != std::wstring::npos) return true;
     static const wchar_t* kNicks[] = { L"红", L"橙", L"绿", L"青", L"紫", L"蓝", L"灰" };
-    if (index >= 0 && index < 7 && needle == kNicks[index]) return true;
-    if (index == 1 && needle == L"黄") return true;
+    static const wchar_t* kNicksHant[] = { L"紅", L"橙", L"綠", L"青", L"紫", L"藍", L"灰" };
+    if (index >= 0 && index < 7 && (needle == kNicks[index] || needle == kNicksHant[index])) return true;
+    if (index == 1 && (needle == L"黄" || needle == L"黃")) return true;
     return false;
 }
 

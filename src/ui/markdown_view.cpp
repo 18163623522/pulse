@@ -788,11 +788,9 @@ bool MarkdownView::DrawDocument(ID2D1DeviceContext* dc, IDWriteFactory2* factory
             if (!drawn) {
                 brush_->SetColor(subtle);
                 dc->FillRoundedRectangle(D2D1::RoundedRect(box, 6.0f * s, 6.0f * s), brush_.Get());
-                const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
                 std::wstring label = L"\xD83D\xDDBC  " + b.text;
                 if (b.image_path.empty())
-                    label += zh ? L"\x3000\xFF08\x672A\x52A0\x8F7D\x8FDC\x7A0B\x6216\x7F3A\x5931\x7684\x56FE\x7247\xFF09"
-                                : L"   (remote or missing image not loaded)";
+                    label += pulse::l10n::Pick(L"\x3000\xFF08\x672A\x52A0\x8F7D\x8FDC\x7A0B\x6216\x7F3A\x5931\x7684\x56FE\x7247\xFF09", L"   (remote or missing image not loaded)");
                 WrlPtr<IDWriteTextLayout> tl;
                 factory->CreateTextLayout(label.data(), static_cast<UINT32>(label.size()), body_.Get(),
                                           (std::max)(1.0f, b.w - 24.0f * s), b.h, &tl);
@@ -873,8 +871,7 @@ bool MarkdownView::DrawDocument(ID2D1DeviceContext* dc, IDWriteFactory2* factory
         const float fy = oy + footer_y_;
         brush_->SetColor(line);
         dc->FillRectangle(R(origin_x_, fy, origin_x_ + W, fy + 1.0f * s), brush_.Get());
-        const bool zh = pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN;
-        std::wstring label = zh ? L"下一章" : L"Next chapter";
+        std::wstring label = pulse::l10n::Pick(L"下一章", L"Next chapter");
         const std::wstring& name = sections_[section_ + 1].name;
         if (!name.empty()) label += L"  ·  " + name.substr(0, 60);
         label += L"  ›";

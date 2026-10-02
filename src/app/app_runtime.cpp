@@ -456,7 +456,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_row_height = s.appPrefs.row_height;
             vm.settings_tray_icon = s.appPrefs.tray_icon_size;
             vm.settings_language = s.appPrefs.language == L"zh-CN" ? 1
-                : s.appPrefs.language == L"en-US" ? 2 : 0;
+                : s.appPrefs.language == L"zh-TW" ? 2
+                : s.appPrefs.language == L"en-US" ? 3 : 0;
             wchar_t version_text[128]{};
             swprintf_s(version_text,
                 l10n::Get(l10n::StringId::VersionFormat).c_str(), PULSE_VERSION_STRING);
@@ -517,7 +518,9 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_bloom = &s.bloom_accent;
             vm.settings_index_service = s.index.Connected() && s.index.ServiceMode();
             vm.settings_index_installed = s.settings.service_installed();
-            vm.settings_index_status = s.index.Status();
+            // Index and network-index texts are Simplified (some come from
+            // Pulse.Index.exe); convert them here, at the display boundary.
+            vm.settings_index_status = l10n::HantText(s.index.Status());
             vm.settings_index_migrating = s.settings.migration_pending();
             if (vm.settings_page == 3) {
                 vm.settings_about_rows = app::BuildAboutRows(vm.settings_index_service,
@@ -533,7 +536,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             if (vm.settings_index_migrating)
                 vm.settings_index_status = l10n::Get(l10n::StringId::IndexMigrating);
             vm.settings_index_path = s.index.IndexPath();
-            vm.settings_index_error = s.settings.error();
+            vm.settings_index_error = l10n::HantText(s.settings.error());
             vm.settings_index_volumes.clear();
             vm.settings_index_excluded_paths = s.index.ExcludedPaths();
             vm.settings_network_roots.clear();
@@ -562,7 +565,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                     row.detail += L" · ";
                     row.detail += count;
                 }
-                row.state = volume.state;
+                row.state = l10n::HantText(volume.state);
                 row.checked = volume.enabled;
                 row.enabled = vm.settings_index_service && volume.supported;
                 row.pending = s.settings.VolumePending(volume.id);
@@ -574,8 +577,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             for (const auto& root : network_roots) {
                 ui::NetworkRootRowView row;
                 row.path = root.path;
-                row.state = root.state;
-                row.detail = root.error;
+                row.state = l10n::HantText(root.state);
+                row.detail = l10n::HantText(root.error);
                 row.online = root.online;
                 row.building = root.building;
                 vm.settings_network_roots.push_back(std::move(row));
@@ -583,7 +586,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             if (s.shot.active && vm.settings_page == 1 && vm.settings_network_roots.empty()) {
                 ui::NetworkRootRowView row;
                 row.path = L"\\\\fileserver\\projects\\设计资料";
-                row.state = L"已同步 · 128,420 项";
+                row.state = l10n::HantText(L"已同步 · 128,420 项");
                 row.online = true;
                 vm.settings_network_roots.push_back(std::move(row));
             }
@@ -598,7 +601,10 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             for (const auto& seen : s.ctxMenuPrefs.seen) {
                 ui::SettingsRowView row;
                 row.key = seen.key;
-                row.text = seen.text;
+                // Pulse's own compress row is stored in Simplified; shell rows
+                // already use the system language.
+                row.text = seen.key == ipc::CompressCatalogKey()
+                    ? std::wstring(l10n::Cn(ipc::CompressCatalogText())) : seen.text;
                 row.group = static_cast<int>(ipc::GroupOf(seen.category));
                 row.on = s.ctxMenuPrefs.ItemEnabled(seen.key, seen.category, seen.from_com);
                 vm.settings_items.push_back(std::move(row));
@@ -1097,7 +1103,7 @@ std::wstring DetailsAttributeText(DWORD attrs) {
     std::wstring result;
     for (const auto& value : values) {
         if (!(attrs & value.bit)) continue;
-        if (!result.empty()) result += pulse::l10n::effective_language() == pulse::l10n::Language::ZhCN ? L"、" : L", ";
+        if (!result.empty()) result += pulse::l10n::IsChinese() ? L"、" : L", ";
         result += value.name;
     }
     return result.empty() ? pulse::l10n::Get(pulse::l10n::StringId::AttrNormal).c_str() : result;
@@ -1800,7 +1806,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     }
     app::ApplyUpdateStatus(vm.status, UpdateProgressForView(s), st.active);
     {
-        std::wstring idx = s.index.Status();
+        std::wstring idx = l10n::HantText(s.index.Status());
         app::Tab* active = ActiveTab(s);
         std::wstring virtual_kind;
         std::wstring virtual_rest;
@@ -2182,7 +2188,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
                 dv.subtitle_text += pulse::format::ByteSize(dv.size_value, true);
                 dv.size_text = pulse::format::ByteSize(dv.size_value, true) + L" (" +
                                pulse::format::GroupedInt(dv.size_value) +
-                               L" \u5B57\u8282)";
+                               pulse::l10n::Pick(L" \u5B57\u8282)", L" bytes)");
             }
             if (s.detailsMetaPath == dv.path) {
                 dv.owner_text = s.detailsOwner;

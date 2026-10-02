@@ -1,5 +1,6 @@
 // fs_net_cache.cpp — Disk snapshots for UNC folders and a timed connectivity probe.
 #include "fs_net_cache.h"
+#include "../common/localization.h"
 #include <shlobj.h>
 #include <chrono>
 #include <fstream>
@@ -118,14 +119,14 @@ SnapshotPtr LoadNetSnapshot(const std::wstring& path, uint64_t* unix_sec) {
 }
 
 std::wstring FormatCacheAge(uint64_t unix_sec) {
-    if (unix_sec == 0) return L"刚才";
+    if (unix_sec == 0) return l10n::Cn(L"刚才");
     const uint64_t now = NowUnix();
-    if (now <= unix_sec) return L"刚才";
+    if (now <= unix_sec) return l10n::Cn(L"刚才");
     const uint64_t sec = now - unix_sec;
-    if (sec < 60) return std::to_wstring(sec) + L" 秒前";
-    if (sec < 3600) return std::to_wstring(sec / 60) + L" 分钟前";
-    if (sec < 86400) return std::to_wstring(sec / 3600) + L" 小时前";
-    return std::to_wstring(sec / 86400) + L" 天前";
+    if (sec < 60) return std::to_wstring(sec) + l10n::Cn(L" 秒前");
+    if (sec < 3600) return std::to_wstring(sec / 60) + l10n::Cn(L" 分钟前");
+    if (sec < 86400) return std::to_wstring(sec / 3600) + l10n::Cn(L" 小时前");
+    return std::to_wstring(sec / 86400) + l10n::Cn(L" 天前");
 }
 
 namespace {

@@ -1549,13 +1549,15 @@ StatusBarMetrics MakeStatusBarMetrics(const WindowViewModel& vm, const D2D1_RECT
 }
 
 fluent::BadgeKind IndexVolumeBadgeKind(const std::wstring& state) {
-    if (state.find(L"失败") != std::wstring::npos) return fluent::BadgeKind::Danger;
-    if (state.find(L"非 NTFS") != std::wstring::npos ||
-        state.find(L"不支持") != std::wstring::npos) return fluent::BadgeKind::Warning;
-    if (state.find(L"正在") != std::wstring::npos ||
-        state.find(L"等待") != std::wstring::npos) return fluent::BadgeKind::Accent;
-    if (state.find(L"就绪") != std::wstring::npos ||
-        state.find(L"实时") != std::wstring::npos) return fluent::BadgeKind::Success;
+    // The index reports Simplified text; the view model converts it for zh-TW.
+    const auto has = [&state](const wchar_t* simplified) {
+        return state.find(simplified) != std::wstring::npos ||
+               state.find(pulse::l10n::Cn(simplified)) != std::wstring::npos;
+    };
+    if (has(L"失败")) return fluent::BadgeKind::Danger;
+    if (has(L"非 NTFS") || has(L"不支持")) return fluent::BadgeKind::Warning;
+    if (has(L"正在") || has(L"等待")) return fluent::BadgeKind::Accent;
+    if (has(L"就绪") || has(L"实时")) return fluent::BadgeKind::Success;
     return fluent::BadgeKind::Neutral;
 }
 

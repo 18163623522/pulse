@@ -677,7 +677,7 @@ struct WindowViewModel {
     int settings_change_days = 3;
     int settings_row_height = 34; // current row-height pref (DIPs) for density radios
     int settings_tray_icon = 48;  // current tray-deck icon pref (DIPs) for size radios
-    int settings_language = 0;    // 0 system, 1 zh-CN, 2 en-US
+    int settings_language = 0;    // 0 system, 1 zh-CN, 2 zh-TW, 3 en-US
     BloomAccentPicker* settings_bloom = nullptr;
     bool settings_group_on[5] = { true, true, false, false, true };
     std::vector<SettingsRowView> settings_items;

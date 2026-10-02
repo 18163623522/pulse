@@ -134,9 +134,10 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
             }
             int command=Dropdown(s,hit.index,std::move(items));if(command>=1 && command<=ui::kWindowEffectCount) s.settings.WindowEffect(ui::WindowEffectId(static_cast<ui::WindowEffect>(command-1)));
         } else {
-            const I labels[]={I::LanguageSystem,I::LanguageZhCN,I::LanguageEnUS};const wchar_t* ids[]={L"system",L"zh-CN",L"en-US"};
-            for(int i=0;i<3;++i) items.push_back(Item(i+1,labels[i],s.appPrefs.language==ids[i]));
-            int command=Dropdown(s,hit.index,std::move(items));if(command>=1 && command<=3) s.settings.Language(ids[command-1]);
+            const I labels[]={I::LanguageSystem,I::LanguageZhCN,I::LanguageZhTW,I::LanguageEnUS};const wchar_t* ids[]={L"system",L"zh-CN",L"zh-TW",L"en-US"};
+            constexpr int count=static_cast<int>(std::size(ids));
+            for(int i=0;i<count;++i) items.push_back(Item(i+1,labels[i],s.appPrefs.language==ids[i]));
+            int command=Dropdown(s,hit.index,std::move(items));if(command>=1 && command<=count) s.settings.Language(ids[command-1]);
         }
         break;
     }
