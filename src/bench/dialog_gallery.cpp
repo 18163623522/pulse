@@ -234,6 +234,9 @@ std::vector<PickerScene> PickerScenes() {
         v.entries.push_back(Image(cur, L"mountain 4k.webp", 9'420'110, 21));
         v.entries.push_back(Image(cur, L"小猫.jpeg", 812'003, 22));
         v.entries.push_back(Image(cur, L"海边日落.png", 3'003'100, 25));
+        // Long enough to need the trailing ellipsis in the name column.
+        v.entries.push_back(Image(cur, L"【壁纸】2026 秋季合集-山脉-日落-湖面倒影-超清原图-第 12 张.png",
+                                  6'610'200, 26));
         v.selected = 5;
         v.chosen = PickerChosenPath(v.mode, v.current, &v.entries[5]);
         scenes.push_back({L"picker_image", std::move(v)});

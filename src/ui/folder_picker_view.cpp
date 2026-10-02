@@ -4,6 +4,7 @@
 #include "../common/display_path.h"
 #include "../common/localization.h"
 #include "../common/text_format.h"
+#include "typography.h"
 #include "window_helpers.h"
 
 #include <algorithm>
@@ -77,6 +78,15 @@ bool InverseRow(const fluent::ControlState& state, bool high_contrast) {
     return high_contrast && (state.selected || state.hovered || state.pressed);
 }
 
+// One-line text that ends in "…" instead of being clipped mid-glyph.
+void DrawFittedText(Compositor& compositor, fluent::Painter& painter, const std::wstring& text,
+                    const D2D1_RECT_F& rect, IDWriteTextFormat* format,
+                    const D2D1_COLOR_F& color) {
+    const std::wstring fitted = FitTextEnd(text, rect.right - rect.left,
+        [&](std::wstring_view s) { return typography::MeasureLine(&compositor, format, s); });
+    painter.DrawText(fitted, rect, format, color);
+}
+
 void DrawDriveRow(Compositor& compositor, fluent::Painter& painter, const Theme& theme,
                   const PickerEntry& entry, const D2D1_RECT_F& row,
                   const fluent::ControlState& state, bool high_contrast, float scale) {
@@ -94,9 +104,10 @@ void DrawDriveRow(Compositor& compositor, fluent::Painter& painter, const Theme&
     painter.DrawGlyph(L"\xE7F1", D2D1::RectF(left, row.top, left + Dip(scale, 20.0f),
                                            row.bottom),
                       secondary);
-    painter.DrawText(entry.name, D2D1::RectF(left + Dip(scale, 28.0f), row.top,
-                                             bar_left - Dip(scale, 8.0f), row.bottom),
-                     compositor.TextFormat(), text);
+    DrawFittedText(compositor, painter, entry.name,
+                   D2D1::RectF(left + Dip(scale, 28.0f), row.top, bar_left - Dip(scale, 8.0f),
+                               row.bottom),
+                   compositor.TextFormat(), text);
     if (entry.size == 0) return;
     const float used = 1.0f - static_cast<float>(static_cast<double>(entry.free) /
                                                  static_cast<double>(entry.size));
@@ -129,9 +140,10 @@ void DrawEntryRow(Compositor& compositor, fluent::Painter& painter, const Theme&
     painter.DrawGlyph(folder ? L"\xE8B7" : L"\xEB9F",
                       D2D1::RectF(c.left, row.top, c.left + Dip(scale, 20.0f), row.bottom),
                       high_contrast ? text : folder ? theme.icon_folder : theme.icon_file);
-    painter.DrawText(entry.name, D2D1::RectF(c.left + Dip(scale, 28.0f), row.top,
-                                             c.name_right - Dip(scale, 8.0f), row.bottom),
-                     compositor.TextFormat(), text);
+    DrawFittedText(compositor, painter, entry.name,
+                   D2D1::RectF(c.left + Dip(scale, 28.0f), row.top,
+                               c.name_right - Dip(scale, 8.0f), row.bottom),
+                   compositor.TextFormat(), text);
     painter.DrawText(format::LocalFileTime(entry.modified),
                      D2D1::RectF(c.name_right + Dip(scale, 8.0f), row.top,
                                  c.modified_right - Dip(scale, 4.0f), row.bottom),
@@ -420,8 +432,14 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
                             0, theme.stroke_divider);
     std::wstring summary;
     if (!v.chosen.empty()) {
-        summary = l10n::Get(l10n::StringId::PickerWillSelect) +
-                  path::FriendlyPathText(v.chosen);
+        // Long choices keep the drive and the chosen folder's name visible.
+        const std::wstring prefix = l10n::Get(l10n::StringId::PickerWillSelect);
+        const auto measure = [&](std::wstring_view s) {
+            return typography::MeasureLine(&compositor, compositor.TextFormat(), s);
+        };
+        summary = prefix + FitPathMiddle(path::FriendlyPathText(v.chosen),
+                                         l.summary.right - l.summary.left - measure(prefix),
+                                         measure);
     } else if (v.mode == PickerMode::Image) {
         summary = l10n::Get(l10n::StringId::PickerPickImageHint);
     }
