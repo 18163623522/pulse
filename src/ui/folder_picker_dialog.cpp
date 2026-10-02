@@ -179,8 +179,8 @@ private:
 
     // ---- navigation -------------------------------------------------------
 
-    void Navigate(const std::wstring& path, bool push_history,
-                  const std::wstring& select_after = {}) {
+    // By value: callers pass entry paths that the reset below destroys.
+    void Navigate(std::wstring path, bool push_history, std::wstring select_after = {}) {
         if (push_history && !SamePickerPath(path, visual_.current))
             history_.Navigate(visual_.current);
         visual_.current = path;
@@ -192,7 +192,7 @@ private:
         visual_.loading = false;
         visual_.can_back = history_.CanGoBack();
         visual_.can_up = !path.empty();
-        select_after_ = select_after;
+        select_after_ = std::move(select_after);
         load_started_ = GetTickCount64();
         SetEditText(DisplayPath(path));
         UpdateChosen();
