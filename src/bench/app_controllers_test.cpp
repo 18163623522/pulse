@@ -14,6 +14,7 @@
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 
+#include <shlwapi.h>
 #include <cstdio>
 #include <cmath>
 #include <condition_variable>
@@ -201,8 +202,10 @@ bool TestDefaultFileManager() {
     RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
     RegCloseKey(scratch);
     RegDeleteTreeW(HKEY_CURRENT_USER, scratch_path.c_str());
+    SHDeleteEmptyKeyW(HKEY_CURRENT_USER, L"Software\\PulseTest");
     passed &= Report("default file manager: scratch registry is removed",
-        !takeover_test::KeyExists(scratch_path.c_str()));
+        !takeover_test::KeyExists(scratch_path.c_str()) &&
+        !takeover_test::KeyExists(L"Software\\PulseTest"));
     return passed;
 }
 
