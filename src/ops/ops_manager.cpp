@@ -1045,6 +1045,113 @@ void OpsManager::ResolveConflict(uint64_t token, ConflictChoice choice, bool app
     transfer_control_cv_.notify_all();
 }
 
+// --- Locked items (B站 #12) ---------------------------------------------------
+// Runs on the ops worker after a failed delete/move/copy. Restart Manager may
+// take a moment, which is why this never happens on the UI thread.
+LockReport OpsManager::ProbeLock(const OpRequest& req, uint64_t task_id, HRESULT hr,
+                                 const std::wstring& error) {
+    LockReport report;
+    const bool lockable = req.type == OpType::Copy || req.type == OpType::Move
+        || req.type == OpType::RecycleDelete || req.type == OpType::RealDelete;
+    if (lockable) {
+        report = ProbeLockFailure(hr, error, req.sources, CurrentModuleDirectory());
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (report.Empty()) {
+        lock_retry_.reset();
+        report.path.clear();
+        return report;
+    }
+    LockRetry retry;
+    retry.task_id = task_id;
+    retry.req = req;
+    retry.req.close_first.clear();
+    retry.owners = report.owners;
+    lock_retry_ = std::move(retry);
+    return report;
+}
+
+bool OpsManager::RetryLockedOperation(uint64_t task_id, bool close_owners) {
+    OpRequest req;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_ || !lock_retry_ || lock_retry_->task_id != task_id) return false;
+        req = std::move(lock_retry_->req);
+        if (close_owners) {
+            for (const auto& owner : lock_retry_->owners)
+                if (owner.closable) req.close_first.push_back(owner);
+        }
+        lock_retry_.reset();
+    }
+    Submit(std::move(req));
+    return true;
+}
+
+// Ends the chosen lock owners, then drops delete/move sources that are already
+// gone (the failed attempt may have handled part of the selection). Returns
+// false when the operation must not run; the status is published here then.
+bool OpsManager::PrepareLockRetry(OpRequest& req, uint64_t task_id) {
+    const std::vector<LockOwner> owners = std::move(req.close_first);
+    req.close_first.clear();
+    const std::wstring summary = Describe(req);
+    if (!owners.empty()) {
+        SetStatus([&](OpStatus& st) {
+            st.active = true;
+            st.type = req.type;
+            st.task_id = task_id;
+            st.phase = OpPhase::Running;
+            st.percent = -1.0f;
+            st.summary = L"正在结束占用文件的进程…";
+            st.last_error.clear();
+            st.locked_path.clear();
+            st.lock_owners.clear();
+        });
+    }
+    std::wstring failure;
+    for (const auto& owner : owners) {
+        DWORD error = ERROR_SUCCESS;
+        const CloseOwnerResult result = CloseLockOwner(owner, 5000, &error);
+        if (result == CloseOwnerResult::Closed || result == CloseOwnerResult::AlreadyGone) continue;
+        failure = L"无法结束进程 " + DescribeLockOwner(owner);
+        if (result == CloseOwnerResult::TimedOut) failure += L" | 进程没有及时退出";
+        else if (error != ERROR_SUCCESS) failure += L" | " + Win32Message(error);
+        break;
+    }
+    bool nothing_left = false;
+    if (failure.empty() && (req.type == OpType::RecycleDelete || req.type == OpType::RealDelete
+                            || req.type == OpType::Move)) {
+        std::vector<std::wstring> remaining;
+        for (auto& source : req.sources)
+            if (PathExists(source)) remaining.push_back(std::move(source));
+        req.sources = std::move(remaining);
+        nothing_left = req.sources.empty();
+    }
+    if (failure.empty() && !nothing_left) return true;
+    SetStatus([&](OpStatus& st) {
+        st.active = false;
+        st.type = req.type;
+        st.task_id = task_id;
+        st.current_item.clear();
+        st.locked_path.clear();
+        st.lock_owners.clear();
+        st.bytes_per_second = 0.0;
+        st.eta_seconds = 0;
+        st.completed_ops++;
+        if (nothing_left) {
+            st.phase = OpPhase::Completed;
+            st.percent = 100.0f;
+            st.last_error.clear();
+            st.summary = summary + L" 完成";
+        } else {
+            st.phase = OpPhase::Failed;
+            st.percent = -1.0f;
+            st.last_error = failure;
+            st.summary = std::wstring(OpVerb(req.type)) + L"失败";
+        }
+    });
+    return false;
+}
+
 OpStatus OpsManager::Status() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return PresentOperationStatus(status_);
@@ -1449,10 +1556,14 @@ void OpsManager::WorkerThread() {
         // Opens/verbs run on OpenThread — never block transfers.
         if (!item.open_path.empty()) continue;
 
-        if (item.req.type == OpType::Copy || item.req.type == OpType::Move)
+        const bool run = item.req.close_first.empty() || PrepareLockRetry(item.req, item.seq);
+        if (!run) {
+            // PrepareLockRetry already published the outcome.
+        } else if (item.req.type == OpType::Copy || item.req.type == OpType::Move) {
             RunTransfer(item.req, item.seq);
-        else
+        } else {
             RunShellOp(item.req, item.seq);
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             active_item_.reset();
@@ -1625,6 +1736,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         st.percent = -1.0f;
         st.summary = std::wstring(L"正在准备") + OpVerb(req.type) + L"…";
         st.last_error.clear();
+        st.locked_path.clear();
+        st.lock_owners.clear();
         st.source_label = req.sources.empty() ? L"" : FileName(req.sources.front());
         st.destination_label = FileName(req.dest_dir);
         if (st.destination_label.empty()) st.destination_label = req.dest_dir;
@@ -1636,6 +1749,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
     });
 
     std::wstring failure;
+    HRESULT failure_hr = S_OK;   // lets a lock-style failure be traced to its owner
     bool cancelled = false;
     std::vector<TransferEntry> entries;
     std::vector<bool> root_destination_preexisting;
@@ -1672,8 +1786,10 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 return;
             }
             const DWORD move_error = GetLastError();
-            if (move_error != ERROR_NOT_SAME_DEVICE)
+            if (move_error != ERROR_NOT_SAME_DEVICE) {
+                failure_hr = HRESULT_FROM_WIN32(move_error);
                 failure = Win32Message(move_error) + L" | " + req.sources.front();
+            }
         }
     }
 
@@ -1684,7 +1800,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             root.source = source;
             root.destination = JoinPath(req.dest_dir, FileName(source));
             if (!ReadEntryMetadata(source, root)) {
-                failure = Win32Message(GetLastError()) + L" | " + source;
+                {
+                    const DWORD code = GetLastError();
+                    failure_hr = HRESULT_FROM_WIN32(code);
+                    failure = Win32Message(code) + L" | " + source;
+                }
                 break;
             }
             const bool same_location =
@@ -1722,7 +1842,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 child.destination = (fsys::path(root.destination) /
                     it->path().lexically_relative(fsys::path(source))).wstring();
                 if (!ReadEntryMetadata(child.source, child)) {
-                    failure = Win32Message(GetLastError()) + L" | " + child.source;
+                    {
+                        const DWORD code = GetLastError();
+                        failure_hr = HRESULT_FROM_WIN32(code);
+                        failure = Win32Message(code) + L" | " + child.source;
+                    }
                     break;
                 }
                 entries.push_back(std::move(child));
@@ -1958,7 +2082,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 const BOOL removed = entry.directory ? RemoveDirectoryW(entry.source.c_str())
                                                      : DeleteFileW(entry.source.c_str());
                 if (!removed) {
-                    failure = Win32Message(GetLastError()) + L" | " + entry.source;
+                    {
+                        const DWORD code = GetLastError();
+                        failure_hr = HRESULT_FROM_WIN32(code);
+                        failure = Win32Message(code) + L" | " + entry.source;
+                    }
                     break;
                 }
             }
@@ -2052,6 +2180,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         }
         if (FAILED(copy_result)) {
             DeleteFileW(copy_destination.c_str());
+            failure_hr = copy_result;
             failure = Win32Message(HRESULT_CODE(copy_result)) + L" | " + entry.source;
             break;
         }
@@ -2090,6 +2219,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
                 const DWORD error = GetLastError();
                 DeleteFileW(copy_destination.c_str());
+                failure_hr = HRESULT_FROM_WIN32(error);
                 failure = Win32Message(error) + L" | " + entry.destination;
                 break;
             }
@@ -2097,6 +2227,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                                 MOVEFILE_WRITE_THROUGH)) {
             const DWORD error = GetLastError();
             DeleteFileW(copy_destination.c_str());
+            failure_hr = HRESULT_FROM_WIN32(error);
             failure = Win32Message(error) + L" | " + entry.destination;
             break;
         }
@@ -2107,7 +2238,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 (source_attributes & FILE_ATTRIBUTE_READONLY))
                 SetFileAttributesW(entry.source.c_str(), source_attributes & ~FILE_ATTRIBUTE_READONLY);
             if (!DeleteFileW(entry.source.c_str())) {
-                failure = Win32Message(GetLastError()) + L" | " + entry.source;
+                {
+                    const DWORD code = GetLastError();
+                    failure_hr = HRESULT_FROM_WIN32(code);
+                    failure = Win32Message(code) + L" | " + entry.source;
+                }
                 break;
             }
         }
@@ -2189,12 +2324,17 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         std::lock_guard<std::mutex> lock(transfer_control_mutex_);
         pending_conflict_.reset();
     }
+    const bool transfer_cancelled = cancelled || transfer_cancel_.load();
+    const LockReport lock_report = !transfer_cancelled && !failure.empty()
+        ? ProbeLock(req, task_id, failure_hr, failure) : LockReport{};
     SetStatus([&](OpStatus& st) {
         st.active = false;
         st.completed_ops++;
         st.bytes_per_second = 0.0;
         st.eta_seconds = 0;
-        if (cancelled || transfer_cancel_.load()) {
+        st.locked_path = lock_report.path;
+        st.lock_owners = lock_report.owners;
+        if (transfer_cancelled) {
             st.phase = OpPhase::Failed;
             st.last_error = L"已取消";
             st.summary = std::wstring(OpVerb(req.type)) + L"已取消";
@@ -2226,6 +2366,8 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         st.percent = 0.0f;
         st.summary = Describe(req);
         st.last_error.clear();
+        st.locked_path.clear();
+        st.lock_owners.clear();
         st.source_label = req.sources.empty() ? L"" : FileName(req.sources.front());
         st.destination_label.clear();
         st.current_item = req.type == OpType::EmptyRecycle
@@ -2444,11 +2586,15 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
 
     const bool ok = SUCCEEDED((HRESULT)hr) && !cancelled;
     if (ok) PushUndo(req);
+    const LockReport lock_report = !cancelled && FAILED((HRESULT)hr)
+        ? ProbeLock(req, task_id, static_cast<HRESULT>(hr), error) : LockReport{};
 
     SetStatus([&](OpStatus& st) {
         st.active = false;
         st.percent = -1.0f;
         st.completed_ops++;
+        st.locked_path = lock_report.path;
+        st.lock_owners = lock_report.owners;
         if (cancelled) {
             st.phase = OpPhase::Failed;
             st.last_error = L"已取消";

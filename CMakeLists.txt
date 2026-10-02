@@ -378,13 +378,19 @@ target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mf
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp
     src/ops/ops_manager.cpp
+    src/ops/file_lock_owner.cpp
     src/ops/clipboard.cpp
     src/ipc/shell_client.cpp)
 target_link_libraries(pulse_ops_test PRIVATE ole32 shell32 uuid bcrypt)
 
 add_executable(pulse_rename_ops_test src/bench/rename_ops_test.cpp
-    src/ops/ops_manager.cpp src/ipc/shell_client.cpp)
+    src/ops/ops_manager.cpp src/ops/file_lock_owner.cpp src/ipc/shell_client.cpp)
 target_link_libraries(pulse_rename_ops_test PRIVATE ole32 shell32 uuid bcrypt)
+
+# Locked-item lookup (Restart Manager) + end-process-and-retry through OpsManager.
+add_executable(pulse_file_lock_test src/bench/file_lock_owner_test.cpp
+    src/ops/file_lock_owner.cpp src/ops/ops_manager.cpp src/ipc/shell_client.cpp)
+target_link_libraries(pulse_file_lock_test PRIVATE ole32 shell32 uuid bcrypt rstrtmgr)
 
 # ---- Pulse.Shell.exe: COM isolation process (stage 1: recycle bin / IFileOperation) ----
 file(GLOB_RECURSE PULSE_SHELL_SOURCES CONFIGURE_DEPENDS src/shell_host/*.cpp)
@@ -512,6 +518,7 @@ endif()
 if(TARGET pulse_ops_test AND TARGET pulse_shell)
     add_dependencies(pulse_ops_test pulse_shell)
     add_dependencies(pulse_rename_ops_test pulse_shell)
+    add_dependencies(pulse_file_lock_test pulse_shell)
     add_dependencies(pulse_packaged_ctx_test pulse_shell)
 endif()
 

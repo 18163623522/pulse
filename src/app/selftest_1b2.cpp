@@ -66,6 +66,7 @@
 #include "../ops/clipboard.h"
 #include "../common/text_format.h"
 #include "../common/utf8_file.h"
+#include "locked_item_prompt.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -3191,6 +3192,38 @@ void TestPreviewCodecProbe() {
         mask = ui::DetectPreviewCodecs(false, nullptr);
     }
     Check((mask & ui::kPreviewCodecsDetected) != 0, L"preview codecs: the worker publishes a detected mask");
+}
+
+void TestLockedItemPrompt() {
+    const l10n::StringId ids[] = {l10n::StringId::LockedItemTitle, l10n::StringId::LockedItemMessage,
+        l10n::StringId::LockedItemEndHint, l10n::StringId::LockedItemCloseHint,
+        l10n::StringId::LockedItemEndRetry, l10n::StringId::LockedItemRetry};
+    bool all_loaded = true;
+    for (const auto id : ids) all_loaded = all_loaded && !l10n::Get(id).empty();
+    Check(all_loaded, L"locked item: every prompt string is loaded");
+    ops::OpStatus status;
+    status.phase = ops::OpPhase::Failed;
+    status.locked_path = L"C:\\Work\\report.docx";
+    ops::LockOwner word;
+    word.pid = 4242;
+    word.app_name = L"Microsoft Word";
+    word.image_name = L"WINWORD.EXE";
+    status.lock_owners.push_back(word);
+    const std::wstring message = LockedItemPromptMessage(status, true);
+    Check(message.find(L"report.docx") != std::wstring::npos &&
+          message.find(L"C:\\Work") == std::wstring::npos &&
+          message.find(L"{name}") == std::wstring::npos,
+          L"locked item: the prompt names the file, not its folder");
+    Check(message.find(L"WINWORD.EXE, PID 4242") != std::wstring::npos,
+          L"locked item: the prompt lists the owning process");
+    Check(message.find(l10n::Get(l10n::StringId::LockedItemEndHint)) != std::wstring::npos,
+          L"locked item: ending owners warns about unsaved work");
+    Check(LockedItemOwnersClosable(status), L"locked item: closable owners allow end-and-retry");
+    status.lock_owners.back().closable = false;
+    Check(!LockedItemOwnersClosable(status) &&
+          LockedItemPromptMessage(status, false).find(l10n::Get(l10n::StringId::LockedItemCloseHint))
+              != std::wstring::npos,
+          L"locked item: protected owners only get the close-and-retry hint");
 }
 
 void TestTrayReveal() {
@@ -6627,6 +6660,7 @@ int RunSelfTest1B2() {
         TestStartupLocation();
         TestTrayReveal();
         TestPreviewCodecProbe();
+        TestLockedItemPrompt();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -6783,6 +6817,7 @@ int RunSelfTest1B2() {
     TestStartupLocation();
     TestTrayReveal();
     TestPreviewCodecProbe();
+    TestLockedItemPrompt();
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();
