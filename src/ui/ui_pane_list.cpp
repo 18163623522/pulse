@@ -1652,7 +1652,10 @@ void MainRenderer::DrawCenteredIconName(const std::wstring& name, const D2D1_REC
     layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
     if (truncated) {
-        // Measured before trimming: wrapped lines taller than the cell get cut.
+        // Measured untrimmed (the format trims by default): wrapped lines
+        // taller than the cell get cut.
+        const DWRITE_TRIMMING untrimmed{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
+        layout->SetTrimming(&untrimmed, nullptr);
         DWRITE_TEXT_METRICS metrics{};
         *truncated = SUCCEEDED(layout->GetMetrics(&metrics)) &&
             (metrics.height > height + 0.5f || metrics.widthIncludingTrailingWhitespace > width + 0.5f);
