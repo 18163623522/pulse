@@ -1,5 +1,6 @@
 // app_prefs.cpp — Persist general settings; sync 开机自启 with the Run key.
 #include "app_prefs.h"
+#include "blank_pane_click.h"
 #include "startup_launch.h"
 #include "session.h"
 #include "../ui/panel_metrics.h"
@@ -73,7 +74,7 @@ void AppPrefs::ResetToDefaults() {
     global_search_key = 32;
     show_hidden_files = false;
     show_protected_os_files = false;
-    blank_click_go_back = false;
+    blank_click_action = kBlankClickOff;
     change_tracking_enabled = false;
     change_tracking_days = 7;
     theme_mode = -1;
@@ -159,8 +160,11 @@ std::wstring AppPrefs::ToJson() const {
     out += global_search_enabled ? L"true" : L"false";
     out += L",\n  \"global_search_modifiers\":" + std::to_wstring(global_search_modifiers);
     out += L",\n  \"global_search_key\":" + std::to_wstring(global_search_key);
+    out += L",\n  \"blank_click_action\":";
+    out += std::to_wstring(blank_click_action);
+    // Kept for older builds, which only know on/off.
     out += L",\n  \"blank_click_go_back\":";
-    out += blank_click_go_back ? L"true" : L"false";
+    out += blank_click_action != kBlankClickOff ? L"true" : L"false";
     out += L",\n  \"change_tracking_enabled\":";
     out += change_tracking_enabled ? L"true" : L"false";
     out += L",\n  \"change_tracking_days\":";
@@ -278,7 +282,9 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     global_search_key = key > 0 && key <= 254 ? static_cast<uint32_t>(key) : 32;
     show_hidden_files = pulse::json::ExtractBool(json, L"show_hidden_files", false);
     show_protected_os_files = pulse::json::ExtractBool(json, L"show_protected_os_files", false);
-    blank_click_go_back = pulse::json::ExtractBool(json, L"blank_click_go_back", false);
+    // Files from before blank_click_action carry only the on/off flag (= back).
+    blank_click_action = NormalizeBlankClickAction(pulse::json::ExtractInt(json, L"blank_click_action",
+        pulse::json::ExtractBool(json, L"blank_click_go_back", false) ? kBlankClickBack : kBlankClickOff));
     change_tracking_enabled = pulse::json::ExtractBool(json, L"change_tracking_enabled", false);
     change_tracking_days = pulse::json::ExtractInt(json, L"change_tracking_days", 7);
     if (change_tracking_days != 1 && change_tracking_days != 3 && change_tracking_days != 7)

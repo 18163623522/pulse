@@ -435,7 +435,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_open_folders = s.appPrefs.open_folders_in_pulse;
             vm.settings_win_e = s.appPrefs.take_over_win_e;
             vm.settings_shell_tags = s.appPrefs.shell_tag_menu;
-            vm.settings_blank_click_go_back = s.appPrefs.blank_click_go_back;
+            vm.settings_blank_click_action = s.appPrefs.blank_click_action;
             vm.settings_change_tracking = s.appPrefs.change_tracking_enabled;
             vm.settings_change_days = s.appPrefs.change_tracking_days;
             vm.settings_row_height = s.appPrefs.row_height;
@@ -2350,6 +2350,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::SettingsFolderSort: return text(I::SettingsFolderSort);
     case R::SettingsStartupOpen: return text(I::SettingsStartupOpen);
     case R::SettingsNewTabOpen: return text(I::SettingsNewTabOpen);
+    case R::SettingsBlankClick: return text(I::SettingsBlankClickBack);
     case R::SettingsHomeFolder:
         return text(s.hoverControlIndex == 1 ? I::ThisPc : I::SettingsHomeFolderPick);
     case R::SettingsTextRender: return text(I::SettingsTextRender);

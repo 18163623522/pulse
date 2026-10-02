@@ -1,6 +1,7 @@
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
 #include "settings_controller.h"
+#include "blank_pane_click.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 
@@ -308,6 +309,12 @@ void SettingsController::NewTabOpen(int index) {
         SaveAndApply(SettingsEffect::None);
 }
 
+void SettingsController::BlankClick(int index) {
+    static constexpr int values[] = {kBlankClickOff, kBlankClickBack, kBlankClickUp};
+    if (prefs_ && SelectValue(index, values, prefs_->blank_click_action))
+        SaveAndApply(SettingsEffect::None);
+}
+
 void SettingsController::HomeFolder(int action) {
     if (!prefs_) return;
     if (action == 0) {
@@ -464,9 +471,6 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 21) {
         // shell_tag_menu.cpp installs/removes the HKCU verbs on the next UI tick.
         prefs_->shell_tag_menu = !prefs_->shell_tag_menu;
-        SaveAndApply(SettingsEffect::None);
-    } else if (index == 7) {
-        prefs_->blank_click_go_back = !prefs_->blank_click_go_back;
         SaveAndApply(SettingsEffect::None);
     } else if (index == 8) {
         prefs_->change_tracking_enabled = !prefs_->change_tracking_enabled;

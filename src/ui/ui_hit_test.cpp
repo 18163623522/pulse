@@ -365,10 +365,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(lay.win_e_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 20; return r;
                 }
-                if (ContainsPt(lay.blank_click_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle;
-                    r.index = 7;
-                    return r;
+                for (int i = 0; i < 3; ++i) if (ContainsPt(lay.blank_click_choice[i], x, y)) {
+                    r.region = HitTestResult::SettingsBlankClick; r.index = i; return r;
                 }
                 if (ContainsPt(lay.change_tracking_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 8; return r;
