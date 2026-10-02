@@ -1578,13 +1578,13 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
     dc->PopAxisAlignedClip();
 }
 
-void MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y, float w, float h,
+bool MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y, float w, float h,
                                      const Theme& theme, bool selected, const std::vector<NameMatchRange>& matches,
                                      bool dim_extension) {
     (void)selected;
     if (!compositor_ || !compositor_->Dc() || !compositor_->DwriteFactory() ||
         !compositor_->FileNameFormat() || name.empty() || w <= 1.0f) {
-        return;
+        return !name.empty();   // nothing of it shown
     }
     ID2D1DeviceContext* dc = compositor_->Dc();
     IDWriteFactory2* factory = compositor_->DwriteFactory();
@@ -1633,10 +1633,12 @@ void MainRenderer::DrawTruncatedName(const std::wstring& name, float x, float y,
 
     fmt->SetWordWrapping(old_wrap);
     fmt->SetTextAlignment(old_align);
+    return shown != name;
 }
 
 void MainRenderer::DrawCenteredIconName(const std::wstring& name, const D2D1_RECT_F& bounds,
-                                        const D2D1_COLOR_F& color, const Theme& theme, const std::vector<NameMatchRange>& matches) {
+                                        const D2D1_COLOR_F& color, const Theme& theme, const std::vector<NameMatchRange>& matches,
+                                        bool* truncated) {
     if (!compositor_ || !compositor_->Dc() || !compositor_->DwriteFactory() || name.empty()) return;
     const float width = std::max(1.0f, bounds.right - bounds.left);
     const float height = std::max(1.0f, bounds.bottom - bounds.top);
@@ -1649,6 +1651,15 @@ void MainRenderer::DrawCenteredIconName(const std::wstring& name, const D2D1_REC
     layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    if (truncated) {
+        // Measured untrimmed (the format trims by default): wrapped lines
+        // taller than the cell get cut.
+        const DWRITE_TRIMMING untrimmed{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0};
+        layout->SetTrimming(&untrimmed, nullptr);
+        DWRITE_TEXT_METRICS metrics{};
+        *truncated = SUCCEEDED(layout->GetMetrics(&metrics)) &&
+            (metrics.height > height + 0.5f || metrics.widthIncludingTrailingWhitespace > width + 0.5f);
+    }
     DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
     ComPtr<IDWriteInlineObject> ellipsis;
     compositor_->DwriteFactory()->CreateEllipsisTrimmingSign(layout.get(), &ellipsis);
@@ -1808,6 +1819,8 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                             const Theme& theme, int hover_region, int hover_control_index,
                             bool pane_focused, int pane_index) {
     ID2D1DeviceContext* dc = compositor_->Dc();
+    if (pane_index >= 0 && pane_index < static_cast<int>(hover_names_.size()))
+        hover_names_[static_cast<size_t>(pane_index)] = {};
     const auto highlight_terms = NameHighlightTerms(vm.filter_text, vm.is_search ? vm.search_query : L" ");
     MakeBrush(dc, theme.fill_hover, brFillHover_);
     MakeBrush(dc, pane_focused ? theme.fill_selected : theme.fill_selected_inactive, brFillSelected_);
@@ -2148,14 +2161,19 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 }
                 if (cut) nameColor = WithAlpha(nameColor, 0.55f);
                 MakeBrush(dc, nameColor, brText_);
+                bool name_truncated = true;
                 if (iconGrid && tagDotCount == 0) {
-                    DrawCenteredIconName(e.name, nameRc, nameColor, theme, name_matches);
+                    DrawCenteredIconName(e.name, nameRc, nameColor, theme, name_matches,
+                                         hover ? &name_truncated : nullptr);
                 } else {
                     Theme name_theme = theme;
                     name_theme.text = nameColor;
-                    DrawTruncatedName(e.name, trail.name_x, textY, trail.name_w, textH, name_theme, selected, name_matches,
-                                      detailsView && !e.is_dir);
+                    name_truncated = DrawTruncatedName(e.name, trail.name_x, textY, trail.name_w, textH, name_theme,
+                                                       selected, name_matches, detailsView && !e.is_dir);
                 }
+                // The row tooltip repeats the name only when it is cut off (B站 #15).
+                if (hover && pane_index >= 0 && pane_index < static_cast<int>(hover_names_.size()))
+                    hover_names_[static_cast<size_t>(pane_index)] = {src, name_truncated};
                 if (change && !iconGrid) DrawChangeBadge(compositor_, painter_, *change, trail.badge, theme, scale_);
                 if (!change && !e.badge.empty() && trail.badge.right > trail.badge.left) {
                     painter_.DrawTag({trail.badge, e.badge, e.badge_color});

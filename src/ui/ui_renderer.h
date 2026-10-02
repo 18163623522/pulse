@@ -1137,6 +1137,14 @@ public:
         return pane_index >= 0 && pane_index < static_cast<int>(painted_columns_.size())
             ? painted_columns_[static_cast<size_t>(pane_index)] : 0u;
     }
+    // Whether the hovered row's name was drawn shortened in the pane's last
+    // painted frame. Unknown (that row not painted as hovered yet) counts as
+    // shortened, so the full-name tooltip is never lost.
+    bool HoveredNameTruncated(int pane_index, int source_index) const {
+        if (pane_index < 0 || pane_index >= static_cast<int>(hover_names_.size())) return true;
+        const HoverNamePaint& painted = hover_names_[static_cast<size_t>(pane_index)];
+        return painted.source != source_index || painted.truncated;
+    }
     // Double-click on a divider: drop the manual widths on both sides so the
     // columns return to their fitted widths.
     void AutoFitColumnDivider(const D2D1_RECT_F& pane_bounds,
@@ -1344,11 +1352,13 @@ private:
     bool EnsureFluentSvg(int resource_id, bool colorful = false);
     bool DrawFluentSvg(int resource_id, const D2D1_RECT_F& bounds, float opacity = 1.0f,
                        const D2D1_COLOR_F* foreground = nullptr, bool colorful = false);
-    void DrawTruncatedName(const std::wstring& name, float x, float y, float w, float h,
+    // Returns true when the name had to be shortened with an ellipsis.
+    bool DrawTruncatedName(const std::wstring& name, float x, float y, float w, float h,
                            const Theme& theme, bool selected, const std::vector<NameMatchRange>& matches, bool dim_extension = false);
+    // `truncated` (optional, costs one extra layout): the wrapped name did not fit.
     void DrawCenteredIconName(const std::wstring& name, const D2D1_RECT_F& bounds,
                               const D2D1_COLOR_F& color, const Theme& theme,
-                              const std::vector<NameMatchRange>& matches);
+                              const std::vector<NameMatchRange>& matches, bool* truncated = nullptr);
     // Title-bar product mark from the app icon resource (nullptr until loaded).
     ID2D1Bitmap* LogoBitmap();
 
@@ -1414,6 +1424,8 @@ private:
     mutable std::unordered_map<std::wstring, float> cell_text_widths_;
     mutable float cell_text_widths_scale_ = 0.0f;
     std::array<uint32_t, 8> painted_columns_{};
+    struct HoverNamePaint { int source = -1; bool truncated = true; };
+    std::array<HoverNamePaint, 8> hover_names_{};   // per pane, see HoveredNameTruncated
     float tray_icon_dip_ = 48.0f;
     // Staging tray card text: 13 px semibold name, 11 px folder line.
     mutable ComPtr<IDWriteTextFormat> tray_name_format_;

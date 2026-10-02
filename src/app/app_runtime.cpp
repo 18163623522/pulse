@@ -2509,6 +2509,11 @@ std::wstring TooltipForHover(AppState& s) {
                 default: break;
                 }
             }
+            // Only the name and it is fully visible: a tooltip would just repeat
+            // it (B站 #15). Shortened names and extra facts still show.
+            if (tooltip.size() == entry.name.size() &&
+                !s.renderer.HoveredNameTruncated(std::max(0, s.hoverPaneIndex), s.hoverControlIndex))
+                return L"";
             return tooltip;
         }
         return L"";
