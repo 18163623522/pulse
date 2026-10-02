@@ -6,6 +6,7 @@
 #include "../app/tray_controller.h"
 #include "../app/blank_pane_click.h"
 #include "../app/last_tab_close.h"
+#include "../app/startup_launch.h"
 #include "../app/unc_probe_scheduler.h"
 #include "../common/localization.h"
 #include "../common/path_utils.h"
@@ -433,6 +434,46 @@ int wmain(int argc, wchar_t** argv) {
     parsed_prefs.ResetToDefaults();
     passed &= Report("reset keeps the window on the last tab close",
         !parsed_prefs.close_window_with_last_tab);
+    passed &= Report("start in tray setting has localized text",
+        pulse::l10n::Get(pulse::l10n::StringId::SettingsStartInTray) ==
+            L"\u5F00\u673A\u81EA\u542F\u65F6\u9690\u85CF\u5230\u6258\u76D8" &&
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsStartInTrayDesc).empty());
+    passed &= Report("start in tray defaults off", !prefs.start_in_tray);
+    settings_ui.ToggleUi(27);
+    passed &= Report("start in tray enables and persists",
+        prefs.start_in_tray && parsed_prefs.FromJson(prefs.ToJson()) && parsed_prefs.start_in_tray);
+    settings_ui.ToggleUi(27);
+    passed &= Report("start in tray disables and persists",
+        !prefs.start_in_tray && parsed_prefs.FromJson(prefs.ToJson()) && !parsed_prefs.start_in_tray);
+    parsed_prefs.start_in_tray = true;
+    passed &= Report("legacy preferences leave start in tray off",
+        parsed_prefs.FromJson(L"{}") && !parsed_prefs.start_in_tray);
+    parsed_prefs.start_in_tray = true;
+    parsed_prefs.ResetToDefaults();
+    passed &= Report("reset turns start in tray off", !parsed_prefs.start_in_tray);
+    {
+        const std::wstring exe = L"C:\\Program Files\\Pulse\\pulse.exe";
+        passed &= Report("startup Run command quotes the exe and adds --startup",
+            pulse::app::StartupCommandLine(exe) == L"\"C:\\Program Files\\Pulse\\pulse.exe\" --startup" &&
+            pulse::app::StartupCommandLine(L"").empty());
+        passed &= Report("startup Run command: only the old flagless value of this exe is repaired",
+            pulse::app::StartupCommandNeedsRepair(L"\"C:\\Program Files\\Pulse\\pulse.exe\"", exe) &&
+            pulse::app::StartupCommandNeedsRepair(L"\"c:\\program files\\pulse\\PULSE.EXE\"", exe) &&
+            !pulse::app::StartupCommandNeedsRepair(pulse::app::StartupCommandLine(exe), exe) &&
+            !pulse::app::StartupCommandNeedsRepair(L"\"D:\\Portable\\pulse.exe\"", exe) &&
+            !pulse::app::StartupCommandNeedsRepair(L"", exe) &&
+            !pulse::app::StartupCommandNeedsRepair(L"\"C:\\Program Files\\Pulse\\pulse.exe\"", L""));
+        const wchar_t* startup_argv[] = {L"pulse.exe", L"--startup"};
+        const wchar_t* folder_argv[] = {L"pulse.exe", L"C:\\--startup"};
+        passed &= Report("startup launch is recognised only by the exact flag",
+            pulse::app::HasStartupArgument(2, startup_argv) &&
+            !pulse::app::HasStartupArgument(2, folder_argv) &&
+            !pulse::app::HasStartupArgument(1, startup_argv) &&
+            !pulse::app::HasStartupArgument(0, nullptr));
+        passed &= Report("start in tray needs both a sign-in launch and the setting",
+            pulse::app::StartsHiddenInTray(true, true) && !pulse::app::StartsHiddenInTray(true, false) &&
+            !pulse::app::StartsHiddenInTray(false, true) && !pulse::app::StartsHiddenInTray(false, false));
+    }
     passed &= Report("last tab close: only the single unpinned tab closes the window",
         pulse::app::LastTabClosesWindow(1, false, true) && !pulse::app::LastTabClosesWindow(1, false, false) &&
         !pulse::app::LastTabClosesWindow(2, false, true) && !pulse::app::LastTabClosesWindow(1, true, true) &&

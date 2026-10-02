@@ -38,6 +38,8 @@ struct AppPrefs {
     int new_tab_open = 0;
     // Closing the only tab closes the window (app/last_tab_close.h).
     bool close_window_with_last_tab = false;
+    // Sign-in launches (Run value with --startup) stay hidden behind the tray icon.
+    bool start_in_tray = false;
     std::wstring home_folder;
     // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
     int text_render = 0;

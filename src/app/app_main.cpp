@@ -36,6 +36,7 @@
 #include "details_meta.h"
 #include "context_menu_prefs.h"
 #include "app_prefs.h"
+#include "startup_launch.h"
 #include "entry_sort.h"
 #include "saved_search.h"
 #include "search_query.h"
@@ -342,6 +343,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     if (s && IsUiActivityMessage(msg)) NoteUiActivity(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
     if (s && s->notification_toast.HandleMessage(hwnd, msg, wParam, lParam)) return 0;
     if (s && GroupWheelMessage(*s, hwnd, msg, wParam, lParam)) return 0;
+    if (s && msg == app::TrayController::TaskbarCreatedMessage() && msg != 0) {
+        s->tray_controller.HandleTaskbarCreated();   // Explorer restarted or came up late
+        return 0;
+    }
 
     switch (msg) {
     case WM_NCACTIVATE:
@@ -2197,7 +2202,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             state.shot.force_dark = false;
             state.themeOverride = ui::ThemeMode::Light;
         } else if (wcscmp(__wargv[i], L"--test-instance") == 0 || wcscmp(__wargv[i], L"--content-index-observer") == 0 ||
-                   wcscmp(__wargv[i], L"--hang-watch") == 0) {
+                   wcscmp(__wargv[i], L"--hang-watch") == 0 || wcscmp(__wargv[i], app::kStartupArgument) == 0) {
             continue;
         } else if (wcscmp(__wargv[i], L"--fps") == 0) {
             state.forceStatusPerformance = true;
@@ -2229,11 +2234,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
     const std::optional<app::ShellTagRequest> shell_tag = app::ParseShellTagArgs(__argc, __wargv);
     if (shell_tag) state.open_path.clear();
+    // Launched by the HKCU Run value (app_prefs.cpp), not by the user.
+    const bool startup_launch = app::HasStartupArgument(__argc, __wargv);
     if (!SkipSingletonFromArgv()) {
         const auto result = state.single_instance.Acquire();
         if (result == app::SingleInstanceCoordinator::AcquireResult::Existing) {
             if (shell_tag) app::ForwardShellTagRequest(*shell_tag);
-            else state.single_instance.ForwardOpenPath(state.open_path);
+            // A sign-in launch must not pop up the window that is already running.
+            else if (!startup_launch) state.single_instance.ForwardOpenPath(state.open_path);
             OleUninitialize();
             return 0;
         }
@@ -2308,8 +2316,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     // Started by the Explorer tag verb while Pulse was closed: stay hidden,
     // apply the tag batch, then exit (shell_tag_menu.cpp).
     if (shell_tag) QueueShellTagRequest(state, *shell_tag, true);
-    ShowWindow(hwnd, test_hidden || shell_tag ? SW_HIDE
-                                              : state.shot.active ? SW_SHOWNORMAL : nCmdShow);
+    // Sign-in launch with 开机自启时隐藏到托盘: only the tray icon shows; a
+    // click restores the window (maximized if the session was).
+    const bool start_in_tray = !test_hidden && !shell_tag && !state.shot.active && !state.menushot &&
+        !state.colorpickshot && !state.colorpickdialog &&
+        app::StartsHiddenInTray(startup_launch, state.appPrefs.start_in_tray) &&
+        state.tray_controller.StartHidden(nCmdShow == SW_SHOWMAXIMIZED);
+    if (!start_in_tray)
+        ShowWindow(hwnd, test_hidden || shell_tag ? SW_HIDE
+                                                  : state.shot.active ? SW_SHOWNORMAL : nCmdShow);
     UpdateWindow(hwnd);
 
     if (state.menushot) {

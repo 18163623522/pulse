@@ -1,5 +1,6 @@
 // app_prefs.cpp — Persist general settings; sync 开机自启 with the Run key.
 #include "app_prefs.h"
+#include "startup_launch.h"
 #include "session.h"
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
@@ -60,6 +61,7 @@ void AppPrefs::ResetToDefaults() {
     startup_open = 0;
     new_tab_open = 0;
     close_window_with_last_tab = false;
+    start_in_tray = false;
     home_folder.clear();
     text_render = 0;
     folder_views.Clear();
@@ -140,6 +142,8 @@ std::wstring AppPrefs::ToJson() const {
     out += new_tab_open == 1 ? L"1" : L"0";
     out += L",\n  \"close_window_with_last_tab\":";
     out += close_window_with_last_tab ? L"true" : L"false";
+    out += L",\n  \"start_in_tray\":";
+    out += start_in_tray ? L"true" : L"false";
     out += L",\n  \"home_folder\":\"";
     out += escaped_home;
     out += L"\"";
@@ -262,6 +266,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
     new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 0) == 1 ? 1 : 0;
     close_window_with_last_tab = pulse::json::ExtractBool(json, L"close_window_with_last_tab", false);
+    start_in_tray = pulse::json::ExtractBool(json, L"start_in_tray", false);
     home_folder = pulse::json::ExtractString(json, L"home_folder");
     text_render = pulse::json::ExtractInt(json, L"text_render", 0);
     if (text_render < 0 || text_render > 2) text_render = 0;
@@ -376,18 +381,25 @@ void AppPrefs::ClearBackgroundImage() {
     background_image.clear();
 }
 
-bool AppPrefs::ReadLaunchOnStartup() const {
+namespace {
+// The HKCU Run command for Pulse, or empty when there is none.
+std::wstring ReadRunCommand() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
-        return false;
-    wchar_t value[MAX_PATH] = {};
-    DWORD bytes = sizeof(value);
+        return {};
+    wchar_t value[1024] = {};
+    DWORD bytes = sizeof(value) - sizeof(wchar_t);
     DWORD type = 0;
     const LONG st = RegQueryValueExW(key, kRunValue, nullptr, &type,
                                      reinterpret_cast<LPBYTE>(value), &bytes);
     RegCloseKey(key);
-    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return false;
-    return value[0] != 0;
+    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return {};
+    return value;
+}
+} // namespace
+
+bool AppPrefs::ReadLaunchOnStartup() const {
+    return !ReadRunCommand().empty();
 }
 
 bool AppPrefs::ApplyLaunchOnStartup(bool on) {
@@ -400,7 +412,8 @@ bool AppPrefs::ApplyLaunchOnStartup(bool on) {
     if (on) {
         const std::wstring exe = ExePath();
         if (exe.empty()) { RegCloseKey(key); return false; }
-        const std::wstring cmd = L"\"" + exe + L"\"";
+        // --startup tells a sign-in launch apart (start_in_tray).
+        const std::wstring cmd = StartupCommandLine(exe);
         st = RegSetValueExW(key, kRunValue, 0, REG_SZ,
                             reinterpret_cast<const BYTE*>(cmd.c_str()),
                             static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t)));
@@ -681,6 +694,9 @@ bool AppPrefs::Load() {
     launch_on_startup = ReadLaunchOnStartup();
     open_folders_in_pulse = ReadFolderOpen();
     take_over_win_e = ReadWinE();
+    // Older builds registered the Run command without --startup.
+    if (persist && launch_on_startup && StartupCommandNeedsRepair(ReadRunCommand(), ExePath()))
+        ApplyLaunchOnStartup(true);
     // Repair older installs that wrote open\command but left shell default as none.
     if (persist && open_folders_in_pulse)
         ApplyFolderOpen(true);

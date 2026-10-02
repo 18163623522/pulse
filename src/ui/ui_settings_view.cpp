@@ -889,6 +889,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsWindowEffect: target=l.effect_card;break;
     case I::SettingsLanguage: target=l.language_card;break;
     case I::SettingsLaunch: target=l.startup_row[0];break;
+    case I::SettingsStartInTray: target=l.start_in_tray_row;break;
     case I::SettingsKeepRunning: target=l.startup_row[1];break;
     case I::SettingsHomeFolder: target=l.home_folder_card;break;
     case I::SettingsStartupOpen: target=l.startup_open_card;break;
