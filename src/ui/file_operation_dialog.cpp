@@ -759,7 +759,10 @@ void FileOperationWindow::Render() {
     std::wstring badge_text;
     fluent::BadgeKind badge_kind = fluent::BadgeKind::Success;
     if (failed) {
-        file_line = status_.last_error.empty() ? l10n::Get(l10n::StringId::OpFailed).c_str() : status_.last_error;
+        // pulse_shell errors are Simplified; known messages are localized and
+        // file names are kept as they are on disk.
+        file_line = status_.last_error.empty() ? l10n::Get(l10n::StringId::OpFailed)
+                                               : l10n::ServiceErrorText(status_.last_error);
         badge_text = l10n::Get(l10n::StringId::OpFailedBadge).c_str();
         badge_kind = fluent::BadgeKind::Danger;
     } else if (paused) {

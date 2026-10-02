@@ -508,7 +508,8 @@ struct IndexVolumeRowView {
     std::wstring id;
     std::wstring title;
     std::wstring detail;
-    std::wstring state;
+    std::wstring state;      // localized for display
+    std::wstring raw_state;  // as reported by the index service (Simplified), for the badge
     bool checked = false;
     bool enabled = false;
     bool pending = false;

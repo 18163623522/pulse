@@ -231,20 +231,20 @@ void PlacesCatalog::StopTagWriter() {
 
 void PlacesCatalog::EnsureDefaults() {
     if (!tags.empty()) return;
-    struct Def { const wchar_t* id; const wchar_t* name; uint32_t rgb; };
+    struct Def { const wchar_t* id; const wchar_t* name; const wchar_t* english; uint32_t rgb; };
     static const Def kDefs[] = {
-        { L"finder-red", L"紧急修补", 0xEF4444 },
-        { L"finder-orange", L"设计审阅", 0xF59E0B },
-        { L"finder-green", L"进行中", 0x22C55E },
-        { L"finder-yellow", L"待确认", 0xEAB308 },
-        { L"finder-purple", L"灵感参考", 0xA855F7 },
-        { L"finder-blue", L"参考资料", 0x3B82F6 },
-        { L"finder-gray", L"归档", 0x94A3B8 },
+        { L"finder-red", L"紧急修补", L"Urgent", 0xEF4444 },
+        { L"finder-orange", L"设计审阅", L"Design review", 0xF59E0B },
+        { L"finder-green", L"进行中", L"In progress", 0x22C55E },
+        { L"finder-yellow", L"待确认", L"Pending", 0xEAB308 },
+        { L"finder-purple", L"灵感参考", L"Inspiration", 0xA855F7 },
+        { L"finder-blue", L"参考资料", L"Reference", 0x3B82F6 },
+        { L"finder-gray", L"归档", L"Archive", 0x94A3B8 },
     };
     for (const auto& d : kDefs) {
         ColorTag t;
         t.id = d.id;
-        t.name = l10n::Cn(d.name);  // seeded once in the UI language, then user data
+        t.name = l10n::Pick(d.name, d.english);  // seeded once in the UI language, then user data
         t.rgb = d.rgb;
         tags.push_back(std::move(t));
     }
@@ -1408,7 +1408,7 @@ void PlacesCatalog::MergeAdsRecords(const std::wstring& path,
                 if (index < 0) {
                     ColorTag tag;
                     tag.id = record.id.empty() ? NewTagId() : record.id;
-                    tag.name = imported_name.empty() ? std::wstring(l10n::Cn(L"导入的标签")) : imported_name;
+                    tag.name = imported_name.empty() ? std::wstring(l10n::Pick(L"导入的标签", L"Imported tag")) : imported_name;
                     tag.rgb = record.rgb;
                     tags.push_back(std::move(tag));
                     index = static_cast<int>(tags.size()) - 1;

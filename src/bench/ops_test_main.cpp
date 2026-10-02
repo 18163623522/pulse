@@ -7,6 +7,7 @@
 #include "../ops/ops_manager.h"
 #include "../ops/clipboard.h"
 #include "../ipc/shell_client.h"
+#include "../common/localization.h"
 #include <windows.h>
 #include <chrono>
 #include <cstdio>
@@ -161,6 +162,9 @@ ops::OpRequest SimpleOp(ops::OpType type, std::initializer_list<const wchar_t*> 
 
 int wmain() {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    // Assertions below use the Simplified texts (" - 副本", "已取消"); the
+    // English forms are checked separately.
+    l10n::SetLanguage(L"zh-CN");
     fprintf(stderr, "[test] start\n");
 
     Check(ops::TerminalCommandLine(L"C:\\A\\B") == L"-d \"C:\\A\\B\"",
@@ -238,6 +242,16 @@ int wmain() {
               L"copy into same folder creates 副本");
         if (!st.last_error.empty()) wprintf(L"       error: %s\n", st.last_error.c_str());
         Check(st.last_error.empty(), L"same-folder copy reported no error");
+
+        l10n::SetLanguage(L"en-US");
+        MakeFile(srcDir + L"\\same-en.txt", payload, sizeof(payload) - 1);
+        auto en_st = RunOp(SimpleOp(ops::OpType::Copy,
+            { (srcDir + L"\\same-en.txt").c_str() }, srcDir.c_str()));
+        l10n::SetLanguage(L"zh-CN");
+        Check(en_st.last_error.empty() && Exists(srcDir + L"\\same-en - Copy.txt"),
+              L"English UI names a same-folder copy \" - Copy\"");
+        Check(en_st.summary.find(L"Copy") == 0 && en_st.summary.find(L" completed") != std::wstring::npos,
+              L"English UI operation summary");
 
         const uint64_t before_noop = g_ops.Status().completed_ops;
         const auto noop_started = std::chrono::steady_clock::now();

@@ -210,6 +210,10 @@ float Ease(EasingCurve curve, float value) noexcept {
     return t;
 }
 
+const wchar_t* OmnibarHintBadge() {
+    return pulse::l10n::Pick(L"\u547D\u4EE4", L"Command");
+}
+
 } // namespace
 
 float EvaluateMotion(const MotionSpec& motion, float elapsed_ms) noexcept {
@@ -2144,7 +2148,7 @@ float Painter::MeasureBadgeWidth(std::wstring_view text) const {
 }
 
 float Painter::OmnibarHintReservePx() const {
-    const float label = MeasureTextWidth(compositor_, CaptionFormat(), kOmnibarHintBadge);
+    const float label = MeasureTextWidth(compositor_, CaptionFormat(), OmnibarHintBadge());
     const float label_w = label > 0.0f ? label : Px(24.0f);
     return Px(8.0f) + Px(8.0f) + Px(16.0f) + Px(6.0f) + label_w + Px(6.0f)
          + MeasureBadgeWidth(kOmnibarHintKey) + Px(6.0f);
@@ -2173,9 +2177,9 @@ D2D1_RECT_F Painter::DrawOmnibarHints(const D2D1_RECT_F& field, bool skip_search
     }
     x += icon + Px(6.0f);
 
-    const float label = MeasureTextWidth(compositor_, CaptionFormat(), kOmnibarHintBadge);
+    const float label = MeasureTextWidth(compositor_, CaptionFormat(), OmnibarHintBadge());
     const float label_w = label > 0.0f ? label : Px(24.0f);
-    DrawText(kOmnibarHintBadge,
+    DrawText(OmnibarHintBadge(),
              D2D1::RectF(x, chip_top, x + label_w, chip_bottom),
              CaptionFormat(), theme_->text_secondary, HorizontalAlignment::Left,
              BlendOver(chip_fill, theme_->bg));

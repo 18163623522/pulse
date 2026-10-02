@@ -1,5 +1,6 @@
 #include "../ops/ops_manager.h"
 #include "../ipc/shell_client.h"
+#include "../common/localization.h"
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -25,6 +26,7 @@ bool Exact(const std::filesystem::path& path) {
 }
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    pulse::l10n::SetLanguage(L"zh-CN");  // assertions compare Simplified error text
     const auto root = std::filesystem::absolute(std::filesystem::path(L"bench_data") /
         (L"rename-ops-" + std::to_wstring(GetCurrentProcessId())));
     std::filesystem::create_directories(root / L"child");

@@ -162,7 +162,8 @@ target_link_libraries(pulse_crash_reporter PUBLIC dbghelp shell32 pulse_localiza
 
 add_library(pulse_text STATIC src/common/text_decode.cpp)
 
-add_library(pulse_localization STATIC src/common/localization.cpp src/common/zh_hant.cpp)
+add_library(pulse_localization STATIC src/common/localization.cpp src/common/zh_hant.cpp
+    src/common/service_text.cpp)
 target_link_libraries(pulse_localization PUBLIC user32)
 
 add_executable(pulse_localization_test
@@ -498,7 +499,7 @@ target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid
 # Packaged (MSIX / sparse) File Explorer context-menu verbs (#48).
 add_executable(pulse_packaged_ctx_test src/bench/packaged_ctx_test.cpp
     src/shell_host/packaged_ctx_handlers.cpp src/ipc/shell_client.cpp)
-target_link_libraries(pulse_packaged_ctx_test PRIVATE ole32 shell32 uuid shlwapi bcrypt)
+target_link_libraries(pulse_packaged_ctx_test PRIVATE ole32 shell32 uuid shlwapi bcrypt pulse_localization)
 
 add_executable(pulse_preview_handler_probe
     src/bench/preview_handler_probe.cpp
