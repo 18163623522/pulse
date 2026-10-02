@@ -199,9 +199,12 @@ int wmain(int argc, wchar_t** argv) {
     brush->SetColor(light.text);
     Draw(target.value,brush.value,stroke.value,Icon::Contrast,{20,20,44,44});
     Check(SUCCEEDED(target->EndDraw()),"contrast render");
-    const int contrast_left=Inspect(bitmap.value,light.surface_card,{20,20,32,44}).ink;
-    const int contrast_right=Inspect(bitmap.value,light.surface_card,{32,20,44,44}).ink;
-    Check(contrast_right>contrast_left*2,"contrast icon paints its right half solid");
+    // Inspect counts ink across the bitmap; with the right half as bounds,
+    // "outside" is the ink of the left half.
+    const auto contrast=Inspect(bitmap.value,light.surface_card,{32,20,44,44});
+    const int contrast_left=contrast.outside, contrast_right=contrast.ink-contrast.outside;
+    std::printf("contrast ink left=%d right=%d\n",contrast_left,contrast_right);
+    Check(contrast_left>0 && contrast_right>contrast_left*2,"contrast icon paints its right half solid");
 
     target->BeginDraw();
     const auto transform=D2D1::Matrix3x2F::Translation(3,5)*D2D1::Matrix3x2F::Scale(1.25f,1.25f);
