@@ -272,6 +272,7 @@ void TestReader() {
 } // namespace
 
 int main() {
+    pulse::l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
     TestConfirm();
     TestPickerModel();
     TestReader();

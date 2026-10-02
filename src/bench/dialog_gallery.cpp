@@ -1,6 +1,6 @@
 // Visual contract for Pulse's own dialogs (confirm + folder / picture picker).
 //
-//   pulse_dialog_gallery.exe [out_dir]
+//   pulse_dialog_gallery.exe [--lang zh-CN|en-US] [out_dir]
 //       Renders every scene offscreen in light, dark and high contrast at 100%
 //       and 150% scale into out_dir (default build-dialog-verify).
 //   pulse_dialog_gallery.exe --live <kind> [--dark] [--init <path>] [--out <file>]
@@ -338,11 +338,10 @@ int RunGallery(const std::wstring& out_dir) {
     }
     compositor.Shutdown();
     DestroyWindow(hwnd);
-    wchar_t summary[128]{};
-    swprintf_s(summary, L"written=%d failed=%d\r\n", written, failures);
     const std::wstring log = out_dir + L"\\gallery.txt";
-    if (FILE* f = _wfopen(log.c_str(), L"wb")) {
-        fputws(summary, f);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, log.c_str(), L"wb") == 0 && f) {
+        std::fprintf(f, "written=%d failed=%d\r\n", written, failures);
         fclose(f);
     }
     return failures == 0 ? 0 : 4;
@@ -355,7 +354,8 @@ void WriteResult(const std::wstring& file, const std::wstring& text) {
     std::string utf8(static_cast<size_t>(bytes > 0 ? bytes - 1 : 0), '\0');
     if (bytes > 1)
         WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, utf8.data(), bytes, nullptr, nullptr);
-    if (FILE* f = _wfopen(file.c_str(), L"wb")) {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, file.c_str(), L"wb") == 0 && f) {
         fwrite(utf8.data(), 1, utf8.size(), f);
         fclose(f);
     }
@@ -395,8 +395,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::wstring> args;
-    for (int i = 1; argv && i < argc; ++i) args.emplace_back(argv[i]);
+    std::wstring language = L"zh-CN";
+    for (int i = 1; argv && i < argc; ++i) {
+        if (std::wstring(argv[i]) == L"--lang" && i + 1 < argc) language = argv[++i];
+        else args.emplace_back(argv[i]);
+    }
     if (argv) LocalFree(argv);
+    pulse::l10n::Initialize(GetModuleHandleW(nullptr), language);
 
     int result = 0;
     if (!args.empty() && args[0] == L"--live" && args.size() >= 2) {
