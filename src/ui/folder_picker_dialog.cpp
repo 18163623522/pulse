@@ -70,6 +70,11 @@ std::vector<PickerPlace> BuildPlaces() {
     return places;
 }
 
+// "\\\\server\\share" reads better whole than as just "share".
+bool IsShareRootName(const std::wstring& path) {
+    return path.rfind(L"\\\\", 0) == 0 && PickerParent(path).empty();
+}
+
 std::wstring ErrorText(DWORD error, const std::wstring& path) {
     switch (error) {
     case ERROR_FILE_NOT_FOUND:
@@ -80,7 +85,14 @@ std::wstring ErrorText(DWORD error, const std::wstring& path) {
     case ERROR_DIRECTORY: {
         std::wstring text = l10n::Get(l10n::StringId::PickerNotFound);
         const size_t at = text.find(L"{path}");
-        if (at != std::wstring::npos) text.replace(at, 6, path::FriendlyPathText(path));
+        // The full path is already in the path field; the one-line message
+        // names the missing folder itself.
+        std::wstring name = path::FriendlyPathText(path);
+        while (name.size() > 3 && name.back() == L'\\') name.pop_back();
+        const size_t slash = name.find_last_of(L'\\');
+        if (slash != std::wstring::npos && slash + 1 < name.size() && !IsShareRootName(name))
+            name = name.substr(slash + 1);
+        if (at != std::wstring::npos) text.replace(at, 6, name);
         return text;
     }
     default:
