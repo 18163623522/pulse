@@ -31,6 +31,7 @@
 #include "resource.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
+#include "shell_registry_debounce.h"
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
@@ -41,6 +42,7 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cwctype>
 #include <cstring>
@@ -52,6 +54,7 @@ using namespace pulse;
 namespace pulse {
 HANDLE g_shell_watch_stop = nullptr;
 HANDLE g_shell_watch_thread = nullptr;
+std::atomic<uint32_t> g_shell_seed_generation{0};
 
 namespace {
 std::wstring TagLabel(l10n::StringId id, const std::wstring& name, size_t count = 0) {
@@ -1107,18 +1110,32 @@ DWORD WINAPI ShellRegistryWatch(LPVOID param) {
     open(HKEY_CURRENT_USER,
          L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts", watches[2]);
     HANDLE wait[4]{ stop, nullptr, nullptr, nullptr };
+    int watch_of[4]{ -1, -1, -1, -1 };
     DWORD count = 1;
-    for (int i = 0; i < 3; ++i)
-        if (watches[i].event) wait[count++] = watches[i].event;
-    while (WaitForMultipleObjects(count, wait, FALSE, INFINITE) != WAIT_OBJECT_0) {
-        if (!IsWindow(hwnd)) break;
-        PostMessageW(hwnd, WM_SHELL_CACHE_INVALIDATE, 0, 0);
-        for (int i = 0; i < 3; ++i) {
-            if (watches[i].key && watches[i].event)
-                RegNotifyChangeKeyValue(watches[i].key, TRUE,
-                                        REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
-                                        watches[i].event, TRUE);
+    for (int i = 0; i < 3; ++i) {
+        if (!watches[i].event) continue;
+        watch_of[count] = i;
+        wait[count++] = watches[i].event;
+    }
+    // A registry cleaner fires these thousands of times in a row; flush once
+    // per burst instead of re-seeding the verb cache on every change (#127).
+    app::ShellRegistryDebounce debounce;
+    for (;;) {
+        const DWORD r = WaitForMultipleObjects(count, wait, FALSE,
+                                               debounce.WaitMs(GetTickCount64()));
+        if (r == WAIT_OBJECT_0 || r == WAIT_FAILED || !IsWindow(hwnd)) break;
+        if (r > WAIT_OBJECT_0 && r < WAIT_OBJECT_0 + count) {
+            // Re-arm only the key that fired: the others are still armed, and
+            // re-registering them would stack notifications on the key.
+            const Watch& w = watches[watch_of[r - WAIT_OBJECT_0]];
+            RegNotifyChangeKeyValue(w.key, TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+                                    w.event, TRUE);
+            debounce.Note(GetTickCount64());
         }
+        // Checked after every wake: during a steady stream the events never
+        // let the wait time out, and the max delay must still flush.
+        if (debounce.TakeDue(GetTickCount64()))
+            PostMessageW(hwnd, WM_SHELL_CACHE_INVALIDATE, 0, 0);
     }
     for (auto& w : watches) {
         if (w.event) CloseHandle(w.event);
@@ -1154,10 +1171,12 @@ void SeedShellVerbCache(AppState& s) {
     for (const auto& [ext, verbs] : machine) extensions.push_back(ext);
     s.context_menu.MergeStaticCache(std::move(machine));
     HWND hwnd = s.hwnd;
-    std::thread([hwnd, extensions = std::move(extensions)] {
+    // A newer seed supersedes this one; stop instead of piling up readers.
+    const uint32_t generation = ++g_shell_seed_generation;
+    std::thread([hwnd, generation, extensions = std::move(extensions)] {
         size_t n = 0;
         for (const auto& ext : extensions) {
-            if (n++ > 400) break;
+            if (n++ > 400 || g_shell_seed_generation.load() != generation) break;
             auto* result = new ShellVerbsResult{ ext, app::EnumerateStaticVerbs(ext) };
             if (!PostMessageW(hwnd, WM_SHELL_VERBS, 0, reinterpret_cast<LPARAM>(result)))
                 delete result;

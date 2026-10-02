@@ -5,6 +5,7 @@
 #include "../app/single_instance_coordinator.h"
 #include "../app/tray_controller.h"
 #include "../app/blank_pane_click.h"
+#include "../app/shell_registry_debounce.h"
 #include "../app/last_tab_close.h"
 #include "../app/unc_probe_scheduler.h"
 #include "../common/localization.h"
@@ -40,6 +41,57 @@ namespace {
 
 bool Report(const char* name, bool passed) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", name);
+    return passed;
+}
+
+bool TestShellRegistryDebounce() {
+    using pulse::app::ShellRegistryDebounce;
+    bool passed = true;
+    {
+        ShellRegistryDebounce idle;
+        passed &= Report("shell registry debounce: idle waits forever and never flushes",
+            idle.WaitMs(0) == ShellRegistryDebounce::kIdle && !idle.TakeDue(100000) &&
+            !idle.Pending());
+    }
+    {
+        ShellRegistryDebounce single;
+        single.Note(1000);
+        const bool waits = single.WaitMs(1000) == ShellRegistryDebounce::kQuietMs;
+        const bool early = !single.TakeDue(1000 + ShellRegistryDebounce::kQuietMs - 1);
+        const bool due = single.TakeDue(1000 + ShellRegistryDebounce::kQuietMs);
+        const bool once = !single.TakeDue(1000 + 10 * ShellRegistryDebounce::kQuietMs) &&
+            single.WaitMs(50000) == ShellRegistryDebounce::kIdle;
+        passed &= Report("shell registry debounce: one change flushes once after the quiet period",
+            waits && early && due && once);
+    }
+    {
+        // Mirrors the watch loop: Note() then TakeDue() on every change, plus a
+        // TakeDue() on the wait timeout once the burst ends.
+        ShellRegistryDebounce burst;
+        constexpr uint64_t kStep = 20;  // 50 changes per second, 30 s long
+        constexpr uint64_t kEnd = 30000;
+        int flushes = 0;
+        uint64_t previous = 0;
+        bool spaced = true;
+        for (uint64_t t = 0; t <= kEnd; t += kStep) {
+            burst.Note(t);
+            if (burst.TakeDue(t)) {
+                if (flushes > 0 &&
+                    (t - previous < ShellRegistryDebounce::kMaxDelayMs ||
+                     t - previous > ShellRegistryDebounce::kMaxDelayMs + kStep))
+                    spaced = false;
+                previous = t;
+                ++flushes;
+            }
+        }
+        const int during = flushes;
+        const uint32_t tail = burst.WaitMs(kEnd);
+        const bool tail_flush = tail > 0 && tail <= ShellRegistryDebounce::kQuietMs &&
+            burst.TakeDue(kEnd + tail);
+        // 1500 changes collapse into flushes at 10.00 s and 20.02 s, plus the tail.
+        passed &= Report("shell registry debounce: a 30 s burst flushes every 10 s, then once at the end",
+            during == 2 && spaced && tail_flush && !burst.Pending());
+    }
     return passed;
 }
 
@@ -686,6 +738,7 @@ int wmain(int argc, wchar_t** argv) {
         lifecycle_completed);
 
     passed &= TestAddressBarCommands();
+    passed &= TestShellRegistryDebounce();
     passed &= Report("menu row height follows list density (28/34/40 -> 30/36/40, clamped)",
         pulse::app::MenuRowHeightDip(28) == 30 && pulse::app::MenuRowHeightDip(34) == 36 &&
         pulse::app::MenuRowHeightDip(40) == 40 && pulse::app::MenuRowHeightDip(24) == 28 &&
