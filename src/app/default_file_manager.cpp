@@ -15,6 +15,9 @@ namespace {
 constexpr wchar_t kThisPcKey[] =
     L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
 constexpr wchar_t kBackupValue[] = L"PulseBackup";
+// The replaced handler's DelegateExecute (kept even when empty); restored on turn-off.
+constexpr wchar_t kDelegateBackupValue[] = L"PulseBackupDelegateExecute";
+constexpr wchar_t kDelegateValue[] = L"DelegateExecute";
 
 std::wstring ModulePath() {
     wchar_t path[MAX_PATH] = {};
@@ -46,6 +49,15 @@ bool WriteString(const std::wstring& key, const wchar_t* name, const std::wstrin
         return false;
     const LONG st = RegSetValueExW(h, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
                                    static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(h);
+    return st == ERROR_SUCCESS;
+}
+
+bool ValueExists(const std::wstring& key, const wchar_t* name) {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS)
+        return false;
+    const LONG st = RegQueryValueExW(h, name, nullptr, nullptr, nullptr, nullptr);
     RegCloseKey(h);
     return st == ERROR_SUCCESS;
 }
@@ -120,11 +132,13 @@ bool ApplyThisPcOpen(AppPrefs& prefs, bool on) {
         bool ok = true;
         // Another file manager's command / default verb comes back on turn-off.
         if (!current.empty() && !ours) ok = WriteString(CommandKey(), kBackupValue, current) && ok;
+        if (!ours && ValueExists(CommandKey(), kDelegateValue))
+            ok = WriteString(CommandKey(), kDelegateBackupValue, ReadString(CommandKey(), kDelegateValue)) && ok;
         if (!shell_default.empty() && !EqualsNoCase(shell_default, L"open"))
             ok = WriteString(ShellKey(), kBackupValue, shell_default) && ok;
         ok = WriteString(CommandKey(), nullptr, line) && ok;
         // Empty DelegateExecute makes the shell run the command line.
-        ok = WriteString(CommandKey(), L"DelegateExecute", L"") && ok;
+        ok = WriteString(CommandKey(), kDelegateValue, L"") && ok;
         ok = WriteString(ShellKey(), nullptr, L"open") && ok;
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
         return ok;
@@ -132,9 +146,19 @@ bool ApplyThisPcOpen(AppPrefs& prefs, bool on) {
     if (!ours) return true;   // someone else's command (or none): leave it alone
     bool ok = true;
     const std::wstring backup = ReadString(CommandKey(), kBackupValue);
-    if (!backup.empty()) {
-        ok = WriteString(CommandKey(), nullptr, backup) && ok;
+    const bool delegate_backup = ValueExists(CommandKey(), kDelegateBackupValue);
+    if (!backup.empty() || delegate_backup) {
+        // Put the replaced handler back exactly: its command line and its
+        // DelegateExecute (or no DelegateExecute when it had none).
+        if (!backup.empty()) ok = WriteString(CommandKey(), nullptr, backup) && ok;
+        else DeleteValue(CommandKey(), nullptr);
         DeleteValue(CommandKey(), kBackupValue);
+        if (delegate_backup) {
+            ok = WriteString(CommandKey(), kDelegateValue, ReadString(CommandKey(), kDelegateBackupValue)) && ok;
+            DeleteValue(CommandKey(), kDelegateBackupValue);
+        } else {
+            DeleteValue(CommandKey(), kDelegateValue);
+        }
     } else {
         SHDeleteKeyW(HKEY_CURRENT_USER, OpenKey().c_str());
     }
