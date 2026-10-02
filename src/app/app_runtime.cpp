@@ -30,6 +30,7 @@
 #include "resource.h"
 #include "pulse_version.h"
 #include "tray_reveal.h"
+#include "default_file_manager.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
 #include <windows.h>
@@ -280,6 +281,15 @@ void SelectLaunchedFile(AppState& s, const std::wstring& raw) {
 }
 
 void OpenFolderInNewTab(AppState& s, const std::wstring& raw) {
+    if (app::IsThisPcArgument(raw)) {
+        // The This PC verb (设为默认文件管理器): This PC is the empty path,
+        // which only OpenTabAt keeps (NewTab turns it into C:\). FindFolderTab
+        // skips it, so each request opens a tab, as Explorer opens a window.
+        if (!IsWindowVisible(s.hwnd) && TakeFreshStart(s)) StartFreshAt(s, L"");
+        else OpenTabAt(s, L"");
+        s.tray_controller.RestoreWindow();
+        return;
+    }
     const std::wstring path = ResolveOpenFolderPath(raw);
     // Back from the tray with "open the default location" at startup: an
     // explicit folder starts over on its own, as launching with it would.
@@ -434,6 +444,11 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             }
             vm.settings_open_folders = s.appPrefs.open_folders_in_pulse;
             vm.settings_win_e = s.appPrefs.take_over_win_e;
+            vm.settings_this_pc = s.appPrefs.take_over_this_pc;
+            vm.settings_explorer_windows = s.appPrefs.take_over_explorer_windows;
+            vm.settings_default_manager =
+                static_cast<int>(app::DefaultFileManagerState(s.appPrefs));
+            vm.settings_default_manager_desc = app::DefaultFileManagerSummary(s.appPrefs);
             vm.settings_shell_tags = s.appPrefs.shell_tag_menu;
             vm.settings_blank_click_action = s.appPrefs.blank_click_action;
             vm.settings_change_tracking = s.appPrefs.change_tracking_enabled;

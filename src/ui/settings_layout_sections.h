@@ -41,6 +41,8 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.text_render_card=row(narrow ? 98.0f : 64.0f); segments(l.text_render_card,l.text_render_row,3,282);
     l.group[0]=D2D1::RectF(left,l.theme_row.top,right,y);
     section(1);
+    // 设为默认文件管理器 (B站 #1); a partial takeover's summary may wrap.
+    l.default_manager_row=row(narrow ? 84.0f : 64.0f);
     l.startup_row[0]=row(64); l.start_in_tray_row=row(64); l.startup_row[1]=row(64);
     l.home_folder_card=row(narrow ? 98.0f : 64.0f);
     {
@@ -52,7 +54,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.startup_open_card=row(narrow ? 98.0f : 64.0f); segments(l.startup_open_card,l.startup_open_row,2,282);
     l.new_tab_open_card=row(narrow ? 98.0f : 64.0f); segments(l.new_tab_open_card,l.new_tab_open_row,2,282);
     l.close_last_tab_row=row(64);
-    l.group[1]=D2D1::RectF(left,l.startup_row[0].top,right,y);
+    l.group[1]=D2D1::RectF(left,l.default_manager_row.top,right,y);
     section(2);
     l.density_card=row(narrow ? 98.0f : 64.0f); segments(l.density_card,l.density_row,3,282);
     l.performance_row=row(64);
@@ -92,6 +94,8 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         y+=8*scale; l.tray_icon_card=row(narrow ? 98.0f : 64.0f); segments(l.tray_icon_card,l.tray_icon_row,3,282);
         y+=8*scale; l.startup_row[2]=row(64);
         y+=8*scale; l.win_e_row=row(64);
+        y+=8*scale; l.this_pc_row=row(64);
+        y+=8*scale; l.explorer_windows_row=row(64);
         y+=8*scale; l.shell_tags_row=row(64);
         y+=8*scale; l.hidden_files_row=row(64);
         y+=8*scale; l.protected_files_row=row(64);

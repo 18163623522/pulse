@@ -666,6 +666,11 @@ struct WindowViewModel {
     int settings_text_render = 0; // 0 auto, 1 sharp, 2 smooth
     bool settings_open_folders = false;
     bool settings_win_e = false;
+    bool settings_this_pc = false;
+    bool settings_explorer_windows = false;   // experimental Explorer window takeover
+    // 设为默认文件管理器: 0 off, 1 partial, 2 full; the text lists what is missing.
+    int settings_default_manager = 0;
+    std::wstring settings_default_manager_desc;
     bool settings_shell_tags = false;
     int settings_blank_click_action = 0;   // app/blank_pane_click.h
     bool settings_change_tracking = false;

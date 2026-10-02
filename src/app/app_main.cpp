@@ -103,6 +103,8 @@
 #include "shell_tag_menu.h"
 #include "hang_watch.h"
 #include "tray_reveal.h"
+#include "default_file_manager.h"
+#include "shell_window_sync.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -214,6 +216,7 @@ void Render(AppState& s) {
     if (!s.tagRenameId.empty()) LayoutTagRenameOverlay(s);
     if (s.addressEditing) LayoutAddressEditor(s);
     if (s.filterEditing) LayoutFilterEditor(s);
+    SyncShellWindows(s);
 
     if (s.shot.active && !s.timing.first_frame_recorded) {
         s.timing.first_frame_ms = std::chrono::duration<double, std::milli>(
@@ -711,7 +714,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         std::wstring startPath = s->shot.active ? s->shot.path : L"C:\\";
         if (!s->shot.active && !s->session_path.empty()) startPath = s->session_path;
         else if (!s->shot.active && !s->open_path.empty())
-            startPath = ResolveOpenFolderPath(s->open_path);
+            startPath = app::IsThisPcArgument(s->open_path) ? std::wstring()
+                                                            : ResolveOpenFolderPath(s->open_path);
         else if (open_default_location)
             startPath = app::DefaultLocation(s->appPrefs); // empty = This PC
         s->pane->NewTab(startPath);
@@ -726,8 +730,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         if (!s->shot.active && !s->open_path.empty() &&
             (!s->session_layout_tabs.empty() || !s->session_path.empty())) {
-            const std::wstring open_path = ResolveOpenFolderPath(s->open_path);
-            if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
+            const bool this_pc = app::IsThisPcArgument(s->open_path);
+            const std::wstring open_path = this_pc ? std::wstring() : ResolveOpenFolderPath(s->open_path);
+            if (this_pc) OpenTabAt(*s, open_path);  // NewTab would open C: for ""
+            else if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
                 NewTab(*s, open_path);
             if (!open_path.empty()) SelectLaunchedFile(*s, s->open_path);
         }
@@ -994,6 +1000,19 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         SetBkColor(hdc, s->darkMode ? RGB(30, 30, 30) : RGB(255, 255, 255));
         SetBkMode(hdc, OPAQUE);
         return reinterpret_cast<LRESULT>(s->editBrush);
+    }
+
+    case WM_EXPLORER_TAKEOVER: {
+        std::unique_ptr<app::ExplorerTakeoverRequest> request(
+            reinterpret_cast<app::ExplorerTakeoverRequest*>(lParam));
+        if (s && request) HandleExplorerTakeover(*s, *request);
+        return 0;
+    }
+
+    case WM_SHELL_SELECT: {
+        std::unique_ptr<app::ShellSelectRequest> request(reinterpret_cast<app::ShellSelectRequest*>(lParam));
+        if (s && request) HandleShellSelect(*s, *request);
+        return 0;
     }
 
     case WM_FRAME_PUMP: {
@@ -1784,6 +1803,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_DESTROY: {
         if (s) {
             s->framePump.Stop();
+            StopShellWindows(*s);
             ShutdownGlobalSearch(*s);
             StopShellRegistryWatch();
             s->watches.Stop();

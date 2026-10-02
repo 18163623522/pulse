@@ -28,6 +28,8 @@
 #include "context_menu_controller.h"
 #include "shell_verbs.h"
 #include "app_prefs.h"
+#include "explorer_window_takeover.h"
+#include "shell_window_registry.h"
 #include "saved_search.h"
 #include "search_history.h"
 #include "settings_controller.h"
@@ -92,6 +94,8 @@ constexpr UINT WM_UPDATE_INSTALL = WM_APP + 61;
 constexpr UINT WM_SEARCH_HISTORY = WM_APP + 62;
 constexpr UINT WM_CHANGE_TRACKING = WM_APP + 63;
 constexpr UINT WM_FRAME_PUMP = WM_APP + 67;  // app::FramePump: one display frame of motion
+constexpr UINT WM_SHELL_SELECT = WM_APP + 68;  // app::ShellSelectRequest* (shell_window_sync.h)
+constexpr UINT WM_EXPLORER_TAKEOVER = WM_APP + 69;  // app::ExplorerTakeoverRequest* (shell_window_sync.h)
 constexpr UINT kTimerUi = 1;
 
 enum class OmnibarMode { Path, Mixed, Command, Project };
@@ -519,6 +523,10 @@ struct AppState {
     std::shared_ptr<TrayCompareJob> trayCmpJob; // on-demand byte comparison
     std::shared_ptr<TrayTextProbe> trayTextProbe; // text/binary probe for "view diff"
     std::unique_ptr<ui::TextDiffWindow> textDiff; // stand-alone text compare window
+    // Panes as shell windows for "open file location" (shell_window_sync.h).
+    std::unique_ptr<app::ShellWindowRegistry> shell_windows;
+    std::vector<app::ShellWindowEntry> shell_windows_published;
+    std::unique_ptr<app::ExplorerWindowTakeover> explorer_takeover;   // experimental (B站 #1 2b)
     // One-time teaching bubbles (tips_seen bits in appPrefs).
     int teachTip = -1;                 // visible tip, -1 = none
     int teachCandidate = -1;           // trigger currently holding

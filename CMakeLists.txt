@@ -334,6 +334,7 @@ if(PULSE_APP_SOURCES)
 target_link_options(pulse PRIVATE /MAP)
     target_link_libraries(pulse PRIVATE
         d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 shell32 uuid comctl32 advapi32 shlwapi version windowscodecs gdi32 netapi32 mpr bcrypt pulse_crash_reporter)
+    target_link_libraries(pulse PRIVATE propsys oleaut32)  # shell_window_registry.cpp
     target_link_libraries(pulse PRIVATE winhttp crypt32 secur32)
     target_link_libraries(pulse PRIVATE pulse_localization pulse_text)
     pulse_enable_lumatext(pulse)
@@ -488,6 +489,8 @@ add_executable(pulse_app_controllers_test
     src/app/single_instance_coordinator.cpp
     src/app/tray_controller.cpp
     src/app/app_prefs.cpp
+    src/app/default_file_manager.cpp
+    src/app/shell_window_plan.cpp
     src/app/entry_group.cpp
     src/app/entry_sort.cpp
     src/app/folder_view_prefs.cpp
