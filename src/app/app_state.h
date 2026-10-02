@@ -96,6 +96,7 @@ constexpr UINT WM_CHANGE_TRACKING = WM_APP + 63;
 constexpr UINT WM_FRAME_PUMP = WM_APP + 67;  // app::FramePump: one display frame of motion
 constexpr UINT WM_SHELL_SELECT = WM_APP + 68;  // app::ShellSelectRequest* (shell_window_sync.h)
 constexpr UINT WM_EXPLORER_TAKEOVER = WM_APP + 69;  // app::ExplorerTakeoverRequest* (shell_window_sync.h)
+constexpr UINT WM_SHELL_VERB_SEED = WM_APP + 70;  // ShellVerbSeed* (machine verb cache read off the UI thread)
 constexpr UINT kTimerUi = 1;
 
 enum class OmnibarMode { Path, Mixed, Command, Project };
@@ -741,6 +742,13 @@ struct AppState {
 struct ShellVerbsResult {
     std::wstring ext;
     std::vector<app::StaticVerb> verbs;
+};
+
+// WM_SHELL_VERB_SEED heap payload: the machine-wide verb cache, parsed on the
+// seeding thread. Stale generations are dropped (a registry change re-seeds).
+struct ShellVerbSeed {
+    uint32_t generation = 0;
+    std::unordered_map<std::wstring, std::vector<app::StaticVerb>> machine;
 };
 
 struct ShellCtxItemsPayload {

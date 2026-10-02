@@ -1529,6 +1529,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_SHELL_VERB_SEED: {
+        auto* seed = reinterpret_cast<ShellVerbSeed*>(lParam);
+        if (s && seed) ApplyShellVerbSeed(*s, *seed);
+        delete seed;
+        return 0;
+    }
+
     case WM_SHELL_CACHE_INVALIDATE: {
         if (s) {
             s->context_menu.InvalidateCaches();
