@@ -316,6 +316,15 @@ void DrawConfirmDialog(Compositor& compositor, fluent::Painter& painter, const T
     painter.DrawButton({l.primary, spec.confirm_text, {},
                         spec.danger ? fluent::ButtonKind::Danger : fluent::ButtonKind::Primary,
                         state_for(kConfirmPrimary)});
+    // The shared accent ring vanishes against a filled button; add the Fluent
+    // outer ring in the text colour.
+    if (state_for(kConfirmPrimary).keyboard_focus) {
+        const float gap = Dip(scale, 3.0f);
+        painter.StrokeRoundedRect(D2D1::RectF(l.primary.left - gap, l.primary.top - gap,
+                                              l.primary.right + gap, l.primary.bottom + gap),
+                                  Dip(scale, theme.radius_control) + gap, theme.text,
+                                  Dip(scale, 1.5f));
+    }
 
     // The footer band covers the surface outline; draw it again on top.
     const float inset = 0.5f;

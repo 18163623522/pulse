@@ -55,8 +55,10 @@ std::wstring TypeText(const PickerEntry& entry) {
 std::wstring DriveDetail(const PickerEntry& entry) {
     if (entry.size == 0) return L"";
     wchar_t text[128]{};
+    const auto compact = format::ByteSizeStyle::Compact;
     swprintf_s(text, l10n::Get(l10n::StringId::PickerDriveFreeFormat).c_str(),
-               format::ByteSize(entry.free).c_str(), format::ByteSize(entry.size).c_str());
+               format::ByteSize(entry.free, false, compact).c_str(),
+               format::ByteSize(entry.size, false, compact).c_str());
     return text;
 }
 
@@ -69,23 +71,32 @@ fluent::ControlState StateFor(const FolderPickerVisual& v, int id, bool enabled 
     return state;
 }
 
+// High contrast highlights rows with COLOR_HIGHLIGHT, whose text colour is
+// the window colour in every system contrast theme.
+bool InverseRow(const fluent::ControlState& state, bool high_contrast) {
+    return high_contrast && (state.selected || state.hovered || state.pressed);
+}
+
 void DrawDriveRow(Compositor& compositor, fluent::Painter& painter, const Theme& theme,
                   const PickerEntry& entry, const D2D1_RECT_F& row,
-                  const fluent::ControlState& state, float scale) {
+                  const fluent::ControlState& state, bool high_contrast, float scale) {
+    const bool inverse = InverseRow(state, high_contrast);
+    const D2D1_COLOR_F text = inverse ? theme.bg : theme.text;
+    const D2D1_COLOR_F secondary = inverse ? theme.bg : theme.text_secondary;
     fluent::ListRowSpec background{};
     background.bounds = row;
     background.state = state;
     painter.DrawListRowBackground(background);
     const float left = row.left + Dip(scale, 12.0f);
     const float right = row.right - Dip(scale, 12.0f);
-    const float detail_left = right - Dip(scale, 150.0f);
+    const float detail_left = right - Dip(scale, 176.0f);
     const float bar_left = std::max(left + Dip(scale, 160.0f), detail_left - Dip(scale, 128.0f));
     painter.DrawGlyph(L"\xE7F1", D2D1::RectF(left, row.top, left + Dip(scale, 20.0f),
                                            row.bottom),
-                      theme.text_secondary);
+                      secondary);
     painter.DrawText(entry.name, D2D1::RectF(left + Dip(scale, 28.0f), row.top,
                                              bar_left - Dip(scale, 8.0f), row.bottom),
-                     compositor.TextFormat(), theme.text);
+                     compositor.TextFormat(), text);
     if (entry.size == 0) return;
     const float used = 1.0f - static_cast<float>(static_cast<double>(entry.free) /
                                                  static_cast<double>(entry.size));
@@ -98,7 +109,7 @@ void DrawDriveRow(Compositor& compositor, fluent::Painter& painter, const Theme&
     fill.right = track.left + (track.right - track.left) * std::clamp(used, 0.0f, 1.0f);
     painter.FillRoundedRect(fill, bar_h * 0.5f, used > 0.9f ? theme.danger : theme.accent);
     painter.DrawText(DriveDetail(entry), D2D1::RectF(detail_left, row.top, right, row.bottom),
-                     compositor.SmallFormat(), theme.text_secondary,
+                     compositor.SmallFormat(), secondary,
                      fluent::HorizontalAlignment::Right);
 }
 
@@ -111,28 +122,31 @@ void DrawEntryRow(Compositor& compositor, fluent::Painter& painter, const Theme&
     background.state = state;
     painter.DrawListRowBackground(background);
     const Columns c = ColumnsFor(row, scale, with_size);
+    const bool inverse = InverseRow(state, high_contrast);
+    const D2D1_COLOR_F text = inverse ? theme.bg : theme.text;
+    const D2D1_COLOR_F secondary = inverse ? theme.bg : theme.text_secondary;
     const bool folder = entry.kind == PickerEntryKind::Folder;
     painter.DrawGlyph(folder ? L"\xE8B7" : L"\xEB9F",
                       D2D1::RectF(c.left, row.top, c.left + Dip(scale, 20.0f), row.bottom),
-                      high_contrast ? theme.text : folder ? theme.icon_folder : theme.icon_file);
+                      high_contrast ? text : folder ? theme.icon_folder : theme.icon_file);
     painter.DrawText(entry.name, D2D1::RectF(c.left + Dip(scale, 28.0f), row.top,
                                              c.name_right - Dip(scale, 8.0f), row.bottom),
-                     compositor.TextFormat(), theme.text);
+                     compositor.TextFormat(), text);
     painter.DrawText(format::LocalFileTime(entry.modified),
                      D2D1::RectF(c.name_right + Dip(scale, 8.0f), row.top,
                                  c.modified_right - Dip(scale, 4.0f), row.bottom),
-                     compositor.SmallFormat(), theme.text_secondary);
+                     compositor.SmallFormat(), secondary);
     if (c.type_right > c.modified_right) {
         painter.DrawText(TypeText(entry), D2D1::RectF(c.modified_right + Dip(scale, 8.0f),
                                                       row.top, c.type_right - Dip(scale, 4.0f),
                                                       row.bottom),
-                         compositor.SmallFormat(), theme.text_secondary);
+                         compositor.SmallFormat(), secondary);
     }
     if (with_size && entry.kind == PickerEntryKind::Image) {
         painter.DrawText(format::ByteSize(entry.size),
                          D2D1::RectF(c.type_right + Dip(scale, 8.0f), row.top, c.right,
                                      row.bottom),
-                         compositor.SmallFormat(), theme.text_secondary,
+                         compositor.SmallFormat(), secondary,
                          fluent::HorizontalAlignment::Right);
     }
 }
@@ -379,7 +393,7 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
             state.selected = i == v.selected;
             state.keyboard_focus = false;
             if (entry.kind == PickerEntryKind::Drive) {
-                DrawDriveRow(compositor, painter, theme, entry, row, state, scale);
+                DrawDriveRow(compositor, painter, theme, entry, row, state, high_contrast, scale);
             } else {
                 DrawEntryRow(compositor, painter, theme, entry, row, state,
                              v.mode == PickerMode::Image, high_contrast, scale);
@@ -417,6 +431,19 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
                         StateFor(v, kPickCancel)});
     painter.DrawButton({l.primary, v.primary_text, {}, fluent::ButtonKind::Primary,
                         StateFor(v, kPickPrimary, !v.chosen.empty())});
+    // The shared accent ring vanishes against a filled button; add the Fluent
+    // outer ring in the text colour.
+    if (StateFor(v, kPickPrimary, !v.chosen.empty()).keyboard_focus) {
+        const float gap = Dip(scale, 3.0f);
+        painter.StrokeRoundedRect(D2D1::RectF(l.primary.left - gap, l.primary.top - gap,
+                                              l.primary.right + gap, l.primary.bottom + gap),
+                                  radius + gap, theme.text, Dip(scale, 1.5f));
+    }
+
+    // The footer band covers the surface outline; draw it again on top.
+    const float inset = 0.5f;
+    painter.StrokeRoundedRect(D2D1::RectF(inset, inset, l.width - inset, l.height - inset),
+                              Dip(scale, 12.0f), theme.stroke_card);
 
 }
 
