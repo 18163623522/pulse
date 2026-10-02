@@ -24,7 +24,8 @@ try {
 } finally {
     Remove-Item -LiteralPath $keyPath -ErrorAction SilentlyContinue
 }
-# A portable archive may be staged locally or uploaded to the draft before tagging.
+# CI packages the portable archive with the normal channel; a ZIP uploaded to the
+# release draft before tagging is still accepted as a fallback.
 if (-not (Test-Path -LiteralPath "dist/$portable")) {
     & gh release download $tag --repo $repository --pattern $portable --dir dist
     if ($LASTEXITCODE -ne 0) { throw 'Upload the portable ZIP to the release draft before publishing' }
