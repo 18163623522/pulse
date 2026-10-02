@@ -51,7 +51,8 @@ struct AppPrefs {
     bool show_hidden_files = false;
     // Hidden + system attributes; File Explorer keeps these behind a separate option.
     bool show_protected_os_files = false;
-    bool blank_click_go_back = false;
+    // Double click on empty list space: 0 nothing, 1 back, 2 up (blank_pane_click.h).
+    int blank_click_action = 0;
     bool change_tracking_enabled = false;
     int change_tracking_days = 7;
     // system / zh-CN / en-US

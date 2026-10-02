@@ -139,6 +139,7 @@ public:
     void DetailsColumns(uint32_t mask);
     void StartupOpen(int index);
     void NewTabOpen(int index);
+    void BlankClick(int index);   // 0 nothing, 1 back, 2 up
     // 0 picks the default location's folder, 1 resets it to This PC.
     void HomeFolder(int action);
     void TextRendering(int index);

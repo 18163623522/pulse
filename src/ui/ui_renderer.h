@@ -666,7 +666,7 @@ struct WindowViewModel {
     bool settings_open_folders = false;
     bool settings_win_e = false;
     bool settings_shell_tags = false;
-    bool settings_blank_click_go_back = false;
+    int settings_blank_click_action = 0;   // app/blank_pane_click.h
     bool settings_change_tracking = false;
     int settings_change_days = 3;
     int settings_row_height = 34; // current row-height pref (DIPs) for density radios
@@ -825,6 +825,7 @@ struct HitTestResult {
         SettingsFolderSort,
         SettingsStartupOpen,
         SettingsNewTabOpen,
+        SettingsBlankClick,
         SettingsHomeFolder,
         SettingsTextRender,
         SettingsTrayIcon,

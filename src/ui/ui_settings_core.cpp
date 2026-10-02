@@ -359,7 +359,10 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             draw_card(lay.hints_reset_row);label(lay.hints_reset_row,l10n::Get(I::SettingsHintsReset),
                 l10n::Get(vm.settings_tips_seen ? I::SettingsHintsResetDesc : I::HintsResetDone),L"\xE72C",lay.hints_reset_button.left-8*scale_);
             button(lay.hints_reset_button,l10n::Get(I::HintsResetButton),H::SettingsToggle,25,false,vm.settings_tips_seen);
-            draw_card(lay.blank_click_row);toggle(lay.blank_click_row,I::SettingsBlankClickBack,I::SettingsBlankClickBackDesc,L"\xE72B",vm.settings_blank_click_go_back,7);
+            {
+                const I blank_click[]={I::SettingsBlankClickOff,I::Back,I::Up};const int blank_click_values[]={0,1,2};
+                draw_card(lay.blank_click_row);segmented(lay.blank_click_row,lay.blank_click_choice,blank_click,blank_click_values,vm.settings_blank_click_action,H::SettingsBlankClick,I::SettingsBlankClickBack,I::SettingsBlankClickBackDesc,3,L"\xE72B");
+            }
             draw_card(lay.change_tracking_row);toggle(lay.change_tracking_row,I::SettingsChangeTracking,I::SettingsChangeTrackingDesc,L"\xE823",vm.settings_change_tracking,8);
             const I days[]={I::ChangeToday,I::ChangeLast3Days,I::ChangeLast7Days};const int day_values[]={1,3,7};
             draw_card(lay.change_days_row);segmented(lay.change_days_row,lay.change_days,days,day_values,vm.settings_change_days,H::SettingsChangeDays,I::SettingsChangeDays,I::SettingsChangeTrackingDesc);

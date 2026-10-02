@@ -2225,12 +2225,14 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsFolderSort ||
                    hit.region == ui::HitTestResult::SettingsStartupOpen ||
                    hit.region == ui::HitTestResult::SettingsNewTabOpen ||
+                   hit.region == ui::HitTestResult::SettingsBlankClick ||
                    hit.region == ui::HitTestResult::SettingsHomeFolder) {
             // One branch on purpose: this else-if chain sits at MSVC's block
             // nesting limit (C1061), so new settings must not lengthen it.
             switch (hit.region) {
             case ui::HitTestResult::SettingsStartupOpen: s->settings.StartupOpen(hit.index); break;
             case ui::HitTestResult::SettingsNewTabOpen: s->settings.NewTabOpen(hit.index); break;
+            case ui::HitTestResult::SettingsBlankClick: s->settings.BlankClick(hit.index); break;
             case ui::HitTestResult::SettingsHomeFolder: s->settings.HomeFolder(hit.index); break;
             default: s->settings.FolderSort(hit.index); break;
             }
@@ -2786,7 +2788,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             s->marqueeActive = false;
             s->marqueeAdditive = ctrl;
             s->blankClickPane = s->pane;
-            s->blankClickTab = s->appPrefs.blank_click_go_back && tab &&
+            s->blankClickTab = s->appPrefs.blank_click_action != app::kBlankClickOff && tab &&
                 !IsAddressSearchResults(tab) && !ctrl && PointInList(*s, mx, my) &&
                 (GetKeyState(VK_SHIFT) & 0x8000) == 0 &&
                 (GetKeyState(VK_MENU) & 0x8000) == 0 ? tab : nullptr;
@@ -3170,7 +3172,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 click.drag_width = GetSystemMetrics(SM_CXDRAG);
                 click.drag_height = GetSystemMetrics(SM_CYDRAG);
                 click.blank_list_hit = PointInList(*s, mx, my);
-                bool goBack = s->appPrefs.blank_click_go_back &&
+                bool goBack = s->appPrefs.blank_click_action != app::kBlankClickOff &&
                     !IsAddressSearchResults(tab) && app::IsBlankPaneBackClick(click);
                 if (goBack) {
                     const ui::WindowViewModel vm = BuildVm(*s, false);
@@ -3194,7 +3196,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 if (s->marqueeActive) ApplyMarqueeSelection(*s);
                 ResetMarquee(*s);
                 if (goBack) {
-                    if (tab->CanGoBack()) {
+                    if (app::BlankClickGoesBack(s->appPrefs.blank_click_action, tab->CanGoBack())) {
                         GoBack(*s);
                     } else if (!fs::IsVirtualPath(tab->current_path)) {
                         const std::wstring current = fs::NormalizePath(tab->current_path);

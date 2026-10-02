@@ -34,6 +34,7 @@
 #include "app_prefs.h"
 #include "startup_location.h"
 #include "tray_reveal.h"
+#include "blank_pane_click.h"
 #include "details_column_menu.h"
 #include "entry_group.h"
 #include "context_menu.h"
@@ -974,7 +975,7 @@ void TestBlankPaneClickNavigation() {
         auto press = [&] { SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, point); };
         auto release = [&] { SendMessageW(hwnd, WM_LBUTTONUP, 0, point); };
         const std::wstring initial_folder = tab->current_path;
-        Check(!state->appPrefs.blank_click_go_back, L"blank pane: back on empty click defaults off");
+        Check(state->appPrefs.blank_click_action == kBlankClickOff, L"blank pane: back on empty click defaults off");
         press();
         Check(state->marqueePending && !state->blankClickTab,
               L"blank pane: disabled back still permits marquee selection");
@@ -983,7 +984,7 @@ void TestBlankPaneClickNavigation() {
         release();
         Check(tab->current_path == initial_folder,
               L"blank pane: disabled single and double click preserve location");
-        state->appPrefs.blank_click_go_back = true;
+        state->appPrefs.blank_click_action = kBlankClickBack;
         tab->selected.insert(0);
         tab->back_stack = {};
         tab->back_stack.push(L"C:\\PulseBlankClickSelection");
@@ -1000,11 +1001,11 @@ void TestBlankPaneClickNavigation() {
         tab->current_path = initial_folder;
         tab->back_stack = {};
         press();
-        state->appPrefs.blank_click_go_back = false;
+        state->appPrefs.blank_click_action = kBlankClickOff;
         release();
         Check(tab->current_path == initial_folder,
               L"blank pane: disabling during a press prevents pending navigation");
-        state->appPrefs.blank_click_go_back = true;
+        state->appPrefs.blank_click_action = kBlankClickBack;
         press();
         Check(state->marqueePending && state->blankClickTab == tab && GetCapture() == hwnd,
               L"blank pane: real blank hit arms click and captures mouse");
@@ -1026,6 +1027,23 @@ void TestBlankPaneClickNavigation() {
         release();
         Check(tab->current_path == fs::NormalizePath(L"C:\\PulseBlankClickHistory"),
               L"blank pane: available history takes precedence over parent");
+        {
+            // Up (B站 #11): the parent folder even when there is history.
+            const std::wstring up_from = tab->current_path;
+            const auto saved_back = tab->back_stack;
+            tab->back_stack.push(L"C:\\PulseBlankClickUpHistory");
+            state->appPrefs.blank_click_action = kBlankClickUp;
+            press();
+            Check(state->blankClickTab == tab, L"blank pane: up mode arms the blank click");
+            release();
+            SendMessageW(hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, point);
+            release();
+            Check(tab->current_path == fs::NormalizePath(fs::ParentPath(fs::NormalizePath(up_from))),
+                  L"blank pane: up mode goes to the parent folder even with back history");
+            state->appPrefs.blank_click_action = kBlankClickBack;
+            tab->current_path = up_from;
+            tab->back_stack = saved_back;
+        }
         const std::wstring folder = tab->current_path;
         tab->current_path = L"pulse:search:showbox";
         tab->back_stack.push(folder);

@@ -397,21 +397,50 @@ int wmain(int argc, wchar_t** argv) {
         prefs.show_pinned_tab_names && parsed_prefs.FromJson(prefs.ToJson()) &&
         parsed_prefs.show_pinned_tab_names);
     settings_ui.Wallpaper(0);
-    passed &= Report("blank click navigation defaults off", !prefs.blank_click_go_back);
-    settings_ui.ToggleUi(7);
-    passed &= Report("blank click navigation enables and persists",
-        prefs.blank_click_go_back && parsed_prefs.FromJson(prefs.ToJson()) &&
-        parsed_prefs.blank_click_go_back);
-    settings_ui.ToggleUi(7);
-    passed &= Report("blank click navigation disables and persists",
-        !prefs.blank_click_go_back && parsed_prefs.FromJson(prefs.ToJson()) &&
-        !parsed_prefs.blank_click_go_back);
-    parsed_prefs.blank_click_go_back = true;
-    passed &= Report("legacy preferences leave blank click navigation off",
-        parsed_prefs.FromJson(L"{}") && !parsed_prefs.blank_click_go_back);
-    parsed_prefs.blank_click_go_back = true;
-    parsed_prefs.ResetToDefaults();
-    passed &= Report("reset disables blank click navigation", !parsed_prefs.blank_click_go_back);
+    {
+        using pulse::app::kBlankClickOff;
+        using pulse::app::kBlankClickBack;
+        using pulse::app::kBlankClickUp;
+        passed &= Report("blank click navigation defaults off", prefs.blank_click_action == kBlankClickOff);
+        settings_ui.BlankClick(1);
+        passed &= Report("blank click navigation goes back and persists",
+            prefs.blank_click_action == kBlankClickBack && parsed_prefs.FromJson(prefs.ToJson()) &&
+            parsed_prefs.blank_click_action == kBlankClickBack);
+        settings_ui.BlankClick(2);
+        passed &= Report("blank click navigation goes up and persists",
+            prefs.blank_click_action == kBlankClickUp && parsed_prefs.FromJson(prefs.ToJson()) &&
+            parsed_prefs.blank_click_action == kBlankClickUp &&
+            prefs.ToJson().find(L"\"blank_click_go_back\":true") != std::wstring::npos);
+        settings_ui.BlankClick(7);
+        passed &= Report("blank click navigation ignores an out-of-range choice",
+            prefs.blank_click_action == kBlankClickUp);
+        settings_ui.BlankClick(0);
+        passed &= Report("blank click navigation disables and persists",
+            prefs.blank_click_action == kBlankClickOff && parsed_prefs.FromJson(prefs.ToJson()) &&
+            parsed_prefs.blank_click_action == kBlankClickOff &&
+            prefs.ToJson().find(L"\"blank_click_go_back\":false") != std::wstring::npos);
+        parsed_prefs.blank_click_action = kBlankClickUp;
+        passed &= Report("legacy preferences leave blank click navigation off",
+            parsed_prefs.FromJson(L"{}") && parsed_prefs.blank_click_action == kBlankClickOff);
+        passed &= Report("legacy on/off flag migrates to back",
+            parsed_prefs.FromJson(L"{\"blank_click_go_back\":true}") &&
+            parsed_prefs.blank_click_action == kBlankClickBack);
+        passed &= Report("blank click action wins over the legacy flag and is clamped",
+            parsed_prefs.FromJson(L"{\"blank_click_action\":2,\"blank_click_go_back\":true}") &&
+            parsed_prefs.blank_click_action == kBlankClickUp &&
+            parsed_prefs.FromJson(L"{\"blank_click_action\":9}") && parsed_prefs.blank_click_action == kBlankClickOff);
+        parsed_prefs.blank_click_action = kBlankClickUp;
+        parsed_prefs.ResetToDefaults();
+        passed &= Report("reset disables blank click navigation", parsed_prefs.blank_click_action == kBlankClickOff);
+        passed &= Report("blank click: back uses history, up and missing history go to the parent",
+            pulse::app::BlankClickGoesBack(kBlankClickBack, true) &&
+            !pulse::app::BlankClickGoesBack(kBlankClickBack, false) &&
+            !pulse::app::BlankClickGoesBack(kBlankClickUp, true) &&
+            !pulse::app::BlankClickGoesBack(kBlankClickOff, true));
+        passed &= Report("blank click setting has localized choices",
+            pulse::l10n::Get(pulse::l10n::StringId::SettingsBlankClickOff) == L"\u4E0D\u64CD\u4F5C" &&
+            !pulse::l10n::Get(pulse::l10n::StringId::SettingsBlankClickBack).empty());
+    }
     passed &= Report("closing the last tab setting has localized text",
         pulse::l10n::Get(pulse::l10n::StringId::SettingsCloseLastTab) ==
             L"\u5173\u95ED\u6700\u540E\u4E00\u4E2A\u6807\u7B7E\u9875\u65F6\u5173\u95ED\u7A97\u53E3" &&

@@ -228,6 +228,7 @@ enum class StringId : UINT {
     PreviewGrabHint = IDS_PREVIEW_GRAB_HINT,
     SettingsBlankClickBack = IDS_SETTINGS_BLANK_CLICK_BACK,
     SettingsBlankClickBackDesc = IDS_SETTINGS_BLANK_CLICK_BACK_DESC,
+    SettingsBlankClickOff = IDS_SETTINGS_BLANK_CLICK_OFF,
     Settings = IDS_SETTINGS,
     SettingsGeneral = IDS_SETTINGS_GENERAL,
     SettingsSearchIndex = IDS_SETTINGS_SEARCH_INDEX,
