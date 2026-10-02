@@ -2672,8 +2672,10 @@ bool OpsManager::WaitShellDone(uint32_t id, uint32_t& hr, bool& cancelled, std::
     }
     hr = done_hr_;
     cancelled = done_cancelled_;
-    // Shell host errors are Simplified text or a system message.
-    error = l10n::ServiceText(done_error_);
+    // Shell host errors (Simplified text or a system message, often with the
+    // failed item appended) stay as reported: error matching needs the raw text
+    // and the UI localizes known messages with ServiceErrorText at display time.
+    error = done_error_;
     done_error_.clear();
     done_ready_ = false;
     current_req_id_.store(0);

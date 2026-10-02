@@ -435,9 +435,9 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
             } else if (ErrorIs(err, L"名称无效", L"Invalid name")) {
                 message = l10n::Get(l10n::StringId::InvalidName);
             } else if (!err.empty()) {
-                // pulse_shell reports Simplified text; translate the known messages
-                // only, so paths inside unknown ones are shown as reported.
-                message = l10n::IsKnownServiceText(err) ? l10n::ServiceText(err) : err;
+                // pulse_shell reports Simplified text; known messages are localized,
+                // file names and unknown messages are shown as reported.
+                message = l10n::ServiceErrorText(err);
             } else {
                 message = l10n::Get(l10n::StringId::OperationFailedMessage);
             }

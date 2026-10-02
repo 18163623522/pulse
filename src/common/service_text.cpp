@@ -314,4 +314,14 @@ bool IsKnownServiceText(std::wstring_view text) {
     }
 }
 
+std::wstring ServiceErrorText(std::wstring_view text) {
+    // "message | item path": only a known message is localized; the item part and
+    // unknown messages (which may embed file names) are shown as reported.
+    const size_t bar = text.find(L" | ");
+    const std::wstring_view message = text.substr(0, bar);
+    std::wstring out = IsKnownServiceText(message) ? ServiceText(message) : std::wstring(message);
+    if (bar != std::wstring_view::npos) out += text.substr(bar);
+    return out;
+}
+
 } // namespace pulse::l10n

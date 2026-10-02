@@ -1313,5 +1313,8 @@ std::wstring ToTraditional(std::wstring_view chinese);
 std::wstring ServiceText(std::wstring_view text);
 // True when every Chinese segment of `text` has a translation (for tests).
 bool IsKnownServiceText(std::wstring_view text);
+// Operation errors ("message | item path"): localizes a known message only and
+// never converts the item part, so real file names stay as they are on disk.
+std::wstring ServiceErrorText(std::wstring_view text);
 
 } // namespace pulse::l10n

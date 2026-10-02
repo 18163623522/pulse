@@ -197,6 +197,14 @@ int main() {
         passed &= Report("zh-TW service status keeps counts",
             indexed.find(L"1,234") != std::wstring::npos && indexed.find(L"項") != std::wstring::npos);
     }
+    passed &= Report("zh-TW operation errors keep real file names",
+        ServiceErrorText(L"拒绝访问。 | D:\\软件说明.txt") == L"拒绝访问。 | D:\\软件说明.txt" &&
+        ServiceErrorText(L"目标文件夹不存在 | D:\\软件说明.txt").find(L" | D:\\软件说明.txt") != std::wstring::npos &&
+        ServiceErrorText(L"目标文件夹不存在 | D:\\软件说明.txt") != L"目标文件夹不存在 | D:\\软件说明.txt");
+    SetLanguage(L"en-US");
+    passed &= Report("en-US operation error localizes the message only",
+        ServiceErrorText(L"没有权限在此位置新建") != L"没有权限在此位置新建" &&
+        ServiceErrorText(L"软件说明.txt 无法处理 | D:\\软件说明.txt") == L"软件说明.txt 无法处理 | D:\\软件说明.txt");
     SetLanguage(L"zh-CN");
     passed &= Report("zh-CN service text is unchanged",
         ServiceText(L"已索引 1,234 项 · 实时更新") == L"已索引 1,234 项 · 实时更新");
