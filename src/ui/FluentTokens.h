@@ -245,6 +245,23 @@ inline bool IsHighContrast() noexcept {
     return false;
 }
 
+// Text-box colors: the system window colors in high contrast (like the rest of
+// the high-contrast theme), otherwise the light/dark pair.
+inline COLORREF EditTextColor(bool dark) noexcept {
+    if (IsHighContrast()) return GetSysColor(COLOR_WINDOWTEXT);
+    return dark ? RGB(255, 255, 255) : RGB(26, 26, 26);
+}
+
+inline COLORREF EditBackColor(bool dark) noexcept {
+    if (IsHighContrast()) return GetSysColor(COLOR_WINDOW);
+    return dark ? RGB(30, 30, 30) : RGB(255, 255, 255);
+}
+
+inline D2D1_COLOR_F ColorFromRef(COLORREF color) noexcept {
+    return D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
+                        GetBValue(color) / 255.0f);
+}
+
 inline void UpdateWindowTheme(HWND hwnd, bool dark) noexcept {
     BOOL darkValue = dark ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkValue, sizeof(darkValue));

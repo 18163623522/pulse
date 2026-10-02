@@ -196,10 +196,15 @@ private:
     // ---- navigation -------------------------------------------------------
 
     // By value: callers pass entry paths that the reset below destroys.
-    void Navigate(std::wstring path, bool push_history, std::wstring select_after = {}) {
+    // `verified`: the folder is known to exist (it was just listed as a row, or
+    // is the parent of a folder that listed), so it may be picked while it
+    // loads. Typed, remembered and history paths wait for their listing.
+    void Navigate(std::wstring path, bool push_history, std::wstring select_after = {},
+                  bool verified = false) {
         if (push_history && !SamePickerPath(path, visual_.current))
             history_.Navigate(visual_.current);
         visual_.current = path;
+        current_verified_ = verified;
         visual_.entries.clear();
         visual_.selected = -1;
         visual_.scroll = 0.0f;
@@ -222,7 +227,7 @@ private:
     void GoUp() {
         if (visual_.current.empty()) return;
         const std::wstring child = visual_.current;
-        Navigate(PickerParent(child), true, child);
+        Navigate(PickerParent(child), true, child, current_verified_);
     }
 
     void GoBack() {
@@ -242,6 +247,7 @@ private:
         KillTimer(hwnd_, kLoadTimer);
         visual_.waiting = false;
         visual_.loading = false;
+        current_verified_ = listing->error == ERROR_SUCCESS;
         if (listing->error != ERROR_SUCCESS) {
             if (initial_load_ && !fallback_.empty() &&
                 !SamePickerPath(listing->path, fallback_)) {
@@ -279,8 +285,10 @@ private:
         visual_.chosen = visual_.error.empty() && !visual_.waiting
             ? PickerChosenPath(visual_.mode, visual_.current, SelectedEntry())
             : std::wstring();
-        // While a folder loads, folder mode can still pick the folder itself.
-        if (visual_.chosen.empty() && visual_.waiting && visual_.mode == PickerMode::Folder)
+        // While a verified folder loads, folder mode can still pick the folder
+        // itself; an unverified path is not choosable until its listing succeeds.
+        if (visual_.chosen.empty() && visual_.waiting && current_verified_ &&
+            visual_.mode == PickerMode::Folder)
             visual_.chosen = visual_.current;
     }
 
@@ -302,7 +310,7 @@ private:
             Finish(entry.path);
             return;
         }
-        Navigate(entry.path, true);
+        Navigate(entry.path, true, {}, true);
     }
 
     void Finish(const std::wstring& path) {
@@ -342,14 +350,18 @@ private:
 
     // ---- path field --------------------------------------------------------
 
-    D2D1_COLOR_F EditForeground() const {
-        return dark_ ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                     : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-    }
+    D2D1_COLOR_F EditForeground() const { return ColorFromRef(EditTextColor(dark_)); }
+    D2D1_COLOR_F EditBackground() const { return ColorFromRef(EditBackColor(dark_)); }
 
-    D2D1_COLOR_F EditBackground() const {
-        return dark_ ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                     : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+    // The native edit's brush follows high contrast being switched while open.
+    HBRUSH EditBrush() {
+        const COLORREF color = EditBackColor(dark_);
+        if (!edit_brush_ || color != edit_brush_color_) {
+            if (edit_brush_) DeleteObject(edit_brush_);
+            edit_brush_ = CreateSolidBrush(color);
+            edit_brush_color_ = color;
+        }
+        return edit_brush_;
     }
 
     void CreateFonts() {
@@ -484,7 +496,7 @@ private:
         LRESULT result = 0;
         if (!HandleChildEditMessage(self->compositor_, self->compositor_.TextFormat(),
                                     self->EditForeground(), self->EditBackground(),
-                                    self->edit_brush_, hwnd, msg, wparam, lparam, result)) {
+                                    self->EditBrush(), hwnd, msg, wparam, lparam, result)) {
             result = DefPresentedChildEditProc(self->compositor_, self->compositor_.TextFormat(),
                                                self->EditForeground(), self->EditBackground(),
                                                hwnd, msg, wparam, lparam);
@@ -630,7 +642,7 @@ private:
             painter_.SetCompositor(&compositor_);
             painter_.SetScale(scale_);
             CreateFonts();
-            edit_brush_ = CreateSolidBrush(dark_ ? RGB(30, 30, 30) : RGB(255, 255, 255));
+            EditBrush();
             CreateEdit();
             Relayout();
             return 0;
@@ -670,9 +682,9 @@ private:
         }
         case WM_CTLCOLOREDIT: {
             const HDC hdc = reinterpret_cast<HDC>(wparam);
-            SetTextColor(hdc, dark_ ? RGB(255, 255, 255) : RGB(26, 26, 26));
-            SetBkColor(hdc, dark_ ? RGB(30, 30, 30) : RGB(255, 255, 255));
-            return reinterpret_cast<LRESULT>(edit_brush_);
+            SetTextColor(hdc, EditTextColor(dark_));
+            SetBkColor(hdc, EditBackColor(dark_));
+            return reinterpret_cast<LRESULT>(EditBrush());
         }
         case WM_TIMER:
             if (wparam == kLoadTimer) {
@@ -813,6 +825,7 @@ private:
     HWND edit_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH edit_brush_ = nullptr;
+    COLORREF edit_brush_color_ = 0;
     Compositor compositor_;
     fluent::Painter painter_{&compositor_};
     FolderPickerLayout layout_;
@@ -832,6 +845,7 @@ private:
     bool backdrop_enabled_ = false;
     bool done_ = false;
     bool initial_load_ = false;
+    bool current_verified_ = false;
     bool dragging_scrollbar_ = false;
 };
 
