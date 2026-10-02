@@ -317,7 +317,11 @@ void ContextMenuController::MergeStaticCache(
 }
 
 bool ContextMenuController::CompleteStaticVerbs(const std::wstring& extension,
-                                                std::vector<StaticVerb> verbs) {
+                                                std::vector<StaticVerb> verbs,
+                                                uint32_t generation) {
+    // Read before the registry changed: it must neither fill the fresh cache
+    // nor clear a newer request for the same extension.
+    if (generation != cache_generation_) return false;
     static_pending_.erase(extension);
     static_seeded_.erase(extension);
     static_cache_[extension] = std::move(verbs);
@@ -327,6 +331,7 @@ bool ContextMenuController::CompleteStaticVerbs(const std::wstring& extension,
 }
 
 void ContextMenuController::InvalidateCaches() {
+    ++cache_generation_;
     static_cache_.clear();
     static_seeded_.clear();
     com_cache_.clear();
