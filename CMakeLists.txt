@@ -271,6 +271,46 @@ target_link_libraries(pulse_fluent_gallery PRIVATE
     pulse_localization)
 pulse_enable_lumatext(pulse_fluent_gallery)
 
+# Pulse's own dialogs (confirm, folder / picture picker): offscreen PNGs in
+# light / dark / high contrast at 100% and 150%, plus --live real windows.
+add_executable(pulse_dialog_gallery WIN32
+    src/bench/dialog_gallery.cpp
+    src/bench/localization_test.rc
+    src/ui/confirm_dialog.cpp
+    src/ui/confirm_dialog_view.cpp
+    src/ui/dialog_lifecycle.cpp
+    src/ui/edit_host.cpp
+    src/ui/fluent_components.cpp
+    src/ui/folder_picker_dialog.cpp
+    src/ui/folder_picker_loader.cpp
+    src/ui/folder_picker_model.cpp
+    src/ui/folder_picker_view.cpp
+    src/ui/tab_shape.cpp
+    src/ui/typography.cpp
+    src/ui/ui_compositor.cpp
+    src/ui/window_helpers.cpp)
+target_link_libraries(pulse_dialog_gallery PRIVATE
+    d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme shell32
+    pulse_localization)
+pulse_enable_lumatext(pulse_dialog_gallery)
+
+add_executable(pulse_dialogs_test
+    src/bench/dialogs_test.cpp
+    src/bench/localization_test.rc
+    src/ui/confirm_dialog_view.cpp
+    src/ui/fluent_components.cpp
+    src/ui/folder_picker_loader.cpp
+    src/ui/folder_picker_model.cpp
+    src/ui/tab_shape.cpp
+    src/ui/typography.cpp
+    src/ui/ui_compositor.cpp
+    src/ui/window_helpers.cpp
+    src/ui/dialog_lifecycle.cpp)
+target_link_libraries(pulse_dialogs_test PRIVATE
+    d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme
+    pulse_localization)
+pulse_enable_lumatext(pulse_dialogs_test)
+
 # ---- Focused visual regression: offscreen commands and theme tokens ----
 add_executable(pulse_command_icon_test src/bench/command_icon_test.cpp)
 target_link_libraries(pulse_command_icon_test PRIVATE d2d1 dwrite dwmapi ole32 windowscodecs user32)

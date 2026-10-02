@@ -1,5 +1,6 @@
 #include "../common/windows_compat.h"
 #include "quick_access.h"
+#include "app_prompts.h"
 #include "vertical_tabs.h"
 #include "filter_animation.h"
 #include "sidebar_resize.h"
@@ -482,12 +483,12 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         s->duplicateSearch.Start(hwnd, WM_DUPLICATE_SCAN, false);
         s->settings.SetServiceInstalled(s->index.ServiceInstalled());
         app::SettingsController::UiCallbacks settings_callbacks;
-        settings_callbacks.pick_image = [hwnd](std::wstring& path) {
-            return PickImageFile(hwnd, path);
+        settings_callbacks.pick_image = [s](std::wstring& path) {
+            return PickImageFile(*s, path);
         };
-        settings_callbacks.pick_folder = [hwnd](std::wstring& path, std::wstring_view title) {
+        settings_callbacks.pick_folder = [s](std::wstring& path, std::wstring_view title) {
             const std::wstring owned_title(title);
-            return PickFolder(hwnd, path, owned_title.c_str());
+            return PickFolder(*s, path, owned_title.c_str());
         };
         settings_callbacks.apply_effects = [s](app::SettingsEffect effects) {
             ApplySettingsEffects(*s, effects);
@@ -502,30 +503,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             CreateDirectoryW(path.c_str(), nullptr);
             ShellExecuteW(hwnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         };
-        settings_callbacks.clear_diagnostics = [hwnd](std::wstring& error) {
-            if (MessageBoxW(hwnd,
-                    l10n::Get(l10n::StringId::DiagnosticsClearConfirm).c_str(),
-                    l10n::Get(l10n::StringId::Diagnostics).c_str(),
-                    MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK)
-                return true;
+        settings_callbacks.clear_diagnostics = [s](std::wstring& error) {
+            if (!ConfirmClearDiagnostics(*s)) return true;
             if (diagnostics::ClearCrashReports(app::GetPulseDataDir(), &error)) return true;
             error = l10n::Get(l10n::StringId::DiagnosticsClearFailed);
             return false;
         };
         settings_callbacks.prepare_diagnostics_export =
-            [hwnd](std::wstring& destination, bool& include_service) {
-            if (MessageBoxW(hwnd,
-                    l10n::Get(l10n::StringId::DiagnosticsPrivacyMessage).c_str(),
-                    l10n::Get(l10n::StringId::DiagnosticsPrivacyTitle).c_str(),
-                    MB_ICONWARNING | MB_OKCANCEL | MB_DEFBUTTON2) != IDOK)
-                return false;
-            const int service = MessageBoxW(hwnd,
-                l10n::Get(l10n::StringId::DiagnosticsIncludeService).c_str(),
-                l10n::Get(l10n::StringId::DiagnosticsPrivacyTitle).c_str(),
-                MB_ICONQUESTION | MB_YESNOCANCEL | MB_DEFBUTTON2);
-            if (service == IDCANCEL) return false;
-            include_service = service == IDYES;
-            return PickFolder(hwnd, destination,
+            [s](std::wstring& destination, bool& include_service) {
+            if (!ConfirmDiagnosticsExport(*s, include_service)) return false;
+            return PickFolder(*s, destination,
                 l10n::Get(l10n::StringId::DiagnosticsExportLocation).c_str());
         };
         settings_callbacks.export_diagnostics =
@@ -582,14 +569,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         const ops::RecoverySnapshot recovery = s->isolatedTest
             ? ops::RecoverySnapshot{} : s->ops.PendingRecovery();
         if (!recovery.entries.empty()) {
-            wchar_t recovery_message[512]{};
-            swprintf_s(recovery_message, l10n::Get(l10n::StringId::RecoveryPromptFormat).c_str(),
-                recovery.entries.size());
-            std::wstring prompt = recovery_message;
-            if (recovery.has_uncertain_destructive)
-                prompt += l10n::Get(l10n::StringId::RecoveryDestructiveWarning);
-            if (MessageBoxW(hwnd, prompt.c_str(), l10n::Get(l10n::StringId::RecoveryTitle).c_str(),
-                            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES)
+            if (AskRetryRecovery(*s, recovery.entries.size(), recovery.has_uncertain_destructive))
                 s->ops.RetryRecovery();
             else
                 s->ops.DiscardRecovery();

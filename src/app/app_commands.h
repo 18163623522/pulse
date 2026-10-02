@@ -88,8 +88,9 @@ void ShowSidebarSectionMenu(AppState& s, int section, POINT screen_pt);
 void ToggleSidebarSection(AppState& s, int group);
 void SetEverySidebarSectionCollapsed(AppState& s, bool collapsed);
 void ApplyAppWindowChrome(AppState& s);
-bool PickImageFile(HWND owner, std::wstring& path);
-bool PickFolder(HWND owner, std::wstring& path, const wchar_t* title);
+// Pulse's own pickers (ui/folder_picker_dialog), owned by the main window.
+bool PickImageFile(AppState& s, std::wstring& path);
+bool PickFolder(AppState& s, std::wstring& path, const wchar_t* title);
 D2D1_COLOR_F ResolveAccentColor(const app::AppPrefs& prefs, bool dark = false);
 void ApplyAccentFromPrefs(AppState& s, bool snap_picker);
 bool SelectedQuickPreviewItem(AppState& s, ui::QuickPreviewItem& item);

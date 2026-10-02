@@ -11,6 +11,7 @@
 #include "../ui/fluent_menu.h"
 #include "../ui/drag_drop.h"
 #include "../ui/file_operation_dialog.h"
+#include "../ui/folder_picker_dialog.h"
 #include "../ui/batch_rename_dialog.h"
 #include "../ui/advanced_search_dialog.h"
 #include "../ui/quick_preview_window.h"
@@ -2031,47 +2032,16 @@ void ApplyAppWindowChrome(AppState& s) {
     s.backdropActive = ui::ApplyWindowEffect(s.hwnd, effect, s.darkMode);
 }
 
-bool PickImageFile(HWND owner, std::wstring& path) {
-    ui::ComPtr<IFileOpenDialog> dialog;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog)))) {
-        return false;
-    }
-    COMDLG_FILTERSPEC filters[] = {
-        { l10n::Get(l10n::StringId::Images).c_str(), L"*.jpg;*.jpeg;*.png;*.bmp;*.webp;*.jfif" },
-        { l10n::Get(l10n::StringId::AllFiles).c_str(), L"*.*" },
-    };
-    dialog->SetFileTypes(ARRAYSIZE(filters), filters);
-    dialog->SetTitle(l10n::Get(l10n::StringId::TooltipChooseBackground).c_str());
-    FILEOPENDIALOGOPTIONS options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
-    if (FAILED(dialog->Show(owner))) return false;
-    ui::ComPtr<IShellItem> item;
-    if (FAILED(dialog->GetResult(&item))) return false;
-    PWSTR file = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &file)) || !file) return false;
-    path.assign(file);
-    CoTaskMemFree(file);
-    return !path.empty();
+bool PickImageFile(AppState& s, std::wstring& path) {
+    ui::FolderPickerSpec spec;
+    spec.mode = ui::PickerMode::Image;
+    return ui::ShowFolderPicker(s.hwnd, spec, s.darkMode, s.accentColor, path);
 }
 
-bool PickFolder(HWND owner, std::wstring& path, const wchar_t* title) {
-    ui::ComPtr<IFileOpenDialog> dialog;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog)))) return false;
-    dialog->SetTitle(title);
-    FILEOPENDIALOGOPTIONS options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    if (FAILED(dialog->Show(owner))) return false;
-    ui::ComPtr<IShellItem> item;
-    if (FAILED(dialog->GetResult(&item))) return false;
-    PWSTR folder = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &folder)) || !folder) return false;
-    path.assign(folder);
-    CoTaskMemFree(folder);
-    return !path.empty();
+bool PickFolder(AppState& s, std::wstring& path, const wchar_t* title) {
+    ui::FolderPickerSpec spec;
+    spec.title = title ? title : L"";
+    return ui::ShowFolderPicker(s.hwnd, spec, s.darkMode, s.accentColor, path);
 }
 
 D2D1_COLOR_F ResolveAccentColor(const app::AppPrefs& prefs, bool dark) {
