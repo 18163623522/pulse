@@ -214,15 +214,33 @@ int wmain(int argc, wchar_t** argv) {
         Check(files.size() == 2, "folder probe lists nested files");
         Check(LockProbeFiles(dir.wstring(), 1).size() == 1, "folder probe honours the limit");
         const LockReport report = ProbeLockFailure(HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED),
-            L"拒绝访问。 | " + dir.wstring(), L"", exe_dir);
+            L"拒绝访问。 | " + dir.wstring(), {}, exe_dir);
         Check(report.path == dir.wstring() && FindPid(report.owners, holder.pi.dwProcessId),
               "access denied on a folder finds the owner inside");
-        Check(ProbeLockFailure(E_FAIL, L"x | " + dir.wstring(), L"", exe_dir).Empty(),
+        Check(ProbeLockFailure(E_FAIL, L"x | " + dir.wstring(), {}, exe_dir).Empty(),
               "non-lock error is not probed");
-        const LockReport fallback = ProbeLockFailure(HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION),
-            L"另一个程序正在使用此文件。", inner.wstring(), exe_dir);
-        Check(fallback.path == inner.wstring() && FindPid(fallback.owners, holder.pi.dwProcessId),
-              "fallback path used when the error has none");
+        const std::wstring free_path = (dir / L"free.txt").wstring();
+        const LockReport single = ProbeLockFailure(HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION),
+            L"另一个程序正在使用此文件。", {inner.wstring()}, exe_dir);
+        Check(single.path == inner.wstring() && FindPid(single.owners, holder.pi.dwProcessId),
+              "single source used when the error has no path");
+        const LockReport by_name = ProbeLockFailure(static_cast<HRESULT>(0x80270027L), L"inner.txt",
+            {free_path, inner.wstring()}, exe_dir);
+        Check(by_name.path == inner.wstring() && FindPid(by_name.owners, holder.pi.dwProcessId),
+              "display name matched against the sources");
+        const LockReport nested = ProbeLockFailure(static_cast<HRESULT>(0x80270027L), L"inner.txt",
+            {dir.wstring(), (root / L"own.txt").wstring()}, exe_dir);
+        Check(nested.path == inner.wstring() && FindPid(nested.owners, holder.pi.dwProcessId),
+              "name inside a source folder: all sources probed, item resolved");
+        const LockReport message_only = ProbeLockFailure(HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION),
+            L"另一个程序正在使用此文件。", {dir.wstring(), free_path}, exe_dir);
+        Check(message_only.path == dir.wstring() && FindPid(message_only.owners, holder.pi.dwProcessId),
+              "bare message never becomes the item name");
+        Check(ProbeLockFailure(static_cast<HRESULT>(0x80270027L), L"inner.txt", {free_path}, exe_dir).Empty(),
+              "no owner among the sources: empty report");
+        // NTFS lists free.txt before sub\, so a one-file budget never reaches inner.txt.
+        Check(ProbeLockFailure(static_cast<HRESULT>(0x80270027L), L"x.txt", {dir.wstring()}, exe_dir, 1)
+              .Empty(), "probe limit applies across sources");
     }
 
     // --- OpsManager end to end --------------------------------------------------

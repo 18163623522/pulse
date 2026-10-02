@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <iterator>
 #include <system_error>
 
 #pragma comment(lib, "rstrtmgr.lib")
@@ -176,15 +177,54 @@ std::vector<LockOwner> FindLockOwners(const std::vector<std::wstring>& files,
 }
 
 LockReport ProbeLockFailure(HRESULT hr, const std::wstring& error,
-                            const std::wstring& fallback_path,
-                            const std::wstring& protected_dir) {
+                            const std::vector<std::wstring>& sources,
+                            const std::wstring& protected_dir, size_t limit) {
     LockReport report;
     if (!IsLockLikeError(hr)) return report;
-    report.path = FailedPathFromError(error);
-    if (report.path.empty() || GetFileAttributesW(report.path.c_str()) == INVALID_FILE_ATTRIBUTES)
-        report.path = fallback_path;
-    if (report.path.empty()) return report;
-    report.owners = FindLockOwners(LockProbeFiles(report.path), protected_dir);
+    std::vector<std::wstring> files;
+    const std::wstring full = FailedPathFromError(error);
+    if (!full.empty() && GetFileAttributesW(full.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        report.path = full;
+        files = LockProbeFiles(full, limit);
+    } else {
+        const size_t marker = error.rfind(L" | ");
+        const std::wstring name = Trim(marker == std::wstring::npos ? error : error.substr(marker + 3));
+        for (const auto& source : sources) {
+            if (name.empty() || name.find_first_of(L"\\/") != std::wstring::npos) break;
+            const std::wstring source_name = FileNamePart(source);
+            if (CompareStringOrdinal(source_name.c_str(), -1, name.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                report.path = source;
+                break;
+            }
+        }
+        if (!report.path.empty()) {
+            files = LockProbeFiles(report.path, limit);
+        } else {
+            for (const auto& source : sources) {
+                if (files.size() >= limit) break;
+                auto more = LockProbeFiles(source, limit - files.size());
+                files.insert(files.end(), std::make_move_iterator(more.begin()),
+                             std::make_move_iterator(more.end()));
+            }
+            // The reported name may be a file inside a source folder; the error
+            // may also be a bare message. Only a probed file can name the item.
+            for (const auto& file : files) {
+                if (name.empty()) break;
+                const std::wstring file_name = FileNamePart(file);
+                if (CompareStringOrdinal(file_name.c_str(), -1, name.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                    report.path = file;
+                    break;
+                }
+            }
+            if (report.path.empty() && !sources.empty()) report.path = sources.front();
+        }
+    }
+    if (files.empty()) {
+        report.path.clear();
+        return report;
+    }
+    report.owners = FindLockOwners(files, protected_dir);
+    if (report.owners.empty()) report.path.clear();
     return report;
 }
 

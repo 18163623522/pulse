@@ -1054,8 +1054,7 @@ LockReport OpsManager::ProbeLock(const OpRequest& req, uint64_t task_id, HRESULT
     const bool lockable = req.type == OpType::Copy || req.type == OpType::Move
         || req.type == OpType::RecycleDelete || req.type == OpType::RealDelete;
     if (lockable) {
-        const std::wstring fallback = req.sources.size() == 1 ? req.sources.front() : std::wstring();
-        report = ProbeLockFailure(hr, error, fallback, CurrentModuleDirectory());
+        report = ProbeLockFailure(hr, error, req.sources, CurrentModuleDirectory());
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (report.Empty()) {

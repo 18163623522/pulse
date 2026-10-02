@@ -45,11 +45,14 @@ std::vector<std::wstring> LockProbeFiles(const std::wstring& path, size_t limit 
 std::vector<LockOwner> FindLockOwners(const std::vector<std::wstring>& files,
                                       const std::wstring& protected_dir);
 
-// Full probe used by the ops worker: classify `hr`, resolve the failed item
-// from `error` (falling back to `fallback_path`) and query its owners.
+// Full probe used by the ops worker: classify `hr`, then find the failed item.
+// The error may carry a full path, only a display name (pulse_shell reports
+// IFileOperation item names) or nothing; a name is matched against `sources`,
+// otherwise every source (folders expanded, `limit` files in total) is probed
+// and the item is the probed file with that name, else the first source.
 LockReport ProbeLockFailure(HRESULT hr, const std::wstring& error,
-                            const std::wstring& fallback_path,
-                            const std::wstring& protected_dir);
+                            const std::vector<std::wstring>& sources,
+                            const std::wstring& protected_dir, size_t limit = 256);
 
 enum class CloseOwnerResult { Closed, AlreadyGone, Refused, Denied, TimedOut };
 
