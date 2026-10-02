@@ -282,11 +282,11 @@ void SelectLaunchedFile(AppState& s, const std::wstring& raw) {
 
 void OpenFolderInNewTab(AppState& s, const std::wstring& raw) {
     if (app::IsThisPcArgument(raw)) {
-        // The This PC verb (设为默认文件管理器): This PC is the empty path.
-        // FindFolderTab skips it, so each request opens a tab, as Explorer
-        // opens a window.
+        // The This PC verb (设为默认文件管理器): This PC is the empty path,
+        // which only OpenTabAt keeps (NewTab turns it into C:\). FindFolderTab
+        // skips it, so each request opens a tab, as Explorer opens a window.
         if (!IsWindowVisible(s.hwnd) && TakeFreshStart(s)) StartFreshAt(s, L"");
-        else NewTab(s, L"");
+        else OpenTabAt(s, L"");
         s.tray_controller.RestoreWindow();
         return;
     }

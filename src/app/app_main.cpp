@@ -725,7 +725,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             (!s->session_layout_tabs.empty() || !s->session_path.empty())) {
             const bool this_pc = app::IsThisPcArgument(s->open_path);
             const std::wstring open_path = this_pc ? std::wstring() : ResolveOpenFolderPath(s->open_path);
-            if (this_pc) NewTab(*s, open_path);
+            if (this_pc) OpenTabAt(*s, open_path);  // NewTab would open C: for ""
             else if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
                 NewTab(*s, open_path);
             if (!open_path.empty()) SelectLaunchedFile(*s, s->open_path);
