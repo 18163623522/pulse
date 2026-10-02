@@ -26,16 +26,22 @@ constexpr float kButtonMinW = 104.0f;
 
 float Dip(float scale, float value) { return value * scale; }
 
-// Column split shared with Painter::DrawFileRowContent.
+// Fixed-width detail columns so dates never wrap; the name takes the rest.
+// Narrow windows drop the type column first. Size only exists for pictures.
 struct Columns {
-    float left, name_right, modified_right, detail_right, right;
+    float left, name_right, modified_right, type_right, right;
 };
 
-Columns ColumnsFor(const D2D1_RECT_F& row, float scale) {
+Columns ColumnsFor(const D2D1_RECT_F& row, float scale, bool with_size) {
     const float left = row.left + Dip(scale, 12.0f);
     const float right = row.right - Dip(scale, 12.0f);
-    const float total = right - left;
-    return {left, left + total * 0.48f, left + total * 0.69f, left + total * 0.87f, right};
+    const float size_w = with_size ? Dip(scale, 84.0f) : 0.0f;
+    float type_w = Dip(scale, 76.0f);
+    const float modified_w = Dip(scale, 136.0f);
+    if (right - left - size_w - type_w - modified_w < Dip(scale, 180.0f)) type_w = 0.0f;
+    const float type_right = right - size_w;
+    const float modified_right = type_right - type_w;
+    return {left, modified_right - modified_w, modified_right, type_right, right};
 }
 
 std::wstring TypeText(const PickerEntry& entry) {
@@ -70,30 +76,65 @@ void DrawDriveRow(Compositor& compositor, fluent::Painter& painter, const Theme&
     background.bounds = row;
     background.state = state;
     painter.DrawListRowBackground(background);
-    const Columns c = ColumnsFor(row, scale);
-    painter.DrawGlyph(L"\xE7F1", D2D1::RectF(c.left, row.top, c.left + Dip(scale, 20.0f),
-                                             row.bottom),
+    const float left = row.left + Dip(scale, 12.0f);
+    const float right = row.right - Dip(scale, 12.0f);
+    const float detail_left = right - Dip(scale, 150.0f);
+    const float bar_left = std::max(left + Dip(scale, 160.0f), detail_left - Dip(scale, 128.0f));
+    painter.DrawGlyph(L"\xE7F1", D2D1::RectF(left, row.top, left + Dip(scale, 20.0f),
+                                           row.bottom),
                       theme.text_secondary);
-    painter.DrawText(entry.name, D2D1::RectF(c.left + Dip(scale, 28.0f), row.top,
-                                             c.name_right - Dip(scale, 8.0f), row.bottom),
-                     compositor.TextFormat(), theme.text, fluent::HorizontalAlignment::Left,
-                     theme.surface_card);
+    painter.DrawText(entry.name, D2D1::RectF(left + Dip(scale, 28.0f), row.top,
+                                             bar_left - Dip(scale, 8.0f), row.bottom),
+                     compositor.TextFormat(), theme.text);
     if (entry.size == 0) return;
     const float used = 1.0f - static_cast<float>(static_cast<double>(entry.free) /
                                                  static_cast<double>(entry.size));
     const float mid = (row.top + row.bottom) * 0.5f;
     const float bar_h = Dip(scale, 6.0f);
-    const D2D1_RECT_F track = D2D1::RectF(c.name_right + Dip(scale, 8.0f), mid - bar_h * 0.5f,
-                                          c.modified_right - Dip(scale, 8.0f),
-                                          mid + bar_h * 0.5f);
+    const D2D1_RECT_F track = D2D1::RectF(bar_left, mid - bar_h * 0.5f,
+                                          detail_left - Dip(scale, 8.0f), mid + bar_h * 0.5f);
     painter.FillRoundedRect(track, bar_h * 0.5f, theme.fill_pressed);
     D2D1_RECT_F fill = track;
     fill.right = track.left + (track.right - track.left) * std::clamp(used, 0.0f, 1.0f);
     painter.FillRoundedRect(fill, bar_h * 0.5f, used > 0.9f ? theme.danger : theme.accent);
-    painter.DrawText(DriveDetail(entry), D2D1::RectF(c.modified_right + Dip(scale, 8.0f),
-                                                     row.top, c.right, row.bottom),
+    painter.DrawText(DriveDetail(entry), D2D1::RectF(detail_left, row.top, right, row.bottom),
                      compositor.SmallFormat(), theme.text_secondary,
-                     fluent::HorizontalAlignment::Right, theme.surface_card);
+                     fluent::HorizontalAlignment::Right);
+}
+
+void DrawEntryRow(Compositor& compositor, fluent::Painter& painter, const Theme& theme,
+                  const PickerEntry& entry, const D2D1_RECT_F& row,
+                  const fluent::ControlState& state, bool with_size, bool high_contrast,
+                  float scale) {
+    fluent::ListRowSpec background{};
+    background.bounds = row;
+    background.state = state;
+    painter.DrawListRowBackground(background);
+    const Columns c = ColumnsFor(row, scale, with_size);
+    const bool folder = entry.kind == PickerEntryKind::Folder;
+    painter.DrawGlyph(folder ? L"\xE8B7" : L"\xEB9F",
+                      D2D1::RectF(c.left, row.top, c.left + Dip(scale, 20.0f), row.bottom),
+                      high_contrast ? theme.text : folder ? theme.icon_folder : theme.icon_file);
+    painter.DrawText(entry.name, D2D1::RectF(c.left + Dip(scale, 28.0f), row.top,
+                                             c.name_right - Dip(scale, 8.0f), row.bottom),
+                     compositor.TextFormat(), theme.text);
+    painter.DrawText(format::LocalFileTime(entry.modified),
+                     D2D1::RectF(c.name_right + Dip(scale, 8.0f), row.top,
+                                 c.modified_right - Dip(scale, 4.0f), row.bottom),
+                     compositor.SmallFormat(), theme.text_secondary);
+    if (c.type_right > c.modified_right) {
+        painter.DrawText(TypeText(entry), D2D1::RectF(c.modified_right + Dip(scale, 8.0f),
+                                                      row.top, c.type_right - Dip(scale, 4.0f),
+                                                      row.bottom),
+                         compositor.SmallFormat(), theme.text_secondary);
+    }
+    if (with_size && entry.kind == PickerEntryKind::Image) {
+        painter.DrawText(format::ByteSize(entry.size),
+                         D2D1::RectF(c.type_right + Dip(scale, 8.0f), row.top, c.right,
+                                     row.bottom),
+                         compositor.SmallFormat(), theme.text_secondary,
+                         fluent::HorizontalAlignment::Right);
+    }
 }
 
 } // namespace
@@ -256,7 +297,12 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
     painter.FillRoundedRect(l.card, radius, theme.surface_card);
     painter.StrokeRoundedRect(l.card, radius, theme.stroke_card);
     {
-        const Columns c = ColumnsFor(l.header, scale);
+        const bool with_size = v.mode == PickerMode::Image;
+        // Same span as the rows, which leave room for the scrollbar.
+        const Columns c = ColumnsFor(D2D1::RectF(l.rows.left, l.header.top,
+                                                 l.rows.right - Dip(scale, 8.0f),
+                                                 l.header.bottom),
+                                     scale, with_size);
         const bool drives = v.current.empty();
         auto header = [&](l10n::StringId id, float left, float right,
                           fluent::HorizontalAlignment align) {
@@ -267,12 +313,15 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
             painter.DrawColumnHeader(spec);
         };
         const auto left = fluent::HorizontalAlignment::Left;
-        header(l10n::StringId::ColumnName, l.header.left, c.name_right, left);
+        header(l10n::StringId::ColumnName, l.header.left,
+               drives ? l.header.right : c.name_right, left);
         if (!drives) {
             header(l10n::StringId::ColumnModified, c.name_right, c.modified_right, left);
-            header(l10n::StringId::ColumnType, c.modified_right, c.detail_right, left);
-            header(l10n::StringId::ColumnSize, c.detail_right, l.header.right,
-                   fluent::HorizontalAlignment::Right);
+            if (c.type_right > c.modified_right)
+                header(l10n::StringId::ColumnType, c.modified_right, c.type_right, left);
+            if (with_size)
+                header(l10n::StringId::ColumnSize, c.type_right, c.right + Dip(scale, 10.0f),
+                       fluent::HorizontalAlignment::Right);
         }
         painter.FillRoundedRect(D2D1::RectF(l.card.left, l.header.bottom, l.card.right,
                                             l.header.bottom + 1.0f),
@@ -332,25 +381,8 @@ void DrawFolderPicker(Compositor& compositor, fluent::Painter& painter, const Th
             if (entry.kind == PickerEntryKind::Drive) {
                 DrawDriveRow(compositor, painter, theme, entry, row, state, scale);
             } else {
-                const std::wstring modified = format::LocalFileTime(entry.modified);
-                const std::wstring type = TypeText(entry);
-                const std::wstring size = entry.kind == PickerEntryKind::Image
-                    ? format::ByteSize(entry.size) : std::wstring();
-                fluent::FileRowContentSpec spec{};
-                spec.bounds = row;
-                spec.name = entry.name;
-                spec.modified = modified;
-                spec.type = type;
-                spec.size = size;
-                spec.state = state;
-                painter.DrawFileRowContent(spec);
-                const Columns c = ColumnsFor(row, scale);
-                const bool folder = entry.kind == PickerEntryKind::Folder;
-                painter.DrawGlyph(folder ? L"\xE8B7" : L"\xEB9F",
-                                  D2D1::RectF(c.left, row.top, c.left + Dip(scale, 20.0f),
-                                              row.bottom),
-                                  high_contrast ? theme.text
-                                                : folder ? theme.icon_folder : theme.icon_file);
+                DrawEntryRow(compositor, painter, theme, entry, row, state,
+                             v.mode == PickerMode::Image, high_contrast, scale);
             }
             if (i == v.selected && v.show_focus && v.focus == kPickList)
                 painter.DrawFocusRing(row, radius);
