@@ -409,6 +409,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 path = app::DefaultLocation(s->appPrefs);
                 return true;
             },
+            [s] { return s->appPrefs.close_window_with_last_tab; },
+            [hwnd] { PostMessageW(hwnd, WM_CLOSE, 0, 0); },
         });
         if (s->isolatedTest) {
             s->places.persist = false;

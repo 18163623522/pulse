@@ -36,6 +36,8 @@ struct AppPrefs {
     // new_tab_open: 0 the current folder, 1 the default location.
     int startup_open = 0;
     int new_tab_open = 0;
+    // Closing the only tab closes the window (app/last_tab_close.h).
+    bool close_window_with_last_tab = false;
     std::wstring home_folder;
     // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
     int text_render = 0;

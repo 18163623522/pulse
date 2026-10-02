@@ -537,6 +537,20 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
     s.settings.SetScroll(layout().density_card.top-layout().content.top,
         s.renderer.SettingsMaxScroll(BuildVm(s,false),window.right,window.bottom));
     click(layout().density_row[0]);check(s.appPrefs.row_height==28,"mouse click changes density through existing controller");
+    s.settings.SetScroll(layout().close_last_tab_row.top-layout().content.top,
+        s.renderer.SettingsMaxScroll(BuildVm(s,false),window.right,window.bottom));
+    {
+        const auto tab_layout=layout();
+        check(tab_layout.close_last_tab_row.top>=tab_layout.new_tab_open_card.bottom &&
+              tab_layout.close_last_tab_row.bottom<=tab_layout.group[1].bottom,
+              "close-with-last-tab row sits in the startup and close card");
+        const bool was=s.appPrefs.close_window_with_last_tab;
+        click(tab_layout.close_last_tab_row);
+        const bool flipped=s.appPrefs.close_window_with_last_tab!=was;
+        click(layout().close_last_tab_row);
+        check(flipped && s.appPrefs.close_window_with_last_tab==was,
+              "mouse click toggles closing the window with the last tab");
+    }
     s.settings.SetScroll(0,0);
     auto vm=BuildVm(s,false);
     const auto collapsed_max=s.renderer.SettingsMaxScroll(vm,window.right,window.bottom);

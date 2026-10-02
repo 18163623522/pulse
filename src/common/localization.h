@@ -571,6 +571,8 @@ enum class StringId : UINT {
     OpenDefaultLocation = IDS_OPEN_DEFAULT_LOCATION,
     SettingsNewTabOpen = IDS_SETTINGS_NEW_TAB_OPEN,
     SettingsNewTabOpenDesc = IDS_SETTINGS_NEW_TAB_OPEN_DESC,
+    SettingsCloseLastTab = IDS_SETTINGS_CLOSE_LAST_TAB,
+    SettingsCloseLastTabDesc = IDS_SETTINGS_CLOSE_LAST_TAB_DESC,
     NewTabOpenCurrent = IDS_NEW_TAB_OPEN_CURRENT,
     ColumnCreated = IDS_COLUMN_CREATED,
     ColumnAccessed = IDS_COLUMN_ACCESSED,

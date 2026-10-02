@@ -59,6 +59,7 @@ void AppPrefs::ResetToDefaults() {
     details_columns = ui::kDetailsColumnsDefault;
     startup_open = 0;
     new_tab_open = 0;
+    close_window_with_last_tab = false;
     home_folder.clear();
     text_render = 0;
     folder_views.Clear();
@@ -137,6 +138,8 @@ std::wstring AppPrefs::ToJson() const {
     out += startup_open == 1 ? L"1" : L"0";
     out += L",\n  \"new_tab_open\":";
     out += new_tab_open == 1 ? L"1" : L"0";
+    out += L",\n  \"close_window_with_last_tab\":";
+    out += close_window_with_last_tab ? L"true" : L"false";
     out += L",\n  \"home_folder\":\"";
     out += escaped_home;
     out += L"\"";
@@ -258,6 +261,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
         json, L"details_columns", static_cast<int>(ui::kDetailsColumnsDefault))));
     startup_open = pulse::json::ExtractInt(json, L"startup_open", 0) == 1 ? 1 : 0;
     new_tab_open = pulse::json::ExtractInt(json, L"new_tab_open", 0) == 1 ? 1 : 0;
+    close_window_with_last_tab = pulse::json::ExtractBool(json, L"close_window_with_last_tab", false);
     home_folder = pulse::json::ExtractString(json, L"home_folder");
     text_render = pulse::json::ExtractInt(json, L"text_render", 0);
     if (text_render < 0 || text_render > 2) text_render = 0;

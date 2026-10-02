@@ -26,6 +26,7 @@
 #include "search_refresh_log.h"
 #include "link_resolve.h"
 #include "startup_location.h"
+#include "last_tab_close.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
 #include "../ipc/ctx_menu_util.h"
@@ -2102,6 +2103,11 @@ void OpenSettingsTab(AppState& s, int page) {
 }
 void CloseLayoutTab(AppState& s, size_t idx) {
     if (idx >= s.window_tabs.items.size()) return;
+    if (app::LastTabClosesWindow(s.window_tabs.items.size(), s.window_tabs.items[idx]->pinned,
+                                 s.appPrefs.close_window_with_last_tab)) {
+        PostMessageW(s.hwnd, WM_CLOSE, 0, 0);
+        return;
+    }
     RememberLayoutFocus(s);
     s.window_tabs.CloseTab(idx);
     BindCurrentLayout(s);
