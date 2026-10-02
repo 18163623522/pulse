@@ -142,7 +142,10 @@ public:
             WS_POPUP | WS_THICKFRAME | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, width, height,
             owner, nullptr, wc.hInstance, this);
         if (!hwnd_) return false;
-        CenterOwnedWindow(hwnd_, owner_, width, height);
+        // WM_CREATE read the DPI of the monitor the window landed on, which
+        // can differ from the owner's guess above.
+        CenterOwnedWindow(hwnd_, owner_, static_cast<int>(kDefaultWidth * scale_),
+                          static_cast<int>(kDefaultHeight * scale_));
         loader_ = std::make_unique<PickerLoader>(hwnd_, kListingMessage);
         initial_load_ = true;
         Navigate(start, false);
