@@ -42,6 +42,8 @@ DWORD WINAPI ShellRegistryWatch(LPVOID param);
 void StartShellRegistryWatch(HWND hwnd);
 void StopShellRegistryWatch();
 void SeedShellVerbCache(AppState& s);
+// WM_SHELL_VERB_SEED: merges the parsed machine cache unless a newer seed started.
+void ApplyShellVerbSeed(AppState& s, ShellVerbSeed& seed);
 void StartCtxQuery(AppState& s, std::vector<std::wstring> paths,
                           bool background, const std::wstring& ext);
 void MaybePrefetchHoverCtxMenu(AppState& s);

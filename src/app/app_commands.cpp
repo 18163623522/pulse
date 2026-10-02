@@ -1165,16 +1165,23 @@ void StopShellRegistryWatch() {
 }
 
 void SeedShellVerbCache(AppState& s) {
-    std::unordered_map<std::wstring, std::vector<app::StaticVerb>> machine;
-    if (!app::LoadMachineStaticVerbCache(machine) || machine.empty()) return;
-    std::vector<std::wstring> extensions;
-    extensions.reserve(machine.size());
-    for (const auto& [ext, verbs] : machine) extensions.push_back(ext);
-    s.context_menu.MergeStaticCache(std::move(machine));
     HWND hwnd = s.hwnd;
     // A newer seed supersedes this one; stop instead of piling up readers.
     const uint32_t generation = ++g_shell_seed_generation;
-    std::thread([hwnd, generation, extensions = std::move(extensions)] {
+    std::thread([hwnd, generation] {
+        // The cache file can be megabytes: read and parse it here, never on
+        // the UI thread, which only merges the result (WM_SHELL_VERB_SEED).
+        auto seed = std::make_unique<ShellVerbSeed>();
+        seed->generation = generation;
+        if (!app::LoadMachineStaticVerbCache(seed->machine) || seed->machine.empty()) return;
+        std::vector<std::wstring> extensions;
+        extensions.reserve(seed->machine.size());
+        for (const auto& [ext, verbs] : seed->machine) extensions.push_back(ext);
+        if (g_shell_seed_generation.load() != generation) return;
+        if (!PostMessageW(hwnd, WM_SHELL_VERB_SEED, 0, reinterpret_cast<LPARAM>(seed.get())))
+            return;
+        seed.release();
+        // Posted after the seed, so the merge always lands first.
         size_t n = 0;
         for (const auto& ext : extensions) {
             if (n++ > 400 || g_shell_seed_generation.load() != generation) break;
@@ -1183,6 +1190,12 @@ void SeedShellVerbCache(AppState& s) {
                 delete result;
         }
     }).detach();
+}
+
+void ApplyShellVerbSeed(AppState& s, ShellVerbSeed& seed) {
+    // Caches were invalidated after this seed was read; its successor follows.
+    if (seed.generation != g_shell_seed_generation.load()) return;
+    s.context_menu.MergeStaticCache(std::move(seed.machine));
 }
 
 // Fired on WM_RBUTTONDOWN (prefetch) and again on menu open (no-op when the
