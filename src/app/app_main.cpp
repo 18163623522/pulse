@@ -997,6 +997,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return reinterpret_cast<LRESULT>(s->editBrush);
     }
 
+    case WM_EXPLORER_TAKEOVER: {
+        std::unique_ptr<app::ExplorerTakeoverRequest> request(
+            reinterpret_cast<app::ExplorerTakeoverRequest*>(lParam));
+        if (s && request) HandleExplorerTakeover(*s, *request);
+        return 0;
+    }
+
     case WM_SHELL_SELECT: {
         std::unique_ptr<app::ShellSelectRequest> request(reinterpret_cast<app::ShellSelectRequest*>(lParam));
         if (s && request) HandleShellSelect(*s, *request);

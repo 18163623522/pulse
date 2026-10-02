@@ -64,4 +64,12 @@ bool SplitShellItemPath(const std::wstring& path, std::wstring& folder, std::wst
     return true;
 }
 
+ExplorerTakeoverStep DecideExplorerTakeover(const ExplorerWindowProbe& probe) {
+    if (!probe.view_ready)
+        return probe.age_ms >= kExplorerViewTimeoutMs ? ExplorerTakeoverStep::Leave : ExplorerTakeoverStep::Wait;
+    if (!probe.supported) return ExplorerTakeoverStep::Leave;
+    if (probe.selected > 0 || probe.age_ms >= kExplorerSelectionGraceMs) return ExplorerTakeoverStep::Take;
+    return ExplorerTakeoverStep::Wait;
+}
+
 } // namespace pulse::app

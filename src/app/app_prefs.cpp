@@ -49,6 +49,7 @@ void AppPrefs::ResetToDefaults() {
     launch_on_startup = false;
     keep_running_on_close = false;
     open_folders_in_pulse = false;
+    take_over_explorer_windows = false;
     shell_tag_menu = false;
     verify_copies = false;
     show_status_performance = false;
@@ -111,6 +112,8 @@ std::wstring AppPrefs::ToJson() const {
     out += keep_running_on_close ? L"true" : L"false";
     out += L",\n  \"open_folders_in_pulse\":";
     out += open_folders_in_pulse ? L"true" : L"false";
+    out += L",\n  \"take_over_explorer_windows\":";
+    out += take_over_explorer_windows ? L"true" : L"false";
     out += L",\n  \"shell_tag_menu\":";
     out += shell_tag_menu ? L"true" : L"false";
     out += L",\n  \"verify_copies\":";
@@ -246,6 +249,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
+    take_over_explorer_windows = pulse::json::ExtractBool(json, L"take_over_explorer_windows", false);
     shell_tag_menu = pulse::json::ExtractBool(json, L"shell_tag_menu", false);
     verify_copies = pulse::json::ExtractBool(json, L"verify_copies", false);
     show_status_performance = pulse::json::ExtractBool(json, L"show_status_performance", false);

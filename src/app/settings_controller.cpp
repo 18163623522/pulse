@@ -470,6 +470,10 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 29) {
         ApplyThisPcOpen(*prefs_, !prefs_->take_over_this_pc);
         SaveAndApply(SettingsEffect::None);
+    } else if (index == 30) {
+        // shell_window_sync.cpp starts/stops the watcher on the next frame.
+        prefs_->take_over_explorer_windows = !prefs_->take_over_explorer_windows;
+        SaveAndApply(SettingsEffect::None);
     } else if (index == 21) {
         // shell_tag_menu.cpp installs/removes the HKCU verbs on the next UI tick.
         prefs_->shell_tag_menu = !prefs_->shell_tag_menu;

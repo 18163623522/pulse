@@ -382,6 +382,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(lay.this_pc_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 29; return r;
                 }
+                if (ContainsPt(lay.explorer_windows_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 30; return r;
+                }
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.startup_row[i], x, y)) {
                         r.region = HitTestResult::SettingsToggle;

@@ -666,6 +666,7 @@ struct WindowViewModel {
     bool settings_open_folders = false;
     bool settings_win_e = false;
     bool settings_this_pc = false;
+    bool settings_explorer_windows = false;   // experimental Explorer window takeover
     // 设为默认文件管理器: 0 off, 1 partial, 2 full; the text lists what is missing.
     int settings_default_manager = 0;
     std::wstring settings_default_manager_desc;

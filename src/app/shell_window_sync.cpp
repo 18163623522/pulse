@@ -12,19 +12,51 @@
 namespace pulse {
 namespace {
 
-bool ShellWindowsEnabled(const AppState& s) {
+// Shot and test runs stay out of the real shell. Selftest builds can opt an
+// isolated instance in (`variable` set) for real-shell tests; it never
+// touches the user's Pulse, but it does take part in the shell.
+bool ShellIntegrationAllowed(const AppState& s, const wchar_t* variable) {
     if (s.shot.active || s.menushot) return false;
-    if (s.isolatedTest) {
+    if (!s.isolatedTest) return true;
 #ifdef PULSE_WITH_SELFTEST
-        // Real-shell test of an isolated instance; it never touches the
-        // user's Pulse, but it does appear in IShellWindows.
-        static const bool forced = GetEnvironmentVariableW(L"PULSE_TEST_SHELL_WINDOWS", nullptr, 0) > 0;
-        return forced;
+    return GetEnvironmentVariableW(variable, nullptr, 0) > 0;
 #else
-        return false;
+    (void)variable;
+    return false;
 #endif
+}
+
+bool ShellWindowsEnabled(const AppState& s) {
+    if (s.isolatedTest) return ShellIntegrationAllowed(s, L"PULSE_TEST_SHELL_WINDOWS");
+    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.open_folders_in_pulse;
+}
+
+bool ExplorerTakeoverEnabled(const AppState& s) {
+    if (s.isolatedTest) return ShellIntegrationAllowed(s, L"PULSE_TEST_EXPLORER_TAKEOVER");
+    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.take_over_explorer_windows;
+}
+
+void SyncExplorerTakeover(AppState& s) {
+    const bool enabled = ExplorerTakeoverEnabled(s);
+    if (enabled && !s.explorer_takeover) {
+        s.explorer_takeover = std::make_unique<app::ExplorerWindowTakeover>(s.hwnd, WM_EXPLORER_TAKEOVER);
+    } else if (!enabled && s.explorer_takeover) {
+        s.explorer_takeover->Stop();
+        s.explorer_takeover.reset();
     }
-    return s.appPrefs.open_folders_in_pulse;
+}
+
+// Explorer held the foreground; the takeover request arrives while it still
+// does, so share its input state long enough to take the foreground over.
+void BringToFront(HWND hwnd) {
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == hwnd) return;
+    const DWORD self = GetCurrentThreadId();
+    const DWORD other = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const bool attached = other && other != self && AttachThreadInput(self, other, TRUE);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    if (attached) AttachThreadInput(self, other, FALSE);
 }
 
 uint64_t PaneKey(const app::Pane& pane) { return reinterpret_cast<uint64_t>(&pane); }
@@ -54,6 +86,7 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
 } // namespace
 
 void SyncShellWindows(AppState& s) {
+    SyncExplorerTakeover(s);
     std::vector<app::ShellWindowEntry> wanted;
     if (ShellWindowsEnabled(s)) {
         ForEachPane(s, [&](app::Pane& pane) {
@@ -76,6 +109,8 @@ void SyncShellWindows(AppState& s) {
 }
 
 void StopShellWindows(AppState& s) {
+    if (s.explorer_takeover) s.explorer_takeover->Stop();
+    s.explorer_takeover.reset();
     if (s.shell_windows) s.shell_windows->Stop();
     s.shell_windows.reset();
     s.shell_windows_published.clear();
@@ -121,6 +156,19 @@ void HandleShellSelect(AppState& s, const app::ShellSelectRequest& request) {
     // on another program's behalf.
     if (request.flags & SVSI_DESELECTOTHERS) SelectNameInTab(s, *tab, leaf);
     else AddNameToSelection(s, *tab, leaf);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void HandleExplorerTakeover(AppState& s, const app::ExplorerTakeoverRequest& request) {
+    app::TraceShellWindows(L"takeover request folder=[%s] names=%zu", request.folder.c_str(), request.names.size());
+    // This PC travels as its parsing name, which OpenFolderInNewTab knows.
+    OpenFolderInNewTab(s, request.folder.empty() ? std::wstring(L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")
+                                                 : request.folder);
+    BringToFront(s.hwnd);
+    app::Tab* tab = ActiveTab(s);
+    if (!tab || request.folder.empty() || request.names.empty()) return;
+    SelectNameInTab(s, *tab, request.names.front());
+    for (size_t i = 1; i < request.names.size(); ++i) AddNameToSelection(s, *tab, request.names[i]);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 

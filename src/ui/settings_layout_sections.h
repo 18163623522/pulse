@@ -95,6 +95,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
         y+=8*scale; l.startup_row[2]=row(64);
         y+=8*scale; l.win_e_row=row(64);
         y+=8*scale; l.this_pc_row=row(64);
+        y+=8*scale; l.explorer_windows_row=row(64);
         y+=8*scale; l.shell_tags_row=row(64);
         y+=8*scale; l.hidden_files_row=row(64);
         y+=8*scale; l.protected_files_row=row(64);

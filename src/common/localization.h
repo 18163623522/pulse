@@ -909,6 +909,8 @@ enum class StringId : UINT {
     SettingsTakeoverFolders = IDS_SETTINGS_TAKEOVER_FOLDERS,
     SettingsThisPc = IDS_SETTINGS_THIS_PC,
     SettingsThisPcDesc = IDS_SETTINGS_THIS_PC_DESC,
+    SettingsExplorerWindows = IDS_SETTINGS_EXPLORER_WINDOWS,
+    SettingsExplorerWindowsDesc = IDS_SETTINGS_EXPLORER_WINDOWS_DESC,
     TagNetworkLocation = IDS_TAG_NETWORK_LOCATION,
     TagThisLocation = IDS_TAG_THIS_LOCATION,
     TagCreateFormat = IDS_TAG_CREATE_FORMAT,

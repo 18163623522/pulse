@@ -444,6 +444,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_open_folders = s.appPrefs.open_folders_in_pulse;
             vm.settings_win_e = s.appPrefs.take_over_win_e;
             vm.settings_this_pc = s.appPrefs.take_over_this_pc;
+            vm.settings_explorer_windows = s.appPrefs.take_over_explorer_windows;
             vm.settings_default_manager =
                 static_cast<int>(app::DefaultFileManagerState(s.appPrefs));
             vm.settings_default_manager_desc = app::DefaultFileManagerSummary(s.appPrefs);

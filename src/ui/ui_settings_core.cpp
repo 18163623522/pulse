@@ -365,6 +365,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             draw_card(lay.startup_row[2]);toggle(lay.startup_row[2],I::SettingsOpenFolders,I::SettingsOpenFoldersDesc,L"\xE8B7",vm.settings_open_folders,3);
             draw_card(lay.win_e_row);toggle(lay.win_e_row,I::SettingsWinE,I::SettingsWinEDesc,L"\xE765",vm.settings_win_e,20);
             draw_card(lay.this_pc_row);toggle(lay.this_pc_row,I::SettingsThisPc,I::SettingsThisPcDesc,L"\xE7F4",vm.settings_this_pc,29);
+            draw_card(lay.explorer_windows_row);toggle(lay.explorer_windows_row,I::SettingsExplorerWindows,I::SettingsExplorerWindowsDesc,L"\xE8A7",vm.settings_explorer_windows,30);
             draw_card(lay.shell_tags_row);toggle(lay.shell_tags_row,I::SettingsShellTags,I::SettingsShellTagsDesc,L"\xE8EC",vm.settings_shell_tags,21);
             draw_card(lay.hidden_files_row);toggle(lay.hidden_files_row,I::SettingsShowHidden,I::SettingsShowHiddenDesc,L"\xE890",vm.settings_show_hidden_files,5);
             // Hidden + system entries: File Explorer keeps these behind a second option.

@@ -243,6 +243,27 @@ bool TestShellWindowPlan() {
         !SplitShellItemPath(L"\\\\srv\\share", folder, leaf) && !SplitShellItemPath(L"", folder, leaf);
     passed &= Report("shell windows: selected items split into folder and name; roots have no parent",
         file && top && share && trailing && roots);
+
+    using S = ExplorerTakeoverStep;
+    auto step = [](unsigned age, bool ready, bool supported, size_t selected) {
+        ExplorerWindowProbe probe;
+        probe.age_ms = age;
+        probe.view_ready = ready;
+        probe.supported = supported;
+        probe.selected = selected;
+        return DecideExplorerTakeover(probe);
+    };
+    passed &= Report("explorer takeover: waits for the view, then gives up on it",
+        step(0, false, false, 0) == S::Wait && step(kExplorerViewTimeoutMs - 1, false, false, 0) == S::Wait &&
+        step(kExplorerViewTimeoutMs, false, false, 0) == S::Leave);
+    passed &= Report("explorer takeover: virtual locations are left to File Explorer",
+        step(50, true, false, 0) == S::Leave && step(50, true, false, 2) == S::Leave);
+    passed &= Report("explorer takeover: a selection is taken at once, a plain folder after the grace",
+        step(50, true, true, 1) == S::Take && step(50, true, true, 0) == S::Wait &&
+        step(kExplorerSelectionGraceMs, true, true, 0) == S::Take);
+    passed &= Report("explorer takeover: setting has a label and description",
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsExplorerWindows).empty() &&
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsExplorerWindowsDesc).empty());
     return passed;
 }
 

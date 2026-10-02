@@ -917,6 +917,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsBlankClickBack: target=l.blank_click_row;break;
     case I::SettingsWinE: target=l.win_e_row;break;
     case I::SettingsThisPc: target=l.this_pc_row;break;
+    case I::SettingsExplorerWindows: target=l.explorer_windows_row;break;
     case I::SettingsShellTags: target=l.shell_tags_row;break;
     case I::SettingsChangeTracking: target=l.change_tracking_row;break;
     case I::GlobalSearch: target=l.global_search_row;break;

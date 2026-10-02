@@ -49,4 +49,22 @@ struct ShellSelectRequest {
 // a parent folder.
 bool SplitShellItemPath(const std::wstring& path, std::wstring& folder, std::wstring& leaf);
 
+// B站 #1 phase 2b: a File Explorer window opened behind Pulse's back
+// (explorer.exe /select,… run directly). What one poll of it found:
+struct ExplorerWindowProbe {
+    unsigned age_ms = 0;          // since the window registered
+    bool view_ready = false;      // its folder view exists and reports a folder
+    bool supported = false;       // a file system folder or This PC
+    size_t selected = 0;          // items selected in it
+};
+
+enum class ExplorerTakeoverStep { Wait, Take, Leave };
+
+constexpr unsigned kExplorerViewTimeoutMs = 4000;     // no view by then: leave it
+constexpr unsigned kExplorerSelectionGraceMs = 400;   // /select applies after the view
+
+// Wait for the view, leave virtual locations (Control Panel, Home, network…)
+// alone, and give /select a moment to arrive before taking the window.
+ExplorerTakeoverStep DecideExplorerTakeover(const ExplorerWindowProbe& probe);
+
 } // namespace pulse::app
