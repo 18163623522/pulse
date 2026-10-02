@@ -3264,6 +3264,27 @@ void TestTrayReveal() {
             Check(state->window_tabs.items.size() == 2 && active_is(std::wstring()),
                   L"tray reveal: a This PC default starts over at This PC");
             ShowWindow(hwnd, SW_HIDE);
+
+            // Sign-in launch into the tray (startup_launch.h): neither setting
+            // keeps an icon, yet one shows until the window is revealed.
+            state->appPrefs.keep_running_on_close = false;
+            state->appPrefs.global_search_enabled = false;
+            const size_t tabs_before = state->window_tabs.items.size();
+            const bool started_hidden = state->tray_controller.StartHidden(true);
+            Check(started_hidden && !IsWindowVisible(hwnd) && state->tray_controller.IconVisible(),
+                  L"start in tray: the window stays hidden behind a tray icon");
+            state->tray_controller.HandleTaskbarCreated();
+            Check(state->tray_controller.IconVisible(),
+                  L"start in tray: the icon comes back after Explorer recreates the taskbar");
+            state->tray_controller.RestoreWindow();
+            Check(IsWindowVisible(hwnd) && IsZoomed(hwnd) && !state->tray_controller.IconVisible() &&
+                  state->window_tabs.items.size() == tabs_before,
+                  L"start in tray: a click restores the maximized window as it was and drops the icon");
+            state->tray_controller.HandleTaskbarCreated();
+            Check(!state->tray_controller.IconVisible(),
+                  L"start in tray: a recreated taskbar does not bring back a dropped icon");
+            ShowWindow(hwnd, SW_RESTORE);
+            ShowWindow(hwnd, SW_HIDE);
             state->tray_controller.Detach();
         }
         state->watches.Stop();

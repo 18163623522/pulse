@@ -393,6 +393,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_page = app::SettingsController::PageFromName(rest);
             vm.settings_scroll = s.settings.scroll();
             vm.settings_launch_on_startup = s.appPrefs.launch_on_startup;
+            vm.settings_start_in_tray = s.appPrefs.start_in_tray;
             vm.settings_keep_running = s.appPrefs.keep_running_on_close;
             vm.settings_show_hidden_files = s.appPrefs.show_hidden_files;
             vm.settings_show_protected_os_files = s.appPrefs.show_protected_os_files;

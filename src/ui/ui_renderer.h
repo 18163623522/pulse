@@ -646,6 +646,7 @@ struct WindowViewModel {
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates
     float settings_scroll = 0.0f;
     bool settings_launch_on_startup = false;
+    bool settings_start_in_tray = false;
     bool settings_keep_running = false;
     bool settings_show_hidden_files = false;
     bool settings_show_protected_os_files = false;

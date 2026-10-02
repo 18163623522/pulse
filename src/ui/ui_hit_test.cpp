@@ -386,6 +386,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(lay.close_last_tab_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 26; return r;
                 }
+                if (ContainsPt(lay.start_in_tray_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 27; return r;
+                }
             } else if (vm.settings_page == 1) {
                 if (ContainsPt(lay.global_search_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 15; return r;

@@ -265,6 +265,8 @@ enum class StringId : UINT {
     SettingsLaunchDesc = IDS_SETTINGS_LAUNCH_DESC,
     SettingsKeepRunning = IDS_SETTINGS_KEEP_RUNNING,
     SettingsKeepRunningDesc = IDS_SETTINGS_KEEP_RUNNING_DESC,
+    SettingsStartInTray = IDS_SETTINGS_START_IN_TRAY,
+    SettingsStartInTrayDesc = IDS_SETTINGS_START_IN_TRAY_DESC,
     SettingsOpenFolders = IDS_SETTINGS_OPEN_FOLDERS,
     SettingsOpenFoldersDesc = IDS_SETTINGS_OPEN_FOLDERS_DESC,
     QuickPreview = IDS_QUICK_PREVIEW,

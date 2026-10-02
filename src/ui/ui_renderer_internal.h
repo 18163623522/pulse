@@ -1726,6 +1726,7 @@ struct SettingsLayout {
     D2D1_RECT_F new_tab_open_card{};
     D2D1_RECT_F new_tab_open_row[2]{};
     D2D1_RECT_F close_last_tab_row{};
+    D2D1_RECT_F start_in_tray_row{};
     D2D1_RECT_F text_render_card{};
     D2D1_RECT_F text_render_row[3]{};
     D2D1_RECT_F tray_icon_card{};
