@@ -245,16 +245,29 @@ inline bool IsHighContrast() noexcept {
     return false;
 }
 
-// Text-box colors: the system window colors in high contrast (like the rest of
-// the high-contrast theme), otherwise the light/dark pair.
+// Text boxes in high contrast use the system window colors, like the rest of the
+// high-contrast theme; otherwise the window's own colors.
+inline COLORREF HcEditText(COLORREF themed) noexcept {
+    return IsHighContrast() ? GetSysColor(COLOR_WINDOWTEXT) : themed;
+}
+
+inline COLORREF HcEditBack(COLORREF themed) noexcept {
+    return IsHighContrast() ? GetSysColor(COLOR_WINDOW) : themed;
+}
+
+// WM_CTLCOLOREDIT brush: the system window brush in high contrast (system-owned,
+// never deleted; follows a high-contrast switch while open), else `themed`.
+inline HBRUSH EditBackBrush(HBRUSH themed) noexcept {
+    return IsHighContrast() ? GetSysColorBrush(COLOR_WINDOW) : themed;
+}
+
+// The common light/dark text-box pair.
 inline COLORREF EditTextColor(bool dark) noexcept {
-    if (IsHighContrast()) return GetSysColor(COLOR_WINDOWTEXT);
-    return dark ? RGB(255, 255, 255) : RGB(26, 26, 26);
+    return HcEditText(dark ? RGB(255, 255, 255) : RGB(26, 26, 26));
 }
 
 inline COLORREF EditBackColor(bool dark) noexcept {
-    if (IsHighContrast()) return GetSysColor(COLOR_WINDOW);
-    return dark ? RGB(30, 30, 30) : RGB(255, 255, 255);
+    return HcEditBack(dark ? RGB(30, 30, 30) : RGB(255, 255, 255));
 }
 
 inline D2D1_COLOR_F ColorFromRef(COLORREF color) noexcept {

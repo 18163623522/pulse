@@ -353,16 +353,7 @@ private:
     D2D1_COLOR_F EditForeground() const { return ColorFromRef(EditTextColor(dark_)); }
     D2D1_COLOR_F EditBackground() const { return ColorFromRef(EditBackColor(dark_)); }
 
-    // The native edit's brush follows high contrast being switched while open.
-    HBRUSH EditBrush() {
-        const COLORREF color = EditBackColor(dark_);
-        if (!edit_brush_ || color != edit_brush_color_) {
-            if (edit_brush_) DeleteObject(edit_brush_);
-            edit_brush_ = CreateSolidBrush(color);
-            edit_brush_color_ = color;
-        }
-        return edit_brush_;
-    }
+    HBRUSH EditBrush() const { return EditBackBrush(edit_brush_); }
 
     void CreateFonts() {
         if (font_) { DeleteObject(font_); font_ = nullptr; }
@@ -642,7 +633,7 @@ private:
             painter_.SetCompositor(&compositor_);
             painter_.SetScale(scale_);
             CreateFonts();
-            EditBrush();
+            edit_brush_ = CreateSolidBrush(dark_ ? RGB(30, 30, 30) : RGB(255, 255, 255));
             CreateEdit();
             Relayout();
             return 0;
@@ -825,7 +816,6 @@ private:
     HWND edit_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH edit_brush_ = nullptr;
-    COLORREF edit_brush_color_ = 0;
     Compositor compositor_;
     fluent::Painter painter_{&compositor_};
     FolderPickerLayout layout_;
