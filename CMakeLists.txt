@@ -275,7 +275,7 @@ pulse_enable_lumatext(pulse_fluent_gallery)
 # light / dark / high contrast at 100% and 150%, plus --live real windows.
 add_executable(pulse_dialog_gallery WIN32
     src/bench/dialog_gallery.cpp
-    src/bench/localization_test.rc
+    src/bench/dialog_gallery.rc
     src/ui/confirm_dialog.cpp
     src/ui/confirm_dialog_view.cpp
     src/ui/dialog_lifecycle.cpp
@@ -292,6 +292,11 @@ add_executable(pulse_dialog_gallery WIN32
 target_link_libraries(pulse_dialog_gallery PRIVATE
     d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme shell32
     pulse_localization)
+# Pulse's manifest: layered child EDITs need the Windows 8+ compatibility id.
+set_property(SOURCE src/bench/dialog_gallery.rc APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/common/strings.rcinc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/pulse.manifest")
+target_link_options(pulse_dialog_gallery PRIVATE /MANIFEST:NO)
 pulse_enable_lumatext(pulse_dialog_gallery)
 
 add_executable(pulse_dialogs_test
