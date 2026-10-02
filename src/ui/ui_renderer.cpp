@@ -959,16 +959,41 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         // separates it from the command row.
         FillRect(dc, brStrokeDivider_.get(), 0.0f, h - 1.0f, right, 1.0f);
     }
-    const D2D1_RECT_F settingsRc = D2D1::RectF(chrome.settings_left, tabY,
-        chrome.settings_left + chrome.settings_w, tabY + tabH);
+    // Settings + theme: one quiet pill with a hairline between the two, so
+    // they read as app actions rather than two more caption buttons.
+    const float groupTop = h * 0.5f - 18.0f * scale_;
+    const float groupBottom = h * 0.5f + 18.0f * scale_;
+    if (!IsHighContrast()) {
+        MakeBrush(dc, WithAlpha(theme.text, vm.dark ? 0.06f : 0.045f), brFillHover_);
+        FillRoundedRect(dc, brFillHover_.get(), chrome.group_left, groupTop,
+                        chrome.group_right - chrome.group_left, groupBottom - groupTop, 8.0f * scale_);
+    }
+    MakeBrush(dc, IsHighContrast() ? theme.stroke_divider : WithAlpha(theme.text, 0.12f), brStrokeDivider_);
+    FillRect(dc, brStrokeDivider_.get(), chrome.theme_left - 1.0f * scale_, h * 0.5f - 8.0f * scale_,
+             1.0f * scale_, 16.0f * scale_);
+    MakeBrush(dc, theme.stroke_divider, brStrokeDivider_);
+    const float buttonTop = groupTop + 2.0f * scale_;
+    const float buttonBottom = groupBottom - 2.0f * scale_;
+    const D2D1_RECT_F settingsRc = D2D1::RectF(chrome.settings_left, buttonTop,
+        chrome.settings_left + chrome.settings_w, buttonBottom);
     DrawButton(settingsRc, theme,
         IsHovered(vm, HitTestResult::SettingsButton) ? theme.fill_hover : kTransparent,
-        kIconSettings, L"S", theme.text_secondary, true, true);
+        kIconSettings, L"S", theme.text, true, true);
 
-    const D2D1_RECT_F themeRc = D2D1::RectF(chrome.theme_left, tabY,
-        chrome.theme_left + chrome.theme_w, tabY + tabH);
-    DrawButton(themeRc, theme, IsHovered(vm, HitTestResult::ThemeToggle) ? theme.fill_hover : kTransparent,
-        kIconTheme, L"T", theme.text_secondary, true, true);
+    const D2D1_RECT_F themeRc = D2D1::RectF(chrome.theme_left, buttonTop,
+        chrome.theme_left + chrome.theme_w, buttonBottom);
+    {
+        // The solid half shows the current theme: right in light, left in dark.
+        D2D1_MATRIX_3X2_F previous{};
+        dc->GetTransform(&previous);
+        if (vm.dark) {
+            dc->SetTransform(D2D1::Matrix3x2F::Rotation(180.0f, D2D1::Point2F(
+                (themeRc.left + themeRc.right) * 0.5f, (themeRc.top + themeRc.bottom) * 0.5f)) * previous);
+        }
+        DrawButton(themeRc, theme, IsHovered(vm, HitTestResult::ThemeToggle) ? theme.fill_hover : kTransparent,
+            kIconTheme, L"T", theme.text, true, true);
+        dc->SetTransform(previous);
+    }
 
     // Window controls, right-aligned in Win11 order: min, max/restore, close.
     const float ctrlY = y;

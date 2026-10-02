@@ -187,7 +187,7 @@ void ClearTextWidthCache() {
     constexpr const wchar_t* kIconSearch = L"\xE721";
     constexpr const wchar_t* kIconInfo = L"\xE946";
     constexpr const wchar_t* kIconFilter = L"\xE71C";
-    constexpr const wchar_t* kIconTheme = L"\xE706";
+    constexpr const wchar_t* kIconTheme = L"\xE793";
     constexpr const wchar_t* kIconSettings = L"\xE713";
     constexpr const wchar_t* kIconMinimize = L"\xE921";
     constexpr const wchar_t* kIconMaximize = L"\xE922";
@@ -1665,6 +1665,9 @@ struct TitleChrome {
     float settings_w = 0.0f;
     float theme_left = 0.0f;
     float theme_w = 0.0f;
+    // Settings + theme share one pill, kept apart from the window controls.
+    float group_left = 0.0f;
+    float group_right = 0.0f;
     float cmd_left = 0.0f;
     float cmd_w = 0.0f;
     float cmd_top = 0.0f;
@@ -1677,8 +1680,11 @@ TitleChrome MakeTitleChrome(float window_w, float scale, float title_h) {
     c.chrome_left = window_w - ctrl_w * 3.0f;
     c.theme_w = 36.0f * scale;
     c.settings_w = 36.0f * scale;
-    c.theme_left = c.chrome_left - c.theme_w - 6.0f * scale;
-    c.settings_left = c.theme_left - c.settings_w - 6.0f * scale;
+    const float group_pad = 2.0f * scale;
+    c.group_right = c.chrome_left - 14.0f * scale;
+    c.theme_left = c.group_right - group_pad - c.theme_w;
+    c.settings_left = c.theme_left - 1.0f * scale - c.settings_w;   // 1 DIP divider
+    c.group_left = c.settings_left - group_pad;
     c.cmd_w = 0.0f;
     c.cmd_left = c.settings_left;
     const float cmd_pad = 8.0f * scale;
