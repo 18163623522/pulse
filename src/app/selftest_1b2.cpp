@@ -61,6 +61,7 @@
 #include "../ui/drag_drop.h"
 #include "../ui/ui_renderer.h"
 #include "../ui/preview_footer_layout.h"
+#include "../ui/preview_format_catalog.h"
 #include "../ops/ops_manager.h"
 #include "../ops/clipboard.h"
 #include "../common/text_format.h"
@@ -3177,6 +3178,21 @@ void TestStartupLocation() {
 // starts over there (pinned tabs stay), a second launch with a folder starts
 // over at that folder, and "restore last tabs" leaves everything alone. The
 // tray icon itself is never added here: the hide step is simulated.
+// Settings > Quick Look: codec detection never blocks the caller. It used to
+// run MFTEnumEx inside BuildVm, where COM pumped a title-bar WM_NCHITTEST that
+// re-entered BuildVm and probed again until the stack overflowed.
+void TestPreviewCodecProbe() {
+    const ULONGLONG start = GetTickCount64();
+    unsigned mask = 0;
+    for (int i = 0; i < 9; ++i) mask = ui::DetectPreviewCodecs(true, nullptr);
+    Check(GetTickCount64() - start < 200, L"preview codecs: detection does not block the caller");
+    while (!(mask & ui::kPreviewCodecsDetected) && GetTickCount64() - start < 20000) {
+        Sleep(20);
+        mask = ui::DetectPreviewCodecs(false, nullptr);
+    }
+    Check((mask & ui::kPreviewCodecsDetected) != 0, L"preview codecs: the worker publishes a detected mask");
+}
+
 void TestTrayReveal() {
     wchar_t temp[MAX_PATH]{};
     GetTempPathW(ARRAYSIZE(temp), temp);
@@ -6595,6 +6611,7 @@ int RunSelfTest1B2() {
         TestFolderSorts();
         TestStartupLocation();
         TestTrayReveal();
+        TestPreviewCodecProbe();
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
     }
@@ -6750,6 +6767,7 @@ int RunSelfTest1B2() {
     TestFolderSorts();
     TestStartupLocation();
     TestTrayReveal();
+    TestPreviewCodecProbe();
     TestNavigateAlwaysEnumerates();
     TestSnapshotPatch();
     TestSnapshotPatchBatch();

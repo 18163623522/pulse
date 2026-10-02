@@ -403,7 +403,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_global_search_error = s.settings.global_search_error();
             vm.settings_content_status = ContentIndexStatusText(s);
             vm.settings_expanded = s.settingsExpanded;
-            if (vm.settings_page == 0) vm.settings_preview_codecs = ui::DetectPreviewCodecs(false);
+            if (vm.settings_page == 0) vm.settings_preview_codecs = ui::DetectPreviewCodecs(false, s.hwnd);
             vm.settings_theme = s.themeOverride == ui::ThemeMode::Light ? 1 : s.themeOverride == ui::ThemeMode::Dark ? 2 : 0;
             const auto content_config = s.contentSearch.GetConfig();
             const auto content_status = s.contentSearch.GetStatus();
