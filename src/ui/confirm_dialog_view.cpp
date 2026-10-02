@@ -105,6 +105,55 @@ std::vector<std::wstring> ConfirmItemRows(const ConfirmDialogSpec& spec) {
     return rows;
 }
 
+namespace {
+
+std::wstring FitEnd(const std::wstring& text, float width,
+                    const std::function<float(std::wstring_view)>& measure) {
+    if (measure(text) <= width) return text;
+    size_t lo = 0, hi = text.size();
+    while (lo < hi) {
+        const size_t mid = (lo + hi + 1) / 2;
+        if (measure(text.substr(0, mid) + L"\u2026") <= width) lo = mid; else hi = mid - 1;
+    }
+    if (lo > 0 && IS_HIGH_SURROGATE(text[lo - 1])) --lo;
+    return text.substr(0, lo) + L"\u2026";
+}
+
+} // namespace
+
+std::wstring FitConfirmItemText(const std::wstring& text, float width,
+                                const std::function<float(std::wstring_view)>& measure) {
+    if (text.empty() || measure(text) <= width) return text;
+    std::vector<std::wstring> parts;
+    for (size_t start = 0;;) {
+        const size_t next = text.find(L'\\', start);
+        parts.push_back(text.substr(start, next == std::wstring::npos ? std::wstring::npos
+                                                                       : next - start));
+        if (next == std::wstring::npos) break;
+        start = next + 1;
+    }
+    if (parts.size() < 3 || parts.back().empty()) return FitEnd(text, width, measure);
+    // A UNC path keeps its server as the root.
+    size_t first = 1;
+    std::wstring root = parts[0] + L"\\";
+    if (parts[0].empty() && parts.size() > 3 && parts[1].empty()) {
+        root = L"\\\\" + parts[2] + L"\\";
+        first = 3;
+    }
+    std::wstring tail = parts.back();
+    std::wstring best;
+    for (size_t i = parts.size() - 1; i-- > first;) {
+        const std::wstring candidate = root + L"\u2026\\" + parts[i] + L"\\" + tail;
+        if (measure(candidate) > width) break;
+        tail = parts[i] + L"\\" + tail;
+        best = candidate;
+    }
+    if (!best.empty()) return best;
+    const std::wstring last = root + L"\u2026\\" + parts.back();
+    if (measure(last) <= width) return last;
+    return FitEnd(parts.back(), width, measure);
+}
+
 std::vector<int> ConfirmFocusOrder(const ConfirmDialogSpec& spec) {
     if (spec.secondary_text.empty()) return {kConfirmCancel, kConfirmPrimary};
     return {kConfirmCancel, kConfirmSecondary, kConfirmPrimary};
@@ -284,8 +333,14 @@ void DrawConfirmDialog(Compositor& compositor, fluent::Painter& painter, const T
                                                      row.left + Dip(scale, 30.0f), row.bottom),
                                   theme.text_secondary);
             }
-            painter.DrawText(rows[i], D2D1::RectF(row.left + Dip(scale, 40.0f), row.top,
-                                                  row.right - Dip(scale, 12.0f), row.bottom),
+            const D2D1_RECT_F text_rect = D2D1::RectF(row.left + Dip(scale, 40.0f), row.top,
+                                                      row.right - Dip(scale, 12.0f), row.bottom);
+            const std::wstring text = more_row ? rows[i] : FitConfirmItemText(
+                rows[i], text_rect.right - text_rect.left,
+                [&](std::wstring_view s) {
+                    return typography::MeasureLine(&compositor, compositor.TextFormat(), s);
+                });
+            painter.DrawText(text, text_rect,
                              compositor.TextFormat(),
                              more_row ? theme.text_secondary : theme.text,
                              fluent::HorizontalAlignment::Left, theme.surface_card);

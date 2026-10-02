@@ -67,6 +67,21 @@ void TestConfirm() {
     many.items.resize(kConfirmMaxItemRows);
     Check(ConfirmItemRows(many).size() == kConfirmMaxItemRows, "five items show without collapsing");
 
+    const auto chars = [](std::wstring_view s) { return static_cast<float>(s.size()); };
+    const std::wstring long_path = L"C:\\Users\\SS\\Desktop\\bench\\fx\\delete-me.txt";
+    Check(FitConfirmItemText(long_path, 100.0f, chars) == long_path, "a path that fits is unchanged");
+    Check(FitConfirmItemText(long_path, 22.0f, chars) == L"C:\\\u2026\\fx\\delete-me.txt",
+          "a long path keeps the drive and as many last folders as fit");
+    Check(FitConfirmItemText(long_path, 18.0f, chars) == L"C:\\\u2026\\delete-me.txt",
+          "a tight path keeps the drive and the item name");
+    const std::wstring fitted = FitConfirmItemText(long_path, 8.0f, chars);
+    Check(fitted == L"delete-\u2026", "a very tight path shortens the item name itself");
+    Check(FitConfirmItemText(L"\\\\server\\share\\docs\\a.txt", 20.0f, chars) ==
+              L"\\\\server\\\u2026\\a.txt",
+          "a UNC path keeps its server");
+    Check(FitConfirmItemText(L"plain item text", 8.0f, chars) == L"plain i\u2026",
+          "text that is not a path gets a trailing ellipsis");
+
     ConfirmDialogSpec two;
     Check(ConfirmFocusOrder(two) == std::vector<int>{kConfirmCancel, kConfirmPrimary},
           "two-button focus order is cancel, primary");
