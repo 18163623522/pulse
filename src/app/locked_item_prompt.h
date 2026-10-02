@@ -4,13 +4,14 @@
 #pragma once
 #include <string>
 #include "../ops/ops_manager.h"
+#include "../ui/confirm_dialog.h"
 
 namespace pulse {
 struct AppState;
 
-// Message body: item name, one line per owning process, and the hint that
+// The prompt: item name, one row per owning process, and the note that
 // matches what the confirm button will do.
-std::wstring LockedItemPromptMessage(const ops::OpStatus& status, bool can_end);
+ui::ConfirmDialogSpec LockedItemPromptSpec(const ops::OpStatus& status, bool can_end);
 // True when every owner may be ended (otherwise the prompt only offers retry).
 bool LockedItemOwnersClosable(const ops::OpStatus& status);
 // Modal; call from the UI thread outside paint. Never blocks on the owners:

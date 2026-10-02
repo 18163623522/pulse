@@ -3227,20 +3227,22 @@ void TestLockedItemPrompt() {
     word.app_name = L"Microsoft Word";
     word.image_name = L"WINWORD.EXE";
     status.lock_owners.push_back(word);
-    const std::wstring message = LockedItemPromptMessage(status, true);
-    Check(message.find(L"report.docx") != std::wstring::npos &&
-          message.find(L"C:\\Work") == std::wstring::npos &&
-          message.find(L"{name}") == std::wstring::npos,
+    const ui::ConfirmDialogSpec spec = LockedItemPromptSpec(status, true);
+    Check(spec.message.find(L"report.docx") != std::wstring::npos &&
+          spec.message.find(L"C:\\Work") == std::wstring::npos &&
+          spec.message.find(L"{name}") == std::wstring::npos,
           L"locked item: the prompt names the file, not its folder");
-    Check(message.find(L"WINWORD.EXE, PID 4242") != std::wstring::npos,
+    Check(spec.items.size() == 1 && spec.items[0].find(L"WINWORD.EXE, PID 4242") != std::wstring::npos,
           L"locked item: the prompt lists the owning process");
-    Check(message.find(l10n::Get(l10n::StringId::LockedItemEndHint)) != std::wstring::npos,
+    Check(spec.note == l10n::Get(l10n::StringId::LockedItemEndHint) && spec.danger &&
+              spec.confirm_text == l10n::Get(l10n::StringId::LockedItemEndRetry),
           L"locked item: ending owners warns about unsaved work");
     Check(LockedItemOwnersClosable(status), L"locked item: closable owners allow end-and-retry");
     status.lock_owners.back().closable = false;
+    const ui::ConfirmDialogSpec retry = LockedItemPromptSpec(status, false);
     Check(!LockedItemOwnersClosable(status) &&
-          LockedItemPromptMessage(status, false).find(l10n::Get(l10n::StringId::LockedItemCloseHint))
-              != std::wstring::npos,
+              retry.note == l10n::Get(l10n::StringId::LockedItemCloseHint) && !retry.danger &&
+              retry.confirm_text == l10n::Get(l10n::StringId::LockedItemRetry),
           L"locked item: protected owners only get the close-and-retry hint");
 }
 
