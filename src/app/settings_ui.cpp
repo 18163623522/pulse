@@ -116,7 +116,7 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
         s.settingsExpanded^=1u<<hit.index;
         // Re-check the system extensions each time the formats card opens: the
         // user may just have installed one from its "Get" button.
-        if(hit.index==2 && (s.settingsExpanded & 4u)) ui::DetectPreviewCodecs(true);
+        if(hit.index==2 && (s.settingsExpanded & 4u)) ui::DetectPreviewCodecs(true, s.hwnd);
         auto vm=BuildVm(s,false);
         const float maximum=s.renderer.SettingsMaxScroll(vm,static_cast<float>(s.compositor.Width()),static_cast<float>(s.compositor.Height()));
         s.settings.SetScroll(s.settings.scroll(),maximum);break;
