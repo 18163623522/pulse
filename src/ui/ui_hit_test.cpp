@@ -376,6 +376,12 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 for (int i = 0; i < 3; ++i) if (ContainsPt(lay.change_days[i], x, y)) {
                     r.region = HitTestResult::SettingsChangeDays; r.index = i; return r;
                 }
+                if (ContainsPt(lay.default_manager_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 28; return r;
+                }
+                if (ContainsPt(lay.this_pc_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 29; return r;
+                }
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.startup_row[i], x, y)) {
                         r.region = HitTestResult::SettingsToggle;

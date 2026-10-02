@@ -16,6 +16,7 @@ struct AppPrefs {
     bool keep_running_on_close = false;
     bool open_folders_in_pulse = false;
     bool take_over_win_e = false;
+    bool take_over_this_pc = false; // HKCU This PC open verb (default_file_manager.h)
     bool shell_tag_menu = false;    // File Explorer "Pulse tags" submenu (shell_tag_menu.cpp syncs HKCU)   // registry is the source of truth (not in app.json)
     bool verify_copies = false;
     bool show_status_performance = false;

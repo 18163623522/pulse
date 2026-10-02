@@ -1750,6 +1750,8 @@ struct SettingsLayout {
     D2D1_RECT_F hints_reset_button{};
     D2D1_RECT_F blank_click_row{};
     D2D1_RECT_F win_e_row{};
+    D2D1_RECT_F this_pc_row{};
+    D2D1_RECT_F default_manager_row{};
     D2D1_RECT_F shell_tags_row{};
     D2D1_RECT_F change_tracking_row{}, change_days_row{}, change_days[3]{};
     D2D1_RECT_F search_pinyin_row{};

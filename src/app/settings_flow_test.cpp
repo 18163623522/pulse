@@ -479,7 +479,13 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
                     const auto density_layout=ui::MakeSettingsLayout(scrolled,window,scale,s.renderer.TitleBarHeight(),28*scale,&painter);
                     const auto density=density_layout.density_row[2];
                     check(s.renderer.HitTest(scrolled,window,(density.left+density.right)/2,(density.top+density.bottom)/2).region==H::SettingsDensity,"density segments remain reachable after scrolling into view");
-                    check(layout.wallpaper_card.bottom==0 && layout.startup_row[2].bottom==0,"collapsed advanced settings have no invisible hit targets");
+                    check(layout.wallpaper_card.bottom==0 && layout.startup_row[2].bottom==0 && layout.this_pc_row.bottom==0,"collapsed advanced settings have no invisible hit targets");
+                    {
+                        const auto m=layout.default_manager_row;const auto mh=hit(m);
+                        check(mh.region==H::SettingsToggle && mh.index==28 && m.bottom<=layout.startup_row[0].top &&
+                              m.top>=layout.group[1].top && m.top>=layout.section[1].bottom,
+                              "default file manager switch heads the startup group");
+                    }
                     for(const auto* locale:{L"zh-CN",L"en-US"}) {
                         l10n::SetLanguage(locale);bool fits=true;
                         const I labels[]={I::SettingsDensityCompact,I::SettingsDensityStandard,I::SettingsDensityRoomy,I::SettingsTraySmall,I::SettingsTrayStandard,I::SettingsTrayLarge};

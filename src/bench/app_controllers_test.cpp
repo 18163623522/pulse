@@ -5,6 +5,7 @@
 #include "../app/single_instance_coordinator.h"
 #include "../app/tray_controller.h"
 #include "../app/blank_pane_click.h"
+#include "../app/default_file_manager.h"
 #include "../app/last_tab_close.h"
 #include "../app/unc_probe_scheduler.h"
 #include "../common/localization.h"
@@ -40,6 +41,168 @@ namespace {
 
 bool Report(const char* name, bool passed) {
     std::printf("[%s] %s\n", passed ? "PASS" : "FAIL", name);
+    return passed;
+}
+
+namespace takeover_test {
+
+constexpr wchar_t kWinECommand[] =
+    L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\\shell\\opennewwindow\\command";
+constexpr wchar_t kThisPcClsid[] =
+    L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
+constexpr wchar_t kThisPcShell[] =
+    L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell";
+constexpr wchar_t kThisPcCommand[] =
+    L"Software\\Classes\\CLSID\\{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\shell\\open\\command";
+constexpr wchar_t kForeign[] = L"\"C:\\Other\\fm.exe\" \"%1\"";
+
+std::wstring Read(const wchar_t* key, const wchar_t* name) {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS) return L"<absent>";
+    wchar_t value[1024]{};
+    DWORD bytes = sizeof(value) - sizeof(wchar_t);
+    DWORD type = 0;
+    const LONG st = RegQueryValueExW(h, name, nullptr, &type, reinterpret_cast<LPBYTE>(value), &bytes);
+    RegCloseKey(h);
+    return st == ERROR_SUCCESS ? std::wstring(value) : L"<none>";
+}
+
+bool Write(const wchar_t* key, const wchar_t* name, const std::wstring& value) {
+    HKEY h = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, key, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
+        return false;
+    const LONG st = RegSetValueExW(h, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                                   static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(h);
+    return st == ERROR_SUCCESS;
+}
+
+bool KeyExists(const wchar_t* key) {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key, 0, KEY_READ, &h) != ERROR_SUCCESS) return false;
+    RegCloseKey(h);
+    return true;
+}
+
+} // namespace takeover_test
+
+bool TestDefaultFileManager() {
+    using namespace pulse::app;
+    using namespace takeover_test;
+    bool passed = true;
+    {
+        passed &= Report("default file manager: This PC launch arguments are recognized",
+            IsThisPcArgument(L"::{20d04fe0-3aea-1069-a2d8-08002b30309d}") &&
+            IsThisPcArgument(L"\"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\"") &&
+            IsThisPcArgument(L"shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}") &&
+            IsThisPcArgument(L"shell:MyComputerFolder") &&
+            IsThisPcArgument(L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\") &&
+            !IsThisPcArgument(L"") && !IsThisPcArgument(L"C:\\") &&
+            !IsThisPcArgument(L"::{645FF040-5081-101B-9F08-00AA002F954E}") &&
+            !IsThisPcArgument(L"MyComputer") && !IsThisPcArgument(L"shell:"));
+        AppPrefs flags;
+        flags.persist = false;
+        const bool off = DefaultFileManagerState(flags) == DefaultManagerState::Off;
+        flags.take_over_win_e = true;
+        const bool partial = DefaultFileManagerState(flags) == DefaultManagerState::Partial;
+        flags.open_folders_in_pulse = flags.take_over_this_pc = true;
+        passed &= Report("default file manager: state is off / partial / full from the three takeovers",
+            off && partial && DefaultFileManagerState(flags) == DefaultManagerState::Full);
+        flags.take_over_this_pc = false;
+        flags.open_folders_in_pulse = false;
+        const std::wstring summary = DefaultFileManagerSummary(flags);
+        passed &= Report("default file manager: a partial takeover names what Explorer still opens",
+            summary.find(pulse::l10n::Get(pulse::l10n::StringId::SettingsTakeoverFolders)) != std::wstring::npos &&
+            summary.find(pulse::l10n::Get(pulse::l10n::StringId::ThisPc)) != std::wstring::npos &&
+            summary.find(L"Win+E") == std::wstring::npos && summary.find(L"%s") == std::wstring::npos &&
+            DefaultFileManagerSummary(AppPrefs{}) ==
+                pulse::l10n::Get(pulse::l10n::StringId::SettingsDefaultManagerDesc));
+        passed &= Report("default file manager: settings text is localized",
+            pulse::l10n::Get(pulse::l10n::StringId::SettingsDefaultManager) ==
+                L"\u8BBE\u4E3A\u9ED8\u8BA4\u6587\u4EF6\u7BA1\u7406\u5668" &&
+            !pulse::l10n::Get(pulse::l10n::StringId::SettingsThisPc).empty() &&
+            !pulse::l10n::Get(pulse::l10n::StringId::SettingsThisPcDesc).empty());
+    }
+
+    // Registry round trip, with HKCU redirected to a scratch key for this
+    // process so the real associations are never touched.
+    const std::wstring scratch_path =
+        L"Software\\PulseTest\\DefaultFileManager-" + std::to_wstring(GetCurrentProcessId());
+    HKEY scratch = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, scratch_path.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+                        nullptr, &scratch, nullptr) != ERROR_SUCCESS ||
+        RegOverridePredefKey(HKEY_CURRENT_USER, scratch) != ERROR_SUCCESS) {
+        if (scratch) RegCloseKey(scratch);
+        return Report("default file manager: scratch registry is available", false);
+    }
+    wchar_t module[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, module, MAX_PATH);
+    const std::wstring exe = module;
+    {
+        // Another file manager owns Win+E and This PC beforehand.
+        Write(kWinECommand, nullptr, kForeign);
+        Write(kThisPcCommand, nullptr, kForeign);
+        Write(kThisPcShell, nullptr, L"openfm");
+        AppPrefs prefs;
+        prefs.Load();
+        const bool starts_off = DefaultFileManagerState(prefs) == DefaultManagerState::Off;
+        const bool applied = ApplyDefaultFileManager(prefs, true);
+        AppPrefs reread;
+        reread.Load();
+        passed &= Report("default file manager: turning on takes over folders, Win+E and This PC",
+            starts_off && applied && DefaultFileManagerState(reread) == DefaultManagerState::Full &&
+            Read(L"Software\\Classes\\Directory\\shell", nullptr) == L"open" &&
+            Read(kWinECommand, nullptr) == L"\"" + exe + L"\"" &&
+            Read(kThisPcCommand, nullptr) == L"\"" + exe + L"\" \"" + kThisPcParsingName + L"\"" &&
+            Read(kThisPcShell, nullptr) == L"open");
+        passed &= Report("default file manager: the other manager's commands are kept as backups",
+            Read(kWinECommand, L"PulseBackup") == kForeign &&
+            Read(kThisPcCommand, L"PulseBackup") == kForeign &&
+            Read(kThisPcShell, L"PulseBackup") == L"openfm");
+
+        ApplyThisPcOpen(reread, false);
+        AppPrefs partial;
+        partial.Load();
+        const bool is_partial = DefaultFileManagerState(partial) == DefaultManagerState::Partial &&
+            Read(kThisPcCommand, nullptr) == kForeign;
+        // The switch treats partial as off and fills in the missing part.
+        ApplyDefaultFileManager(partial, DefaultFileManagerState(partial) != DefaultManagerState::Full);
+        AppPrefs filled;
+        filled.Load();
+        passed &= Report("default file manager: a partial takeover is completed by the switch",
+            is_partial && DefaultFileManagerState(filled) == DefaultManagerState::Full);
+
+        const bool removed = ApplyDefaultFileManager(filled, false);
+        AppPrefs off;
+        off.Load();
+        passed &= Report("default file manager: turning off restores the other manager's commands",
+            removed && DefaultFileManagerState(off) == DefaultManagerState::Off &&
+            Read(kWinECommand, nullptr) == kForeign && Read(kWinECommand, L"PulseBackup") == L"<none>" &&
+            Read(kThisPcCommand, nullptr) == kForeign && Read(kThisPcCommand, L"PulseBackup") == L"<none>" &&
+            Read(kThisPcShell, nullptr) == L"openfm" && Read(kThisPcShell, L"PulseBackup") == L"<none>" &&
+            !KeyExists(L"Software\\Classes\\Directory\\shell\\open"));
+
+        // Off again with nobody else's command: leaves it alone entirely.
+        const bool untouched = ApplyThisPcOpen(off, false) && Read(kThisPcCommand, nullptr) == kForeign;
+        passed &= Report("default file manager: turning off never removes another program's verb", untouched);
+    }
+    {
+        // Clean machine: on then off leaves no This PC / Win+E keys behind.
+        RegDeleteTreeW(HKEY_CURRENT_USER, kThisPcClsid);
+        RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}");
+        AppPrefs prefs;
+        prefs.Load();
+        const bool on = ApplyDefaultFileManager(prefs, true) && ReadThisPcOpen(exe);
+        const bool off = ApplyDefaultFileManager(prefs, false) && !ReadThisPcOpen(exe);
+        passed &= Report("default file manager: on and off on a clean profile leaves no keys behind",
+            on && off && !KeyExists(kThisPcClsid) &&
+            !KeyExists(L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\\shell"));
+    }
+    RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+    RegCloseKey(scratch);
+    RegDeleteTreeW(HKEY_CURRENT_USER, scratch_path.c_str());
+    passed &= Report("default file manager: scratch registry is removed",
+        !takeover_test::KeyExists(scratch_path.c_str()));
     return passed;
 }
 
@@ -686,6 +849,7 @@ int wmain(int argc, wchar_t** argv) {
         lifecycle_completed);
 
     passed &= TestAddressBarCommands();
+    passed &= TestDefaultFileManager();
     passed &= Report("menu row height follows list density (28/34/40 -> 30/36/40, clamped)",
         pulse::app::MenuRowHeightDip(28) == 30 && pulse::app::MenuRowHeightDip(34) == 36 &&
         pulse::app::MenuRowHeightDip(40) == 40 && pulse::app::MenuRowHeightDip(24) == 28 &&

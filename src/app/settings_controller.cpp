@@ -1,6 +1,7 @@
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
 #include "settings_controller.h"
+#include "default_file_manager.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 
@@ -460,6 +461,14 @@ void SettingsController::ToggleUi(int index) {
         SaveAndApply(SettingsEffect::None);
     } else if (index == 20) {
         prefs_->ApplyWinE(!prefs_->take_over_win_e);
+        SaveAndApply(SettingsEffect::None);
+    } else if (index == 28) {
+        // Partial counts as off: the switch fills in what is missing.
+        ApplyDefaultFileManager(*prefs_,
+                                DefaultFileManagerState(*prefs_) != DefaultManagerState::Full);
+        SaveAndApply(SettingsEffect::None);
+    } else if (index == 29) {
+        ApplyThisPcOpen(*prefs_, !prefs_->take_over_this_pc);
         SaveAndApply(SettingsEffect::None);
     } else if (index == 21) {
         // shell_tag_menu.cpp installs/removes the HKCU verbs on the next UI tick.

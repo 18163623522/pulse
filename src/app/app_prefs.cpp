@@ -1,5 +1,6 @@
 // app_prefs.cpp — Persist general settings; sync 开机自启 with the Run key.
 #include "app_prefs.h"
+#include "default_file_manager.h"
 #include "session.h"
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
@@ -671,6 +672,7 @@ bool AppPrefs::Load() {
         launch_on_startup = ReadLaunchOnStartup();
         open_folders_in_pulse = ReadFolderOpen();
         take_over_win_e = ReadWinE();
+        take_over_this_pc = ReadThisPcOpen(ExePath());
         return false;
     }
     std::wstring json;
@@ -681,6 +683,7 @@ bool AppPrefs::Load() {
     launch_on_startup = ReadLaunchOnStartup();
     open_folders_in_pulse = ReadFolderOpen();
     take_over_win_e = ReadWinE();
+    take_over_this_pc = ReadThisPcOpen(ExePath());
     // Repair older installs that wrote open\command but left shell default as none.
     if (persist && open_folders_in_pulse)
         ApplyFolderOpen(true);

@@ -482,6 +482,7 @@ add_executable(pulse_app_controllers_test
     src/app/single_instance_coordinator.cpp
     src/app/tray_controller.cpp
     src/app/app_prefs.cpp
+    src/app/default_file_manager.cpp
     src/app/entry_group.cpp
     src/app/entry_sort.cpp
     src/app/folder_view_prefs.cpp

@@ -102,6 +102,7 @@
 #include "shell_tag_menu.h"
 #include "hang_watch.h"
 #include "tray_reveal.h"
+#include "default_file_manager.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -706,7 +707,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         std::wstring startPath = s->shot.active ? s->shot.path : L"C:\\";
         if (!s->shot.active && !s->session_path.empty()) startPath = s->session_path;
         else if (!s->shot.active && !s->open_path.empty())
-            startPath = ResolveOpenFolderPath(s->open_path);
+            startPath = app::IsThisPcArgument(s->open_path) ? std::wstring()
+                                                            : ResolveOpenFolderPath(s->open_path);
         else if (open_default_location)
             startPath = app::DefaultLocation(s->appPrefs); // empty = This PC
         s->pane->NewTab(startPath);
@@ -721,8 +723,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         if (!s->shot.active && !s->open_path.empty() &&
             (!s->session_layout_tabs.empty() || !s->session_path.empty())) {
-            const std::wstring open_path = ResolveOpenFolderPath(s->open_path);
-            if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
+            const bool this_pc = app::IsThisPcArgument(s->open_path);
+            const std::wstring open_path = this_pc ? std::wstring() : ResolveOpenFolderPath(s->open_path);
+            if (this_pc) NewTab(*s, open_path);
+            else if (!open_path.empty() && !ActivateExistingFolderTab(*s, open_path))
                 NewTab(*s, open_path);
             if (!open_path.empty()) SelectLaunchedFile(*s, s->open_path);
         }

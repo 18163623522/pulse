@@ -888,6 +888,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsThemeColor: target=l.accent_card;break;
     case I::SettingsWindowEffect: target=l.effect_card;break;
     case I::SettingsLanguage: target=l.language_card;break;
+    case I::SettingsDefaultManager: target=l.default_manager_row;break;
     case I::SettingsLaunch: target=l.startup_row[0];break;
     case I::SettingsKeepRunning: target=l.startup_row[1];break;
     case I::SettingsHomeFolder: target=l.home_folder_card;break;
@@ -915,6 +916,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsHintsReset: target=l.hints_reset_row;break;
     case I::SettingsBlankClickBack: target=l.blank_click_row;break;
     case I::SettingsWinE: target=l.win_e_row;break;
+    case I::SettingsThisPc: target=l.this_pc_row;break;
     case I::SettingsShellTags: target=l.shell_tags_row;break;
     case I::SettingsChangeTracking: target=l.change_tracking_row;break;
     case I::GlobalSearch: target=l.global_search_row;break;
