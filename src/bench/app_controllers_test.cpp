@@ -6,6 +6,7 @@
 #include "../app/tray_controller.h"
 #include "../app/blank_pane_click.h"
 #include "../app/default_file_manager.h"
+#include "../app/shell_window_plan.h"
 #include "../app/last_tab_close.h"
 #include "../app/unc_probe_scheduler.h"
 #include "../common/localization.h"
@@ -206,6 +207,42 @@ bool TestDefaultFileManager() {
     passed &= Report("default file manager: scratch registry is removed",
         !takeover_test::KeyExists(scratch_path.c_str()) &&
         !takeover_test::KeyExists(L"Software\\PulseTest"));
+    return passed;
+}
+
+bool TestShellWindowPlan() {
+    using namespace pulse::app;
+    bool passed = true;
+    passed &= Report("shell windows: drives, shares and This PC are shell folders; Pulse views are not",
+        IsShellWindowPath(L"") && IsShellWindowPath(L"C:\\") && IsShellWindowPath(L"d:\\Work") &&
+        IsShellWindowPath(L"\\\\server\\share\\dir") && !IsShellWindowPath(L"pulse:search?q=a") &&
+        !IsShellWindowPath(L"pulse:settings") && !IsShellWindowPath(L"\\\\?\\C:\\x"));
+
+    using K = ShellWindowActionKind;
+    const std::vector<ShellWindowEntry> current = {{1, L"C:\\A"}, {2, L"C:\\B"}, {3, L""}};
+    const std::vector<ShellWindowEntry> wanted = {{2, L"c:\\b"}, {3, L"D:\\"}, {4, L"C:\\New"}};
+    const std::vector<ShellWindowAction> expected = {
+        {K::Revoke, 1, L"C:\\A"}, {K::Navigate, 3, L"D:\\"}, {K::Register, 4, L"C:\\New"}};
+    passed &= Report("shell windows: closed panes revoke first, case-only changes stay, moves navigate",
+        PlanShellWindowChanges(current, wanted) == expected);
+    passed &= Report("shell windows: same set plans nothing; empty set revokes all",
+        PlanShellWindowChanges(current, current).empty() &&
+        PlanShellWindowChanges(current, {}).size() == 3 &&
+        PlanShellWindowChanges({}, current).size() == 3 &&
+        PlanShellWindowChanges({}, current)[0].kind == K::Register);
+
+    std::wstring folder, leaf;
+    const bool file = SplitShellItemPath(L"C:\\Users\\a\\b.txt", folder, leaf) &&
+        folder == L"C:\\Users\\a" && leaf == L"b.txt";
+    const bool top = SplitShellItemPath(L"C:\\Users", folder, leaf) && folder == L"C:\\" && leaf == L"Users";
+    const bool share = SplitShellItemPath(L"\\\\srv\\share\\x.doc", folder, leaf) &&
+        folder == L"\\\\srv\\share" && leaf == L"x.doc";
+    const bool trailing = SplitShellItemPath(L"D:\\dir\\sub\\", folder, leaf) && folder == L"D:\\dir" &&
+        leaf == L"sub";
+    const bool roots = !SplitShellItemPath(L"C:\\", folder, leaf) && folder.empty() && leaf.empty() &&
+        !SplitShellItemPath(L"\\\\srv\\share", folder, leaf) && !SplitShellItemPath(L"", folder, leaf);
+    passed &= Report("shell windows: selected items split into folder and name; roots have no parent",
+        file && top && share && trailing && roots);
     return passed;
 }
 
@@ -853,6 +890,7 @@ int wmain(int argc, wchar_t** argv) {
 
     passed &= TestAddressBarCommands();
     passed &= TestDefaultFileManager();
+    passed &= TestShellWindowPlan();
     passed &= Report("menu row height follows list density (28/34/40 -> 30/36/40, clamped)",
         pulse::app::MenuRowHeightDip(28) == 30 && pulse::app::MenuRowHeightDip(34) == 36 &&
         pulse::app::MenuRowHeightDip(40) == 40 && pulse::app::MenuRowHeightDip(24) == 28 &&

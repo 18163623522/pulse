@@ -103,6 +103,7 @@
 #include "hang_watch.h"
 #include "tray_reveal.h"
 #include "default_file_manager.h"
+#include "shell_window_sync.h"
 #include <commctrl.h>
 #include <dbt.h> // WM_DEVICECHANGE / DEV_BROADCAST_HDR
 
@@ -214,6 +215,7 @@ void Render(AppState& s) {
     if (!s.tagRenameId.empty()) LayoutTagRenameOverlay(s);
     if (s.addressEditing) LayoutAddressEditor(s);
     if (s.filterEditing) LayoutFilterEditor(s);
+    SyncShellWindows(s);
 
     if (s.shot.active && !s.timing.first_frame_recorded) {
         s.timing.first_frame_ms = std::chrono::duration<double, std::milli>(
@@ -993,6 +995,12 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         SetBkColor(hdc, s->darkMode ? RGB(30, 30, 30) : RGB(255, 255, 255));
         SetBkMode(hdc, OPAQUE);
         return reinterpret_cast<LRESULT>(s->editBrush);
+    }
+
+    case WM_SHELL_SELECT: {
+        std::unique_ptr<app::ShellSelectRequest> request(reinterpret_cast<app::ShellSelectRequest*>(lParam));
+        if (s && request) HandleShellSelect(*s, *request);
+        return 0;
     }
 
     case WM_FRAME_PUMP: {
@@ -1783,6 +1791,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     case WM_DESTROY: {
         if (s) {
             s->framePump.Stop();
+            StopShellWindows(*s);
             ShutdownGlobalSearch(*s);
             StopShellRegistryWatch();
             s->watches.Stop();
