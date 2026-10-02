@@ -1,5 +1,6 @@
 // app_input.cpp — extracted from app_main.cpp.
 #include "quick_access.h"
+#include "app_prompts.h"
 #include "vertical_tabs.h"
 #include "tab_shortcuts.h"
 #include "app_updates.h"
@@ -2309,7 +2310,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsDupBrowse) {
             if (!s->duplicateScan.scanning) {
                 std::wstring path;
-                if (PickFolder(hwnd, path, l10n::Get(l10n::StringId::DupFolderPlaceholder).c_str())) {
+                if (PickFolder(*s, path, l10n::Get(l10n::StringId::DupFolderPlaceholder).c_str())) {
                     s->duplicateScan.folder_path = std::move(path);
                     PersistDuplicateScanPrefs(*s);
                     InvalidateRect(hwnd, nullptr, FALSE);
@@ -2647,9 +2648,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 }
             }
         } else if (hit.region == ui::HitTestResult::RecentClear) {
-            if (MessageBoxW(hwnd, l10n::Get(l10n::StringId::ClearRecentPrompt).c_str(), l10n::Get(l10n::StringId::ClearRecentTitle).c_str(),
-                            MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) == IDOK &&
-                s->places.ClearRecent()) {
+            if (ConfirmClearRecent(*s) && s->places.ClearRecent()) {
                 RefreshRecentViews(*s);
                 InvalidateRect(hwnd, nullptr, FALSE);
             }

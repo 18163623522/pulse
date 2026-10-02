@@ -161,22 +161,28 @@ void DeleteSelected(AppState& s, bool permanent) {
     if (!tab) return;
     if (IsRecycleTab(tab)) {
         std::vector<std::wstring> paths;
+        size_t item_count = 0;
         if (tab->snapshot) {
             for (int index : tab->SelectedIndices()) {
                 if (index < 0 || index >= static_cast<int>(tab->EntryCount())) continue;
                 const fs::DirEntry& entry = tab->EntryAt(static_cast<size_t>(index));
                 if (entry.recycle_path.empty()) continue;
+                ++item_count;
                 paths.push_back(entry.recycle_path);
                 const std::wstring index_path = fs::RecycleIndexPath(entry.recycle_path);
                 if (!index_path.empty()) paths.push_back(index_path);
             }
         }
         if (paths.empty()) return;
-        std::wstring prompt = l10n::Get(l10n::StringId::PermanentDelete);
-        prompt += L"\n\n";
-        prompt += l10n::Get(l10n::StringId::EmptyRecycleConfirm);
-        if (MessageBoxW(s.hwnd, prompt.c_str(), L"Pulse", MB_YESNO | MB_ICONWARNING) != IDYES)
-            return;
+        ui::ConfirmDialogSpec confirm;
+        confirm.title = l10n::Get(l10n::StringId::PermanentDelete);
+        wchar_t message[256]{};
+        swprintf_s(message, l10n::Get(l10n::StringId::RecycleDeleteConfirmFormat).c_str(),
+                   item_count);
+        confirm.message = message;
+        confirm.confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
+        confirm.danger = true;
+        if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
         ops::OpRequest req;
         req.type = ops::OpType::RealDelete;
         req.sources = std::move(paths);
@@ -186,19 +192,21 @@ void DeleteSelected(AppState& s, bool permanent) {
     std::vector<std::wstring> paths = SelectedFullPaths(*tab);
     if (paths.empty()) return;
     if (permanent) {
-        std::wstring prompt;
+        ui::ConfirmDialogSpec confirm;
+        confirm.title = l10n::Get(l10n::StringId::PermanentDelete);
         if (paths.size() == 1) {
-            prompt = l10n::Get(l10n::StringId::PermanentDeletePath);
-            const size_t path_marker = prompt.find(L"{path}");
-            if (path_marker != std::wstring::npos)
-                prompt.replace(path_marker, 6, ClipboardPath(paths[0]));
+            confirm.message = l10n::Get(l10n::StringId::PermanentDeleteOne);
         } else {
             wchar_t buf[256]{};
-            swprintf_s(buf, l10n::Get(l10n::StringId::PermanentDeleteCountFormat).c_str(), paths.size());
-            prompt = buf;
+            swprintf_s(buf, l10n::Get(l10n::StringId::PermanentDeleteManyFormat).c_str(),
+                       paths.size());
+            confirm.message = buf;
         }
-        if (MessageBoxW(s.hwnd, prompt.c_str(), L"Pulse", MB_YESNO | MB_ICONWARNING) != IDYES)
-            return;
+        // The dialog shows the first few and collapses the rest.
+        for (const std::wstring& path : paths) confirm.items.push_back(ClipboardPath(path));
+        confirm.confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
+        confirm.danger = true;
+        if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
     }
     ops::OpRequest req;
     req.type = permanent ? ops::OpType::RealDelete : ops::OpType::RecycleDelete;

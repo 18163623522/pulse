@@ -17,6 +17,10 @@ bool ContainsRect(const D2D1_RECT_F& rect, float x, float y);
 LRESULT BorderlessHitTest(HWND hwnd, LPARAM lparam, float title_height,
                           const D2D1_RECT_F& client_buttons);
 bool ApplyBackdrop(HWND hwnd, bool dark);
+// Modal loops: keyboard input aimed at a disabled window (the owner forced to
+// the foreground) goes to `dialog` instead, which is brought back to the
+// front. Plain keys arrive as WM_SYSKEY* in that state.
+void RedirectStrayModalKey(MSG& message, HWND dialog);
 void CenterOwnedWindow(HWND hwnd, HWND owner, int width, int height,
                        bool clamp_to_work_area = true);
 

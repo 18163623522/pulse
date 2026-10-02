@@ -10,7 +10,7 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_LOCKED_ITEM_RETRY;
+constexpr UINT kLastString = IDS_PICKER_PICK_IMAGE_HINT;
 static_assert(static_cast<UINT>(StringId::Downloads) <= kLastString);
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
               static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
