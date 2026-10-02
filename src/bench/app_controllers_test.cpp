@@ -5,6 +5,7 @@
 #include "../app/single_instance_coordinator.h"
 #include "../app/tray_controller.h"
 #include "../app/blank_pane_click.h"
+#include "../app/last_tab_close.h"
 #include "../app/unc_probe_scheduler.h"
 #include "../common/localization.h"
 #include "../common/path_utils.h"
@@ -411,6 +412,31 @@ int wmain(int argc, wchar_t** argv) {
     parsed_prefs.blank_click_go_back = true;
     parsed_prefs.ResetToDefaults();
     passed &= Report("reset disables blank click navigation", !parsed_prefs.blank_click_go_back);
+    passed &= Report("closing the last tab setting has localized text",
+        pulse::l10n::Get(pulse::l10n::StringId::SettingsCloseLastTab) ==
+            L"\u5173\u95ED\u6700\u540E\u4E00\u4E2A\u6807\u7B7E\u9875\u65F6\u5173\u95ED\u7A97\u53E3" &&
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsCloseLastTabDesc).empty());
+    passed &= Report("closing the last tab keeps the window by default",
+        !prefs.close_window_with_last_tab);
+    settings_ui.ToggleUi(26);
+    passed &= Report("closing the last tab closes the window when enabled and persisted",
+        prefs.close_window_with_last_tab && parsed_prefs.FromJson(prefs.ToJson()) &&
+        parsed_prefs.close_window_with_last_tab);
+    settings_ui.ToggleUi(26);
+    passed &= Report("closing the last tab setting disables and persists",
+        !prefs.close_window_with_last_tab && parsed_prefs.FromJson(prefs.ToJson()) &&
+        !parsed_prefs.close_window_with_last_tab);
+    parsed_prefs.close_window_with_last_tab = true;
+    passed &= Report("legacy preferences keep the window on the last tab close",
+        parsed_prefs.FromJson(L"{}") && !parsed_prefs.close_window_with_last_tab);
+    parsed_prefs.close_window_with_last_tab = true;
+    parsed_prefs.ResetToDefaults();
+    passed &= Report("reset keeps the window on the last tab close",
+        !parsed_prefs.close_window_with_last_tab);
+    passed &= Report("last tab close: only the single unpinned tab closes the window",
+        pulse::app::LastTabClosesWindow(1, false, true) && !pulse::app::LastTabClosesWindow(1, false, false) &&
+        !pulse::app::LastTabClosesWindow(2, false, true) && !pulse::app::LastTabClosesWindow(1, true, true) &&
+        !pulse::app::LastTabClosesWindow(0, false, true));
     passed &= Report("settings UI controller owns image selection flow",
         picked_image);
     settings_ui.ResetUi();

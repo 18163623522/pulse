@@ -1752,6 +1752,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
     vm.settings_startup_open = s.appPrefs.startup_open;
     vm.settings_new_tab_open = s.appPrefs.new_tab_open;
+    vm.settings_close_last_tab = s.appPrefs.close_window_with_last_tab;
     vm.settings_home_folder = s.appPrefs.home_folder;
     vm.settings_text_render = s.appPrefs.text_render;
     vm.sidebar_scroll = s.sidebarScroll;

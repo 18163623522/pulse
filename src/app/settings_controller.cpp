@@ -495,6 +495,9 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 25) {
         prefs_->tips_seen = 0;
         SaveAndApply(SettingsEffect::None);
+    } else if (index == 26) {
+        prefs_->close_window_with_last_tab = !prefs_->close_window_with_last_tab;
+        SaveAndApply(SettingsEffect::None);
     } else if (index == 15) {
         prefs_->global_search_enabled = !prefs_->global_search_enabled;
         if (!prefs_->Save()) {
