@@ -42,8 +42,10 @@ namespace pulse {
 namespace {
 // Ops and Shell host errors are Simplified protocol text; zh-TW shows the
 // converted form, so classification accepts both.
-bool ErrorIs(const std::wstring& error, const wchar_t* simplified) {
-    return error == simplified || error == l10n::Cn(simplified);
+// Errors come from OpsManager (localized with Pick) or pulse_shell (Simplified),
+// so accept the Simplified, Traditional and English forms.
+bool ErrorIs(const std::wstring& error, const wchar_t* simplified, const wchar_t* english) {
+    return error == simplified || error == l10n::Cn(simplified) || error == english;
 }
 bool ErrorHas(const std::wstring& error, const wchar_t* simplified) {
     return error.find(simplified) != std::wstring::npos ||
@@ -397,7 +399,7 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
         // The ops notification shows the locked-item prompt; a timer tick
         // that sees the failure first must not open the failure window.
         if (locked_failure) return;
-        if (ErrorIs(status.last_error, L"已取消")) {
+        if (ErrorIs(status.last_error, L"已取消", L"Canceled")) {
             s.operationWindow->Hide();
             return;
         }
@@ -428,12 +430,14 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
                 message = l10n::Get(folder || file
                     ? l10n::StringId::FolderNoWritePermission
                     : l10n::StringId::RenameNoPermission);
-            } else if (ErrorIs(err, L"目标名称已存在")) {
+            } else if (ErrorIs(err, L"目标名称已存在", L"The target name already exists")) {
                 message = l10n::Get(l10n::StringId::RenameTargetExists);
-            } else if (ErrorIs(err, L"名称无效")) {
+            } else if (ErrorIs(err, L"名称无效", L"Invalid name")) {
                 message = l10n::Get(l10n::StringId::InvalidName);
             } else if (!err.empty()) {
-                message = err;
+                // pulse_shell reports Simplified text; translate the known messages
+                // only, so paths inside unknown ones are shown as reported.
+                message = l10n::IsKnownServiceText(err) ? l10n::ServiceText(err) : err;
             } else {
                 message = l10n::Get(l10n::StringId::OperationFailedMessage);
             }

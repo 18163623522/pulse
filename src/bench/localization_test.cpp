@@ -172,6 +172,35 @@ int main() {
                      IsLanguageId(L"system") && IsLanguageId(L"zh-CN") &&
                      IsLanguageId(L"en-US") && !IsLanguageId(L"english") &&
                      std::wstring(LanguageId(Language::EnUS)) == L"en-US");
+    // Text reported by helper processes (index service, pulse_shell) in Simplified.
+    SetLanguage(L"en-US");
+    passed &= Report("en-US service status with count and segment",
+        ServiceText(L"已索引 1,234 项 · 实时更新") == L"1,234 items indexed · Live updates");
+    passed &= Report("en-US service pattern keeps the path",
+        ServiceText(L"正在重建 D:\\设计资料 的索引…") == L"Rebuilding the index for D:\\设计资料…");
+    passed &= Report("en-US Win32 error keeps the system message",
+        ServiceText(L"错误 5：拒绝访问。") == L"Error 5: 拒绝访问。");
+    passed &= Report("en-US network state segments",
+        ServiceText(L"离线 · 仍可搜索") == L"Offline · Still searchable");
+    passed &= Report("en-US shell start failure",
+        ServiceText(L"无法启动 pulse_shell.exe（错误 2）") == L"Could not start pulse_shell.exe (error 2)");
+    passed &= Report("en-US unknown service text passes through",
+        ServiceText(L"某个未知的状态") == L"某个未知的状态" && !IsKnownServiceText(L"某个未知的状态") &&
+        IsKnownServiceText(L"已同步 · 128,420 项") && ServiceText(L"Ready") == L"Ready");
+    SetLanguage(L"zh-TW");
+    {
+        // The path is a capture: it keeps its Simplified characters while the template converts.
+        const std::wstring rebuilt = ServiceText(L"D:\\设计资料 的变更跟踪暂不可用，稍后重试");
+        const std::wstring indexed = ServiceText(L"已索引 1,234 项 · 实时更新");
+        passed &= Report("zh-TW service text converts the template, not the path",
+            rebuilt.find(L"D:\\设计资料 ") == 0 && rebuilt.find(L"變更") != std::wstring::npos);
+        passed &= Report("zh-TW service status keeps counts",
+            indexed.find(L"1,234") != std::wstring::npos && indexed.find(L"項") != std::wstring::npos);
+    }
+    SetLanguage(L"zh-CN");
+    passed &= Report("zh-CN service text is unchanged",
+        ServiceText(L"已索引 1,234 项 · 实时更新") == L"已索引 1,234 项 · 实时更新");
+
     SetLanguage(L"system");
     passed &= Report("system language resolves to a shipped locale",
                      effective_language() == Language::ZhCN ||

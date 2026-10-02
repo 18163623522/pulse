@@ -1549,7 +1549,8 @@ StatusBarMetrics MakeStatusBarMetrics(const WindowViewModel& vm, const D2D1_RECT
 }
 
 fluent::BadgeKind IndexVolumeBadgeKind(const std::wstring& state) {
-    // The index reports Simplified text; the view model converts it for zh-TW.
+    // `state` is the Simplified text reported by the index service (the view
+    // model keeps it next to the localized label); Traditional is accepted too.
     const auto has = [&state](const wchar_t* simplified) {
         return state.find(simplified) != std::wstring::npos ||
                state.find(pulse::l10n::Cn(simplified)) != std::wstring::npos;

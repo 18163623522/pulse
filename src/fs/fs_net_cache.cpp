@@ -119,14 +119,15 @@ SnapshotPtr LoadNetSnapshot(const std::wstring& path, uint64_t* unix_sec) {
 }
 
 std::wstring FormatCacheAge(uint64_t unix_sec) {
-    if (unix_sec == 0) return l10n::Cn(L"刚才");
+    if (unix_sec == 0) return l10n::Pick(L"刚才", L"Just now");
     const uint64_t now = NowUnix();
-    if (now <= unix_sec) return l10n::Cn(L"刚才");
+    if (now <= unix_sec) return l10n::Pick(L"刚才", L"Just now");
     const uint64_t sec = now - unix_sec;
-    if (sec < 60) return std::to_wstring(sec) + l10n::Cn(L" 秒前");
-    if (sec < 3600) return std::to_wstring(sec / 60) + l10n::Cn(L" 分钟前");
-    if (sec < 86400) return std::to_wstring(sec / 3600) + l10n::Cn(L" 小时前");
-    return std::to_wstring(sec / 86400) + l10n::Cn(L" 天前");
+    if (sec < 60) return std::to_wstring(sec) + l10n::Pick(L" 秒前", L" sec ago");
+    if (sec < 3600) return std::to_wstring(sec / 60) + l10n::Pick(L" 分钟前", L" min ago");
+    if (sec < 86400) return std::to_wstring(sec / 3600) + l10n::Pick(L" 小时前", L" hr ago");
+    const uint64_t days = sec / 86400;
+    return std::to_wstring(days) + l10n::Pick(L" 天前", days == 1 ? L" day ago" : L" days ago");
 }
 
 namespace {

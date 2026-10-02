@@ -1306,4 +1306,12 @@ std::wstring HantText(std::wstring_view chinese);
 // built independently of the current language (e.g. release notes).
 std::wstring ToTraditional(std::wstring_view chinese);
 
+// Text reported by helper processes (index service, network agent, pulse_shell,
+// preview host) in Simplified Chinese, localized for display: unchanged for
+// zh-CN, Traditional for zh-TW, translated for English (service_text.cpp).
+// Unknown text is returned as reported; embedded paths and counts are kept.
+std::wstring ServiceText(std::wstring_view text);
+// True when every Chinese segment of `text` has a translation (for tests).
+bool IsKnownServiceText(std::wstring_view text);
+
 } // namespace pulse::l10n

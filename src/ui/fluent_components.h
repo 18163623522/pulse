@@ -39,7 +39,6 @@ enum class MenuPictogram {
     LayoutFour,
 };
 
-inline constexpr wchar_t kOmnibarHintBadge[] = L"\u547D\u4EE4";
 inline constexpr wchar_t kOmnibarHintKey[] = L"Ctrl+K";
 
 struct MotionSpec {

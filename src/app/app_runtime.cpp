@@ -518,9 +518,9 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_bloom = &s.bloom_accent;
             vm.settings_index_service = s.index.Connected() && s.index.ServiceMode();
             vm.settings_index_installed = s.settings.service_installed();
-            // Index and network-index texts are Simplified (some come from
-            // Pulse.Index.exe); convert them here, at the display boundary.
-            vm.settings_index_status = l10n::HantText(s.index.Status());
+            // Index and network-index texts are Simplified (most come from
+            // Pulse.Index.exe); localize them here, at the display boundary.
+            vm.settings_index_status = l10n::ServiceText(s.index.Status());
             vm.settings_index_migrating = s.settings.migration_pending();
             if (vm.settings_page == 3) {
                 vm.settings_about_rows = app::BuildAboutRows(vm.settings_index_service,
@@ -536,7 +536,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             if (vm.settings_index_migrating)
                 vm.settings_index_status = l10n::Get(l10n::StringId::IndexMigrating);
             vm.settings_index_path = s.index.IndexPath();
-            vm.settings_index_error = l10n::HantText(s.settings.error());
+            vm.settings_index_error = l10n::ServiceText(s.settings.error());
             vm.settings_index_volumes.clear();
             vm.settings_index_excluded_paths = s.index.ExcludedPaths();
             vm.settings_network_roots.clear();
@@ -565,7 +565,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                     row.detail += L" · ";
                     row.detail += count;
                 }
-                row.state = l10n::HantText(volume.state);
+                row.raw_state = volume.state;
+                row.state = l10n::ServiceText(volume.state);
                 row.checked = volume.enabled;
                 row.enabled = vm.settings_index_service && volume.supported;
                 row.pending = s.settings.VolumePending(volume.id);
@@ -577,8 +578,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             for (const auto& root : network_roots) {
                 ui::NetworkRootRowView row;
                 row.path = root.path;
-                row.state = l10n::HantText(root.state);
-                row.detail = l10n::HantText(root.error);
+                row.state = l10n::ServiceText(root.state);
+                row.detail = l10n::ServiceText(root.error);
                 row.online = root.online;
                 row.building = root.building;
                 vm.settings_network_roots.push_back(std::move(row));
@@ -586,7 +587,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             if (s.shot.active && vm.settings_page == 1 && vm.settings_network_roots.empty()) {
                 ui::NetworkRootRowView row;
                 row.path = L"\\\\fileserver\\projects\\设计资料";
-                row.state = l10n::HantText(L"已同步 · 128,420 项");
+                row.state = l10n::ServiceText(L"已同步 · 128,420 项");
                 row.online = true;
                 vm.settings_network_roots.push_back(std::move(row));
             }
@@ -1806,7 +1807,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     }
     app::ApplyUpdateStatus(vm.status, UpdateProgressForView(s), st.active);
     {
-        std::wstring idx = l10n::HantText(s.index.Status());
+        std::wstring idx = l10n::ServiceText(s.index.Status());
         app::Tab* active = ActiveTab(s);
         std::wstring virtual_kind;
         std::wstring virtual_rest;
