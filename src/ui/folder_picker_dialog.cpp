@@ -169,6 +169,7 @@ public:
 
         MSG message{};
         while (!done_ && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            RedirectStrayModalKey(message, hwnd_);
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }

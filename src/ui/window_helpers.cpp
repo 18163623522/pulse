@@ -66,6 +66,23 @@ bool ApplyBackdrop(HWND hwnd, bool dark) {
     return !high_contrast && SUCCEEDED(result);
 }
 
+void RedirectStrayModalKey(MSG& message, HWND dialog) {
+    if (message.message < WM_KEYFIRST || message.message > WM_KEYLAST || !dialog) return;
+    if (message.hwnd == dialog || IsChild(dialog, message.hwnd)) return;
+    // Other enabled windows of this thread keep their typing.
+    const HWND root = message.hwnd ? GetAncestor(message.hwnd, GA_ROOT) : nullptr;
+    if (!root || IsWindowEnabled(root)) return;
+    if (GetForegroundWindow() != dialog) SetForegroundWindow(dialog);
+    const HWND focus = GetFocus();
+    message.hwnd = (focus == dialog || IsChild(dialog, focus)) ? focus : dialog;
+    constexpr LPARAM kAltDown = 1 << 29;
+    if (!(message.lParam & kAltDown)) {
+        if (message.message == WM_SYSKEYDOWN) message.message = WM_KEYDOWN;
+        else if (message.message == WM_SYSKEYUP) message.message = WM_KEYUP;
+        else if (message.message == WM_SYSCHAR) message.message = WM_CHAR;
+    }
+}
+
 void CenterOwnedWindow(HWND hwnd, HWND owner, int width, int height,
                        bool clamp_to_work_area) {
     RECT anchor{};
