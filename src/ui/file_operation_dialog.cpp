@@ -7,6 +7,7 @@
 #include "window_helpers.h"
 
 #include <windowsx.h>
+#include <commctrl.h>
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -402,6 +403,9 @@ private:
             painter_.DrawText(conflict_.destination, Rect(scale_, 252, top + 55, 196, 38),
                               compositor_.SmallFormat(), theme.text_secondary);
         }
+        // The paths are cut to their boxes; hovering one shows it whole (#55).
+        SetPathTip(1, details_ ? Rect(scale_, 32, 326.0f + 55, 198, 38) : D2D1_RECT_F{});
+        SetPathTip(2, details_ ? Rect(scale_, 252, 326.0f + 55, 196, 38) : D2D1_RECT_F{});
         pulse::ui::EndSurface(compositor_);
     }
 
@@ -414,6 +418,7 @@ private:
             compositor_.RecreateTextFormats(scale_);
             painter_.SetCompositor(&compositor_);
             painter_.SetScale(scale_);
+            CreatePathTips();
             return 0;
         case WM_NCCALCSIZE:
             return 0;
@@ -523,8 +528,39 @@ private:
         return DefWindowProcW(hwnd_, message, wparam, lparam);
     }
 
+    void CreatePathTips() {
+        INITCOMMONCONTROLSEX controls{ sizeof(controls), ICC_BAR_CLASSES };
+        InitCommonControlsEx(&controls);
+        tooltip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+            hwnd_, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!tooltip_) return;
+        SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, static_cast<LPARAM>(560 * scale_));
+        for (UINT id : { 1u, 2u }) {
+            TOOLINFOW info{ sizeof(info) };
+            info.uFlags = TTF_SUBCLASS;
+            info.hwnd = hwnd_;
+            info.uId = id;
+            info.lpszText = const_cast<wchar_t*>(
+                (id == 1 ? conflict_.source : conflict_.destination).c_str());
+            SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+        }
+    }
+
+    void SetPathTip(UINT id, const D2D1_RECT_F& box) {
+        if (!tooltip_) return;
+        TOOLINFOW info{ sizeof(info) };
+        info.hwnd = hwnd_;
+        info.uId = id;
+        info.rect = { static_cast<LONG>(std::floor(box.left)), static_cast<LONG>(std::floor(box.top)),
+                      static_cast<LONG>(std::ceil(box.right)), static_cast<LONG>(std::ceil(box.bottom)) };
+        SendMessageW(tooltip_, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&info));
+    }
+
     HWND hwnd_ = nullptr;
     HWND owner_ = nullptr;
+    HWND tooltip_ = nullptr;
     Compositor compositor_;
     fluent::Painter painter_;
     ops::ConflictItemInfo conflict_;

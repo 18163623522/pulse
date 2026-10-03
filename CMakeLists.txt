@@ -235,6 +235,8 @@ target_link_libraries(pulse_duplicate_scan_test PRIVATE ole32)
 add_executable(pulse_drag_drop_test src/bench/drag_drop_test_main.cpp)
 target_link_libraries(pulse_drag_drop_test PRIVATE ole32 shell32 uuid user32)
 
+add_executable(pulse_drop_staging_test src/bench/drop_staging_test.cpp src/app/drop_staging.cpp)
+
 add_executable(pulse_saved_search_test
     src/bench/saved_search_test.cpp
     src/app/saved_search.cpp)
@@ -322,6 +324,24 @@ target_link_libraries(pulse_dialogs_test PRIVATE
     d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme
     pulse_localization)
 pulse_enable_lumatext(pulse_dialogs_test)
+
+# Conflict dialog: hovering a cut-off path shows it whole (#55).
+add_executable(pulse_conflict_dialog_test
+    src/bench/conflict_dialog_test.cpp
+    src/bench/localization_test.rc
+    src/ui/file_operation_dialog.cpp
+    src/ui/confirm_dialog_view.cpp
+    src/ui/dialog_lifecycle.cpp
+    src/ui/fluent_components.cpp
+    src/ui/tab_shape.cpp
+    src/ui/typography.cpp
+    src/ui/ui_compositor.cpp
+    src/ui/window_helpers.cpp
+)
+target_link_libraries(pulse_conflict_dialog_test PRIVATE
+    d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore ole32 windowscodecs comctl32 uxtheme gdiplus
+    pulse_localization)
+pulse_enable_lumatext(pulse_conflict_dialog_test)
 
 # ---- Focused visual regression: offscreen commands and theme tokens ----
 add_executable(pulse_command_icon_test src/bench/command_icon_test.cpp)

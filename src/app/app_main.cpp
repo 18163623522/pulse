@@ -40,6 +40,7 @@
 #include "app_prefs.h"
 #include "startup_launch.h"
 #include "entry_sort.h"
+#include "drop_staging.h"
 #include "folder_sizes_ui.h"
 #include "saved_search.h"
 #include "search_query.h"
@@ -590,6 +591,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // Shell dialogs (打开方式…/属性) must be owned by the Pulse window.
         s->ops.SetUiWindow(hwnd);
         s->ops.Start([hwnd] { PostMessageW(hwnd, WM_OPS_NOTIFY, 0, 0); });
+        // Drop stages of Pulse processes that are gone (#55).
+        app::SweepDropStages(app::DropStageRoot(), false);
         const ops::RecoverySnapshot recovery = s->isolatedTest
             ? ops::RecoverySnapshot{} : s->ops.PendingRecovery();
         if (!recovery.entries.empty()) {
@@ -1888,6 +1891,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
             s->tray_controller.Detach();
             s->ops.Stop();
+            app::SweepDropStages(app::DropStageRoot(), true);
             s->single_instance.Release();
 
             s->renderer.SetIconNotifyWindow(nullptr);

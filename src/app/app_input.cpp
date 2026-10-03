@@ -24,6 +24,7 @@
 #include "context_menu.h"
 #include "batch_rename.h"
 #include "blank_pane_click.h"
+#include "drop_staging.h"
 #include "link_resolve.h"
 #include "resource.h"
 #include "../ops/clipboard.h"
@@ -329,6 +330,10 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     return effect;
 }
 
+// Pulse's own drag-out is running (StartDragOut): its sources are never an
+// archive manager's temporary extraction (#55).
+static bool g_internal_drag = false;
+
 DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
                          POINT pt, DWORD key_state, DWORD allowed,
                          DWORD preferred_effect) {
@@ -408,10 +413,28 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     if (dest.empty() || fs::IsVirtualPath(dest) || !(effect & allowed) ||
         (effect != DROPEFFECT_COPY && effect != DROPEFFECT_MOVE)) return DROPEFFECT_NONE;
 
+    // Archive managers (7-Zip, WinRAR, Bandizip) drag out of a temporary
+    // folder that they delete as soon as the drop returns, while conflicts are
+    // resolved later (#55). Such items are copied unless the user or the
+    // source asks for a move, and staged before this returns.
+    const std::wstring temp_dir =
+        g_internal_drag || s.trayDragOut ? std::wstring() : app::TempDirectory();
+    const std::wstring stage_root = app::DropStageRoot();
+    const bool from_temp = !temp_dir.empty() && !sources.empty() &&
+        std::all_of(sources.begin(), sources.end(), [&](const std::wstring& p) {
+            return app::IsTemporaryDropSource(p, temp_dir, stage_root);
+        });
+    if (from_temp && effect == DROPEFFECT_MOVE && (allowed & DROPEFFECT_COPY) &&
+        (key_state & MK_SHIFT) == 0 && preferred_effect != DROPEFFECT_MOVE)
+        effect = DROPEFFECT_COPY;
+    std::vector<std::wstring> staged = sources;
+    if (!temp_dir.empty() && effect == DROPEFFECT_COPY)
+        app::StageDropSources(sources, temp_dir, stage_root, staged);
+
     ops::OpRequest req;
     req.type = (effect == DROPEFFECT_MOVE) ? ops::OpType::Move : ops::OpType::Copy;
     req.dest_dir = fs::NormalizePath(dest);
-    for (auto& p : sources) req.sources.push_back(fs::NormalizePath(p));
+    for (auto& p : staged) req.sources.push_back(fs::NormalizePath(p));
     if (!SubmitWithConflictResolution(s, std::move(req))) return DROPEFFECT_NONE;
     if (s.trayDragOut) RememberTrayDest(s, dest);
     return effect;
@@ -428,8 +451,10 @@ void StartDragOut(AppState& s) {
 
     s.clickCollapseIndex = -1;
     CancelScrollAnimation(s); // DoDragDrop's modal loop coexists with on-demand render
+    g_internal_drag = true;
     DWORD effect = ui::DoFileDragDrop(paths, DROPEFFECT_COPY | DROPEFFECT_MOVE,
         [&s] { return s.springEntered; }, tab->current_path); // Esc = 退回 when spring-entered
+    g_internal_drag = false;
     s.springEntered = false;
     ClearDropFeedback(s);
     if (effect == DROPEFFECT_MOVE) {
