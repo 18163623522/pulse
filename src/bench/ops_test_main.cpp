@@ -1151,6 +1151,34 @@ int wmain(int argc, wchar_t** argv) {
               L"double-click open runs a batch file in its own folder");
     }
 
+    // --- Open: a \\?\ path reaches the handler in plain form (#55) --------
+    {
+        // Pulse lists folders as \\?\C:\...; association handlers (and the
+        // shell itself) reject that form and answer "Windows cannot find".
+        const std::wstring run_dir = root + L"\\long form";
+        MakeDir(run_dir);
+        const char script[] = "@echo off\r\necho %~f0> self.txt\r\n";
+        MakeFile(run_dir + L"\\self.bat", script, sizeof(script) - 1);
+        const std::wstring marker = run_dir + L"\\self.txt";
+        const std::wstring plain = run_dir + L"\\self.bat";
+        g_ops.OpenWith(plain.rfind(L"\\\\?\\", 0) == 0 ? plain : L"\\\\?\\" + plain);
+        for (int i = 0; i < 200 && (FileSize(marker) == ~0ull || FileSize(marker) == 0); ++i)
+            Sleep(50);
+        std::string seen;
+        HANDLE file = CreateFileW(marker.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_EXISTING, 0, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            char buffer[1024]{};
+            DWORD read = 0;
+            ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+            seen.assign(buffer, read);
+            CloseHandle(file);
+        }
+        Check(!seen.empty(), L"opening a \\\\?\\ path runs the item");
+        Check(!seen.empty() && seen.find("\\\\?\\") == std::string::npos,
+              L"the opened item receives its path without the \\\\?\\ prefix");
+    }
+
     g_ops.Stop();
 
     wprintf(L"\n== ops self test: %d passed, %d failed ==\n", g_pass, g_fail);

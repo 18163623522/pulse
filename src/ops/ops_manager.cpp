@@ -961,7 +961,7 @@ void OpsManager::OpenWithApp(const std::wstring& app_exe, const std::wstring& fi
     item.open_path = ParentOf(file);      // lpDirectory
     item.open_file = app_exe;
     item.open_verb = L"open";
-    item.open_args = L"\"" + file + L"\"";
+    item.open_args = L"\"" + pulse::path::StripExtendedPathPrefix(file) + L"\"";
     EnqueueOpen(std::move(item));
 }
 
@@ -1472,14 +1472,16 @@ void OpsManager::OpenThread() {
         SHELLEXECUTEINFOW sei{ sizeof(sei) };
         sei.hwnd = dialog_owner;
         sei.lpVerb = item.open_verb.empty() ? L"open" : item.open_verb.c_str();
-        sei.lpFile = item.open_file.empty() ? item.open_path.c_str()
-                                            : item.open_file.c_str();
+        // Like openas / properties above: the shell and association handlers
+        // reject \\?\ paths and answer "Windows cannot find" (#55).
+        const std::wstring shell_path = pulse::path::StripExtendedPathPrefix(item.open_path);
+        sei.lpFile = item.open_file.empty() ? shell_path.c_str() : item.open_file.c_str();
         sei.lpParameters = item.open_args.empty() ? nullptr : item.open_args.c_str();
         // Like Explorer, start an opened item in its own folder: batch files
         // and many tools resolve relative paths against the working directory.
         const std::wstring item_dir =
             item.open_file.empty() ? OpenItemWorkingDirectory(item.open_path) : std::wstring();
-        sei.lpDirectory = !item.open_file.empty() ? item.open_path.c_str()
+        sei.lpDirectory = !item.open_file.empty() ? shell_path.c_str()
                           : item_dir.empty()      ? nullptr
                                                   : item_dir.c_str();
         sei.nShow = SW_SHOWNORMAL;
