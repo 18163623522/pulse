@@ -292,6 +292,7 @@ struct TransferEntry {
     bool reparse = false;
     bool destination_preexisting = false;
     bool directory_prepared = false;
+    bool renamed = false;  // moved by a same-volume rename while scanning
     uint64_t bytes = 0;
     DWORD attributes = FILE_ATTRIBUTE_NORMAL;
     FILETIME created{};
@@ -497,6 +498,12 @@ std::wstring UniqueCopyPath(const std::wstring& destination, bool directory) {
     }
     return JoinPath(parent, stem + l10n::Pick(L" - 副本 ", L" - Copy ") + std::to_wstring(GetTickCount64()) + extension);
 }
+
+// Files below this size are copied straight to a free final name (#60). The
+// temporary name costs one extra create and rename per file, which dominates
+// batches of small files; large files keep it so a crash mid-copy cannot
+// leave a long partial file under the real name.
+constexpr uint64_t kDirectCopyMaxBytes = 64ull << 20;
 
 std::wstring UniqueTemporaryPath(const std::wstring& destination,
                                  const wchar_t* marker,
@@ -1865,6 +1872,18 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 break;
             }
             root.destination_preexisting = PathExists(root.destination);
+            // On one volume a move is a rename however many items are dropped
+            // (#60). Recorded as completed at once so a later failure still
+            // offers undo for it; anything a rename cannot do (another volume,
+            // a lock) takes the per-file path below.
+            if (req.type == OpType::Move && !root.destination_preexisting &&
+                MoveFileExW(source.c_str(), root.destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+                root.renamed = true;
+                completed_sources.push_back(root.source);
+                completed_destinations.push_back(root.destination);
+                entries.push_back(root);
+                continue;
+            }
             entries.push_back(root);
             if (!root.directory || root.reparse) continue;
 
@@ -1999,6 +2018,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
     auto remaining_conflicts = [&](size_t start) {
         size_t count = 0;
         for (size_t j = start; j < entries.size(); ++j) {
+            if (entries[j].renamed) continue;
             bool dest_dir = false;
             if (PathExists(entries[j].destination, &dest_dir) &&
                 !(entries[j].directory && !entries[j].reparse && dest_dir)) ++count;
@@ -2008,6 +2028,12 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
     for (size_t index = 0; failure.empty() && index < entries.size(); ++index) {
         auto& entry = entries[index];
+        if (entry.renamed) {
+            ++processed_items;
+            publish_progress(entry, entry.bytes, entry.bytes, processed_items);
+            committed_bytes += entry.bytes;
+            continue;
+        }
         if (transfer_cancel_.load()) { cancelled = true; break; }
         bool skipped = false;
         for (const auto& prefix : skipped_prefixes) {
@@ -2160,8 +2186,9 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
         if (!EnsureDirectories(ParentOf(entry.destination), failure)) break;
 
-        std::wstring copy_destination = UniqueTemporaryPath(
-            entry.destination, L".pulse-copy-", task_id, index);
+        const bool direct = !destination_exists && entry.bytes < kDirectCopyMaxBytes;
+        std::wstring copy_destination = direct ? entry.destination
+            : UniqueTemporaryPath(entry.destination, L".pulse-copy-", task_id, index);
         const bool replacing = destination_exists && choice == ConflictChoice::Replace;
 
         uint64_t known_file_total = entry.bytes;
@@ -2180,6 +2207,14 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         };
 
         HRESULT copy_result = E_FAIL;
+        // A direct copy that lost the name to another writer must not delete
+        // that writer's file.
+        auto discard_copy = [&] {
+            if (direct && (copy_result == HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) ||
+                           copy_result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)))
+                return;
+            DeleteFileW(copy_destination.c_str());
+        };
         bool resume = false;
         DWORD extra_flags = COPY_FILE_COPY_SYMLINK;
         for (;;) {
@@ -2222,11 +2257,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         }
         if (cancelled || transfer_cancel_.load()) {
             cancelled = true;
-            DeleteFileW(copy_destination.c_str());
+            discard_copy();
             break;
         }
         if (FAILED(copy_result)) {
-            DeleteFileW(copy_destination.c_str());
+            discard_copy();
             failure_hr = copy_result;
             failure = Win32Message(HRESULT_CODE(copy_result)) + L" | " + entry.source;
             break;
@@ -2259,19 +2294,19 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             };
             if (!Sha256File(entry.source, transfer_cancel_, wait_if_paused, source_hash, failure) ||
                 !Sha256File(copy_destination, transfer_cancel_, wait_if_paused, copied_hash, failure)) {
-                DeleteFileW(copy_destination.c_str());
+                discard_copy();
                 if (transfer_cancel_.load()) cancelled = true;
                 break;
             }
             if (source_hash != copied_hash) {
-                DeleteFileW(copy_destination.c_str());
+                discard_copy();
                 failure = l10n::Pick(L"SHA-256 校验失败 | ", L"SHA-256 verification failed | ") + entry.source;
                 break;
             }
             SetStatus([&](OpStatus& st) { st.phase = OpPhase::Running; });
         }
 
-        if (SameFileObject(entry.source, entry.destination)) {
+        if (!direct && SameFileObject(entry.source, entry.destination)) {
             DeleteFileW(copy_destination.c_str());
             mark_skipped(entry);
             continue;
@@ -2291,8 +2326,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 failure = Win32Message(error) + L" | " + entry.destination;
                 break;
             }
-        } else if (!MoveFileExW(copy_destination.c_str(), entry.destination.c_str(),
-                                MOVEFILE_WRITE_THROUGH)) {
+        } else if (!direct && !MoveFileExW(copy_destination.c_str(), entry.destination.c_str(),
+                                           MOVEFILE_WRITE_THROUGH)) {
             const DWORD error = GetLastError();
             DeleteFileW(copy_destination.c_str());
             failure_hr = HRESULT_FROM_WIN32(error);

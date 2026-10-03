@@ -18,6 +18,8 @@
 #include <filesystem>
 #include <mutex>
 #include <memory>
+#include <atomic>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -192,6 +194,71 @@ ops::OpRequest SimpleOp(ops::OpType type, std::initializer_list<const wchar_t*> 
     if (name) r.new_name = name;
     return r;
 }
+
+uint64_t FileId(const std::wstring& path) {
+    HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const BOOL ok = GetFileInformationByHandle(handle, &info);
+    CloseHandle(handle);
+    return ok ? (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow : 0;
+}
+
+// Records every name created in a folder (including temporary names that are
+// renamed away again) while an operation runs.
+class NameWatcher {
+public:
+    explicit NameWatcher(const std::wstring& folder) {
+        dir_ = CreateFileW(folder.c_str(), FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+        if (dir_ == INVALID_HANDLE_VALUE) return;
+        thread_ = std::thread([this] { Run(); });
+        Sleep(50);
+    }
+    ~NameWatcher() { Stop(); }
+    std::vector<std::wstring> Stop() {
+        if (thread_.joinable()) {
+            Sleep(300);  // let the last notifications arrive
+            stop_ = true;
+            thread_.join();
+        }
+        if (dir_ != INVALID_HANDLE_VALUE) { CloseHandle(dir_); dir_ = INVALID_HANDLE_VALUE; }
+        std::lock_guard lock(mu_);
+        return names_;
+    }
+private:
+    void Run() {
+        std::vector<BYTE> buffer(512 * 1024);
+        OVERLAPPED ov{};
+        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        while (!stop_) {
+            ResetEvent(ov.hEvent);
+            if (!ReadDirectoryChangesW(dir_, buffer.data(), static_cast<DWORD>(buffer.size()), FALSE,
+                                       FILE_NOTIFY_CHANGE_FILE_NAME, nullptr, &ov, nullptr))
+                break;
+            while (!stop_ && WaitForSingleObject(ov.hEvent, 20) == WAIT_TIMEOUT) {}
+            DWORD bytes = 0;
+            if (stop_) CancelIoEx(dir_, &ov);
+            if (!GetOverlappedResult(dir_, &ov, &bytes, TRUE) || bytes == 0) continue;
+            std::lock_guard lock(mu_);
+            for (auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(buffer.data());;
+                 info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<BYTE*>(info) + info->NextEntryOffset)) {
+                if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_OLD_NAME)
+                    names_.emplace_back(info->FileName, info->FileNameLength / sizeof(wchar_t));
+                if (!info->NextEntryOffset) break;
+            }
+        }
+        CloseHandle(ov.hEvent);
+    }
+    HANDLE dir_ = INVALID_HANDLE_VALUE;
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::mutex mu_;
+    std::vector<std::wstring> names_;
+};
 
 } // namespace
 
@@ -1177,6 +1244,101 @@ int wmain(int argc, wchar_t** argv) {
         Check(!seen.empty(), L"opening a \\\\?\\ path runs the item");
         Check(!seen.empty() && seen.find("\\\\?\\") == std::string::npos,
               L"the opened item receives its path without the \\\\?\\ prefix");
+    }
+
+    // --- Transfer fast paths (#60) --------------------------------------------
+    {
+        const std::wstring src = root + L"\\fast-src";
+        const std::wstring dst = root + L"\\fast-dst";
+        MakeDir(src);
+        MakeDir(dst);
+        ops::OpRequest copy;
+        copy.type = ops::OpType::Copy;
+        copy.dest_dir = dst;
+        for (int i = 0; i < 20; ++i) {
+            const std::string body = "small file " + std::to_string(i);
+            const std::wstring path = src + L"\\s" + std::to_wstring(i) + L".txt";
+            MakeFile(path, body.data(), static_cast<DWORD>(body.size()));
+            copy.sources.push_back(path);
+        }
+        const std::wstring big = src + L"\\big.bin";
+        MakePatternFile(big, (64ull << 20) + 4096);
+        copy.sources.push_back(big);
+        NameWatcher watch(dst);
+        const auto copied = RunOp(copy);
+        const auto names = watch.Stop();
+        bool all_there = copied.phase == ops::OpPhase::Completed && FileHash(dst + L"\\big.bin") == FileHash(big);
+        for (int i = 0; i < 20; ++i) {
+            const std::wstring name = L"\\s" + std::to_wstring(i) + L".txt";
+            all_there = all_there && FileHash(dst + name) == FileHash(src + name);
+        }
+        size_t small_temporaries = 0, big_temporaries = 0;
+        for (const auto& name : names) {
+            if (name.find(L".pulse-copy-") == std::wstring::npos) continue;
+            if (name.rfind(L"big.bin", 0) == 0) ++big_temporaries; else ++small_temporaries;
+        }
+        wprintf(L"[INFO] fast copy names seen=%zu small_tmp=%zu big_tmp=%zu\n", names.size(),
+                small_temporaries, big_temporaries);
+        Check(all_there, L"copy of 20 small files and one 64 MB+ file completes intact");
+        Check(!names.empty() && small_temporaries == 0,
+              L"unobstructed small files are written under their final name");
+        Check(big_temporaries > 0, L"a large file still goes through a temporary name");
+        bool leftovers = false;
+        for (const auto& item : std::filesystem::directory_iterator(dst))
+            leftovers = leftovers || item.path().filename().wstring().find(L".pulse-") != std::wstring::npos;
+        Check(!leftovers, L"no .pulse- temporaries remain after the copy");
+
+        // Replacing an existing file keeps the temporary + ReplaceFileW path.
+        const std::string newer = "replacement body";
+        MakeFile(src + L"\\s0.txt", newer.data(), static_cast<DWORD>(newer.size()));
+        ops::OpRequest replace;
+        replace.type = ops::OpType::Copy;
+        replace.dest_dir = dst;
+        replace.sources = {src + L"\\s0.txt"};
+        NameWatcher watch_replace(dst);
+        const auto replaced = RunConflictOp(replace, ops::ConflictChoice::Replace, true);
+        const auto replace_names = watch_replace.Stop();
+        const bool replace_temp = std::any_of(replace_names.begin(), replace_names.end(),
+            [](const std::wstring& name) { return name.find(L"s0.txt.pulse-copy-") == 0; });
+        Check(replaced.phase == ops::OpPhase::Completed && FileHash(dst + L"\\s0.txt") == FileHash(src + L"\\s0.txt"),
+              L"replacing an existing file still succeeds");
+        Check(replace_temp, L"replacement keeps the atomic temporary-file path");
+
+        // A multi-item move on one volume renames every root (file ids survive).
+        const std::wstring msrc = root + L"\\move-src";
+        const std::wstring mdst = root + L"\\move-dst";
+        MakeDir(msrc);
+        MakeDir(mdst);
+        MakeDir(msrc + L"\\sub");
+        MakeFile(msrc + L"\\a.txt", "a", 1);
+        MakeFile(msrc + L"\\b.txt", "b", 1);
+        MakeFile(msrc + L"\\sub\\c.txt", "c", 1);
+        const uint64_t id_a = FileId(msrc + L"\\a.txt"), id_b = FileId(msrc + L"\\b.txt");
+        const uint64_t id_sub = FileId(msrc + L"\\sub"), id_c = FileId(msrc + L"\\sub\\c.txt");
+        ops::OpRequest move;
+        move.type = ops::OpType::Move;
+        move.dest_dir = mdst;
+        move.sources = {msrc + L"\\a.txt", msrc + L"\\b.txt", msrc + L"\\sub"};
+        const auto moved = RunOp(move);
+        Check(moved.phase == ops::OpPhase::Completed && !Exists(msrc + L"\\a.txt") && !Exists(msrc + L"\\sub") &&
+                  Exists(mdst + L"\\sub\\c.txt"),
+              L"multi-item same-volume move completes");
+        Check(id_a && FileId(mdst + L"\\a.txt") == id_a && FileId(mdst + L"\\b.txt") == id_b &&
+                  FileId(mdst + L"\\sub") == id_sub && FileId(mdst + L"\\sub\\c.txt") == id_c,
+              L"multi-item same-volume move renames instead of copying");
+        const uint64_t before_undo = g_ops.Status().completed_ops;
+        g_ops.Undo();
+        Check(WaitOpDone(before_undo) && FileId(msrc + L"\\a.txt") == id_a && FileId(msrc + L"\\b.txt") == id_b &&
+                  FileId(msrc + L"\\sub\\c.txt") == id_c && !Exists(mdst + L"\\a.txt"),
+              L"undo moves every renamed item back");
+
+        // One conflicting root: it is asked about once, the others still rename.
+        MakeFile(mdst + L"\\b.txt", "existing", 8);
+        size_t prompts = 0;
+        const auto mixed = RunConflictOp(move, ops::ConflictChoice::Skip, false, &prompts);
+        Check(mixed.phase == ops::OpPhase::Completed && prompts == 1 && FileId(mdst + L"\\a.txt") == id_a &&
+                  FileId(mdst + L"\\sub") == id_sub && Exists(msrc + L"\\b.txt") && FileSize(mdst + L"\\b.txt") == 8,
+              L"a skipped conflict leaves the other roots renamed");
     }
 
     g_ops.Stop();
