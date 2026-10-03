@@ -583,6 +583,7 @@ void Engine::Stop() {
     query_shards_ready_ = false;
     if (map_) map_->Close();
     map_.reset();
+    ++layout_epoch_;
 }
 
 bool Engine::IsTomb(int32_t i) const {
@@ -1336,12 +1337,13 @@ void Engine::PartialSortPage(std::vector<int32_t>& ids, size_t offset, size_t li
 }
 
 SearchResult Engine::Search(const Query& q, const std::atomic<uint32_t>* latest,
-                            uint32_t expected) const {
+                            uint32_t expected, const DirVisibility* visibility) const {
     SearchResult out;
     std::lock_guard<std::mutex> query_guard(query_mu_);
     if (latest && latest->load() != expected) return out;
     CompiledQuery cq = ParseQuery(q.needle);
     std::shared_lock<std::shared_mutex> lock(mutex_);
+    out.layout = layout_epoch_.load();
     int32_t prefix_node = -1;
     const std::wstring& prefix = !q.path_prefix.empty() ? q.path_prefix : cq.path_prefix;
     if (!prefix.empty()) {
@@ -1369,6 +1371,44 @@ SearchResult Engine::Search(const Query& q, const std::atomic<uint32_t>* latest,
         CollectMatchesLocked(cq, prefix_node, q.folders_only, use_attrs, matches, latest, expected);
     }
     if (latest && latest->load() != expected) return out;
+    // Caller filter (#66). The shared cache keeps the caller-independent set;
+    // only this result is narrowed to the folders the caller may list.
+    MatchSet unfiltered;
+    bool filtered = false;
+    if (visibility && matches.total) {
+        MatchSet visible;
+        visible.universe = matches.universe;
+        std::vector<int32_t> unchecked;
+        int32_t last_parent = INT32_MIN;
+        int last_state = 0;
+        matches.ForEach([&](int32_t id) {
+            // Ids follow the folder layout, so siblings usually arrive together.
+            const int32_t parent = QueryNodeAtLocked(id).parent;
+            if (parent != last_parent) {
+                last_parent = parent;
+                last_state = parent < 0 ? 1 : visibility->State(parent);
+                if (last_state < 0) unchecked.push_back(parent);
+            }
+            if (last_state > 0) visible.ids.push_back(id);
+        });
+        if (!unchecked.empty()) {
+            std::sort(unchecked.begin(), unchecked.end());
+            unchecked.erase(std::unique(unchecked.begin(), unchecked.end()), unchecked.end());
+            out.unchecked_dirs.reserve(unchecked.size());
+            for (int32_t dir : unchecked) out.unchecked_dirs.emplace_back(dir, BuildQueryPathLocked(dir));
+            cache_raw_ = q.needle;
+            cache_path_prefix_ = prefix;
+            cache_folders_only_ = q.folders_only;
+            cache_set_ = std::move(matches);
+            cache_epoch_ = filter_epoch_;
+            return out;
+        }
+        visible.total = visible.ids.size();
+        unfiltered = std::move(matches);
+        matches = std::move(visible);
+        filtered = true;
+    }
+    const MatchSet& cacheable = filtered ? unfiltered : matches;
     out.total = matches.total;
     if (cap == 0 || matches.total == 0) {
         cache_raw_ = q.needle;
@@ -1377,7 +1417,7 @@ SearchResult Engine::Search(const Query& q, const std::atomic<uint32_t>* latest,
         cache_ranked_ = q.rank;
         cache_sort_ = q.sort;
         cache_sort_desc_ = q.sort_desc;
-        cache_set_ = matches;
+        cache_set_ = cacheable;
         cache_epoch_ = filter_epoch_;
         return out;
     }
@@ -1388,7 +1428,7 @@ SearchResult Engine::Search(const Query& q, const std::atomic<uint32_t>* latest,
     cache_ranked_ = q.rank;
     cache_sort_ = q.rank ? ResultSort::Index : q.sort;
     cache_sort_desc_ = q.rank ? false : q.sort_desc;
-    cache_set_ = matches;
+    cache_set_ = cacheable;
     cache_epoch_ = filter_epoch_;
 
     const size_t start = (std::min)(q.offset, matches.total);
@@ -1869,6 +1909,7 @@ void Engine::AdoptMappedLocked(std::unique_ptr<MappedFile> mapped) {
     query_shards_.clear();
     query_shards_ready_ = false;
     map_ = std::move(mapped);
+    ++layout_epoch_;
     live_.Clear();
     live_.Shrink();
     tombstones_.clear();
@@ -2515,6 +2556,7 @@ void Engine::CompactLocked() {
         map_.reset();
     }
     live_ = std::move(neu);
+    ++layout_epoch_;
     vols_ = std::move(vols);
     tombstones_.clear();
     patches_.clear();
@@ -3325,6 +3367,7 @@ void Engine::FullRebuild(const char* reason) {
                 if (wrote) build_error = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
                 if (map_) { map_->Close(); map_.reset(); }
                 live_ = std::move(build_);
+                ++layout_epoch_;
                 vols_ = std::move(build_vols_);
                 tombstones_.clear();
                 patches_.clear();

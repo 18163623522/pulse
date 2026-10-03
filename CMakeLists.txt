@@ -442,6 +442,9 @@ target_link_libraries(pulse_index PRIVATE advapi32 shlwapi ole32 shell32 netapi3
     pulse_crash_reporter pulse_text)
 pulse_add_version_resource(pulse_index "Pulse index host" "Pulse.Index" "Pulse.Index.exe")
 add_dependencies(pulse_index_host_stress pulse_index)
+add_executable(pulse_index_caller_filter_test src/bench/index_caller_filter_test.cpp)
+target_link_libraries(pulse_index_caller_filter_test PRIVATE advapi32)
+add_dependencies(pulse_index_caller_filter_test pulse_index)
 
 # ---- Stage 1B-1 ops self test (console; drives pulse_shell.exe over the pipe) ----
 add_executable(pulse_operation_presentation_test src/bench/operation_presentation_test.cpp)
