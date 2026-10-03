@@ -31,7 +31,8 @@ DefaultDirName={code:DefaultPulseDirectory}
 DefaultGroupName=Pulse
 ; Reuse the existing installation directory and task selections when this is
 ; an upgrade. AppId is intentionally stable so the previous install can be
-; located and removed before the new files are copied.
+; located: the same directory is upgraded in place (see PrepareToInstall), and
+; only an install moved to another directory removes the previous copy first.
 UsePreviousAppDir=yes
 UsePreviousTasks=yes
 UsePreviousGroup=yes
@@ -184,6 +185,7 @@ var
   IndexDirPage: TInputDirWizardPage;
   CleanupUserData: Boolean;
   UninstallIndexPath: String;
+  InPlaceUpgrade: Boolean;
   UpgradePrefsCaptured: Boolean;
   UpgradeStartupPresent: Boolean;
   UpgradeStartupCommand, UpgradePreviousExe: String;
@@ -622,6 +624,31 @@ begin
   end;
 end;
 
+{ Same-directory test for in-place upgrades: case-insensitive, surrounding
+  blanks and a trailing backslash ignored. Pure, so
+  scripts/test_installer_inplace_upgrade.ps1 can check it in isolation. }
+function SamePulseDirectory(const Previous, Target: String): Boolean;
+begin
+  Result := (Trim(Previous) <> '') and (Trim(Target) <> '') and
+    (CompareText(RemoveBackslashUnlessRoot(Trim(Previous)),
+                 RemoveBackslashUnlessRoot(Trim(Target))) = 0);
+end;
+
+{ True when the registered installation lives in the directory this setup is
+  about to write and still has its executable, so it can be upgraded in place. }
+function UpgradesInPlace: Boolean;
+var
+  Root: Integer;
+  Previous: String;
+begin
+  Result := False;
+  if not PreviousPulseRoot(Root) then Exit;
+  if not RegQueryStringValue(Root, PulseUninstallKey, 'Inno Setup: App Path', Previous) then
+    RegQueryStringValue(Root, PulseUninstallKey, 'InstallLocation', Previous);
+  Result := SamePulseDirectory(Previous, ExpandConstant('{app}')) and
+    FileExists(AddBackslash(RemoveBackslashUnlessRoot(Previous)) + 'pulse.exe');
+end;
+
 function ReadPreviousUninstallCommand(var CommandLine: String): Boolean;
 var
   Root: Integer;
@@ -852,6 +879,19 @@ begin
   if not ClosePulseForUpdate then Exit;
   StopPulseHosts;
   WaitUntilPulseIndexGone;
+  { Same directory: overwrite in place under the stable AppId. Running the
+    previous uninstaller first deleted pulse.exe and the Start menu shortcut,
+    and Inno's uninstaller unpins every shortcut it removes, so each update
+    dropped the user's taskbar and Start pins (#72). The executable path does
+    not change, so the Run key and shell integration stay valid as written;
+    the stopped index service is reconfigured or removed in CurStepChanged. }
+  InPlaceUpgrade := UpgradesInPlace;
+  if InPlaceUpgrade then
+  begin
+    Log('Upgrading Pulse in place: ' + ExpandConstant('{app}'));
+    Result := '';
+    Exit;
+  end;
   PreviousUninstallError := UninstallPreviousVersion;
   if not ClosePulseForUpdate then Exit;
   StopPulseHosts;
@@ -867,8 +907,17 @@ var
 begin
   if CurStep <> ssPostInstall then Exit;
   RestoreUpgradePrefs;
-  if not WizardIsTaskSelected('indexservice') then Exit;
   IndexExe := ExpandConstant('{app}\Pulse.Index.exe');
+  if not WizardIsTaskSelected('indexservice') then
+  begin
+    { The previous uninstaller used to remove the service; an in-place upgrade
+      that drops the task has to remove it here. }
+    if InPlaceUpgrade and PulseIndexServiceExists then
+      if not Exec(IndexExe, '--uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code) or
+        (Code <> 0) then
+        Log('Index service removal failed: ' + IntToStr(Code));
+    Exit;
+  end;
   Path := RemoveBackslashUnlessRoot(GetIndexPath(''));
   WizardForm.StatusLabel.Caption := CustomMessage('StatusIndexPath');
   Code := -1;
