@@ -40,6 +40,7 @@
 #include "app_prefs.h"
 #include "startup_launch.h"
 #include "entry_sort.h"
+#include "folder_sizes_ui.h"
 #include "saved_search.h"
 #include "search_query.h"
 #include "settings_controller.h"
@@ -1050,7 +1051,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             SyncUiTimerRate(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
             bool dirty = false;
             if (TickChangeTracking(*s)) dirty = true;
-            if (s->folderSizes.TakeChanged()) dirty = true;
+            static bool folderSizeResortWaiting = false;
+            if (s->folderSizes.TakeChanged()) {
+                dirty = true;
+                folderSizeResortWaiting = true;
+            }
+            // New totals re-sort Size-ordered listings, paced (#58).
+            if (folderSizeResortWaiting) folderSizeResortWaiting = ResortForFolderSizes(*s);
             DrainDirNotifies(*s);
             const ULONGLONG now = GetTickCount64();
             TickUpdates(*s, now);

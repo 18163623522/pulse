@@ -840,6 +840,18 @@ int FolderGroupFor(const AppState& s, const std::wstring& path) {
     return static_cast<int>(saved.value_or(app::DefaultGroupFor(path)));
 }
 
+// A Size sort orders folders by the totals known so far (#58); the UI timer
+// re-sorts as more arrive (ResortForFolderSizes).
+static std::shared_ptr<const app::FolderSizeLookup> SortFolderSizes(
+    AppState& s, app::Tab& tab, const std::wstring& path) {
+    if (tab.sort_column != ui::SortColumn::Size || path.empty() || fs::IsVirtualPath(path))
+        return nullptr;
+    auto sizes = std::make_shared<const app::FolderSizeLookup>(s.folderSizes.KnownChildren(path));
+    tab.folder_size_signature = app::FolderSizeSignature(*sizes);
+    tab.folder_size_resorted_at = GetTickCount64();
+    return sizes;
+}
+
 void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
     tab.explorer_handoff.reset();
     SyncTagGroups(s);
@@ -973,7 +985,8 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     }
     tab.pending_generation = shared_generation != 0
         ? shared_generation
-        : s.worker.Refresh(normalized, tab.sort_column, tab.sort_direction, tab.EffectiveGroup());
+        : s.worker.Refresh(normalized, tab.sort_column, tab.sort_direction, tab.EffectiveGroup(),
+                           SortFolderSizes(s, tab, normalized));
 
     SyncVisibleWatches(s);
     if (fs::IsUncPath(normalized)) RequestUncProbe(s, normalized);
@@ -1214,7 +1227,8 @@ void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
         }
         if (tab->pending_generation == 0) {
             tab->pending_generation = s.worker.Refresh(
-                normalized, tab->sort_column, tab->sort_direction, tab->EffectiveGroup());
+                normalized, tab->sort_column, tab->sort_direction, tab->EffectiveGroup(),
+                SortFolderSizes(s, *tab, normalized));
         }
     }
 }

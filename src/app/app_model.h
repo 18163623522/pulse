@@ -100,6 +100,10 @@ struct Tab {
     bool refresh_keeps_order = false;      // the pending refresh merges into the shown order
     bool order_held = false;               // rows may be out of sort order
     std::vector<EntryRename> held_renames; // Pulse renames not yet seen by a refresh
+    // Size order (#58): fingerprint of the folder totals the rows were sorted
+    // with, and when they last moved for new totals (GetTickCount64).
+    uint64_t folder_size_signature = 0;
+    uint64_t folder_size_resorted_at = 0;
     ColumnStripState column_strip; // listings shown beside the list in column view
     std::wstring git_root;
     std::shared_ptr<std::vector<fs::DirEntry>> search_entries;

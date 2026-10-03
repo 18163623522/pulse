@@ -61,7 +61,8 @@ void WorkerPool::Stop() {
 }
 
 uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
-                             ui::SortDirection dir, int group_by) {
+                             ui::SortDirection dir, int group_by,
+                             std::shared_ptr<const FolderSizeLookup> folder_sizes) {
     std::lock_guard<std::mutex> lock(mutex_);
     uint64_t gen = ++global_gen_;
     const std::wstring key = WorkKey(path, col, dir, group_by);
@@ -76,6 +77,7 @@ uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
     queue_ = std::move(filtered);
     WorkItem work{ path, key, gen, col, dir };
     work.group_by = group_by;
+    work.folder_sizes = std::move(folder_sizes);
     queue_.push(std::move(work));
     cv_.notify_one();
     return gen;
@@ -222,17 +224,24 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
     struct SortCancelled {};
     if (!item.preserve_order) {
         const ScopedEntryGrouping grouping(item.group_by, item.path);
+        const auto tick = [&] {
+            if ((++comparisons & 8191u) == 0) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto it = current_gen_.find(item.request_key);
+                if (!running_ || it == current_gen_.end() || it->second != item.generation)
+                    throw SortCancelled{};
+            }
+        };
         try {
-            std::sort(entries->begin(), entries->end(),
-                [&](const fs::DirEntry& a, const fs::DirEntry& b) {
-                    if ((++comparisons & 8191u) == 0) {
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        const auto it = current_gen_.find(item.request_key);
-                        if (!running_ || it == current_gen_.end() || it->second != item.generation)
-                            throw SortCancelled{};
-                    }
-                    return EntryLess(a, b, item.sort_column, item.sort_direction);
-                });
+            if (item.folder_sizes && item.sort_column == ui::SortColumn::Size) {
+                SortEntriesBySize(*entries, item.sort_direction, *item.folder_sizes, tick);
+            } else {
+                std::sort(entries->begin(), entries->end(),
+                    [&](const fs::DirEntry& a, const fs::DirEntry& b) {
+                        tick();
+                        return EntryLess(a, b, item.sort_column, item.sort_direction);
+                    });
+            }
         } catch (const SortCancelled&) {
             res.cancelled = true;
             return res;

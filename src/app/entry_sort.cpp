@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cwctype>
+#include <numeric>
 #include <string_view>
 
 namespace pulse::app {
@@ -67,8 +68,15 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
     return EntryLess(a, b, col, dir, CurrentFolderSortMode());
 }
 
-bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
-               ui::SortColumn col, ui::SortDirection dir, FolderSortMode folders) {
+namespace {
+
+struct SizeKey {
+    uint64_t bytes = 0;
+    bool known = true;
+};
+
+bool Less(const fs::DirEntry& a, const fs::DirEntry& b, ui::SortColumn col,
+          ui::SortDirection dir, FolderSortMode folders, const SizeKey* ka, const SizeKey* kb) {
     const bool a_folder = a.is_dir || (!a.link_target.empty() && a.link_target_is_dir);
     const bool b_folder = b.is_dir || (!b.link_target.empty() && b.link_target_is_dir);
     // FoldersFirst pins folders above the direction flip below; FollowDirection
@@ -83,11 +91,17 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
     case ui::SortColumn::Name:
         cmp = ItemNameCompare(a, b);
         break;
-    case ui::SortColumn::Size:
-        if (a.size < b.size) cmp = -1;
-        else if (a.size > b.size) cmp = 1;
+    case ui::SortColumn::Size: {
+        // Folder totals come from the size cache (#58); a folder without one
+        // follows the rest in either direction.
+        if (ka && kb && ka->known != kb->known) return ka->known;
+        const uint64_t sa = ka ? ka->bytes : a.size;
+        const uint64_t sb = kb ? kb->bytes : b.size;
+        if (sa < sb) cmp = -1;
+        else if (sa > sb) cmp = 1;
         else cmp = ItemNameCompare(a, b);
         break;
+    }
     case ui::SortColumn::Mtime:
         cmp = CompareFileTime(&a.mtime, &b.mtime);
         if (cmp == 0) cmp = ItemNameCompare(a, b);
@@ -115,6 +129,63 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
     }
     if (dir == ui::SortDirection::Desc) cmp = -cmp;
     return cmp < 0;
+}
+
+} // namespace
+
+bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
+               ui::SortColumn col, ui::SortDirection dir, FolderSortMode folders) {
+    return Less(a, b, col, dir, folders, nullptr, nullptr);
+}
+
+void SortEntriesBySize(std::vector<fs::DirEntry>& entries, ui::SortDirection dir,
+                       const FolderSizeLookup& sizes, const std::function<void()>& tick) {
+    const size_t n = entries.size();
+    std::vector<SizeKey> keys(n);
+    std::wstring lower;
+    for (size_t i = 0; i < n; ++i) {
+        const fs::DirEntry& e = entries[i];
+        if (!e.is_dir || e.drive_type != 0) {
+            keys[i].bytes = e.size;
+            continue;
+        }
+        lower = e.name;
+        for (auto& c : lower) c = static_cast<wchar_t>(std::towlower(c));
+        const auto it = sizes.find(lower);
+        if (it != sizes.end()) keys[i].bytes = it->second;
+        else keys[i].known = false;
+    }
+    // Sort positions, not rows: a throwing tick leaves the rows as they were.
+    std::vector<size_t> order(n);
+    std::iota(order.begin(), order.end(), size_t{0});
+    const EntryGrouping* grouping = CurrentEntryGrouping();
+    const FolderSortMode mode = CurrentFolderSortMode();
+    std::sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+        if (tick) tick();
+        const fs::DirEntry& a = entries[x];
+        const fs::DirEntry& b = entries[y];
+        if (grouping) {
+            if (const int c = GroupCompare(a, b, grouping->by, grouping->clock, ui::SortColumn::Size, dir))
+                return c < 0;
+        }
+        return Less(a, b, ui::SortColumn::Size, dir, mode, &keys[x], &keys[y]);
+    });
+    std::vector<fs::DirEntry> sorted;
+    sorted.reserve(n);
+    for (const size_t i : order) sorted.push_back(std::move(entries[i]));
+    entries.swap(sorted);
+}
+
+uint64_t FolderSizeSignature(const FolderSizeLookup& sizes) {
+    uint64_t signature = sizes.size();
+    for (const auto& [name, bytes] : sizes) {
+        uint64_t x = std::hash<std::wstring>{}(name) ^ (bytes + 0x9E3779B97F4A7C15ull);
+        x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull;
+        x ^= x >> 27; x *= 0x94D049BB133111EBull;
+        x ^= x >> 31;
+        signature += x;
+    }
+    return signature;
 }
 
 } // namespace pulse::app
