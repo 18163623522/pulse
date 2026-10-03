@@ -1,4 +1,5 @@
 #include "edit_host.h"
+#include "FluentTokens.h"
 #include "legacy_icons.h"
 #include "../common/windows_compat.h"
 #include "quick_preview_window.h"
@@ -116,23 +117,13 @@ std::wstring GroupedNumber(uint32_t value) {
     return digits;
 }
 
-COLORREF FindEditBgColor(bool dark) noexcept {
+// Themed brush color; high contrast is applied where the colors are used.
+COLORREF FindEditBrushColor(bool dark) noexcept {
     return dark ? RGB(30, 30, 30) : RGB(255, 255, 255);
 }
 
-COLORREF FindEditFgColor(bool dark) noexcept {
-    return dark ? RGB(255, 255, 255) : RGB(26, 26, 26);
-}
-
-D2D1_COLOR_F FindEditBg(bool dark) noexcept {
-    return dark ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                : D2D1::ColorF(1.0f, 1.0f, 1.0f);
-}
-
-D2D1_COLOR_F FindEditFg(bool dark) noexcept {
-    return dark ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-}
+D2D1_COLOR_F FindEditBg(bool dark) noexcept { return ColorFromRef(EditBackColor(dark)); }
+D2D1_COLOR_F FindEditFg(bool dark) noexcept { return ColorFromRef(EditTextColor(dark)); }
 
 void FillHitRange(ID2D1DeviceContext* dc, IDWriteTextLayout* layout,
                   uint32_t start, uint32_t length, float origin_x, float origin_y,
@@ -980,7 +971,7 @@ bool QuickPreviewWindow::EnsureFindEdit() {
     if (find_edit_font_)
         SendMessageW(find_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(find_edit_font_), TRUE);
     if (!find_edit_brush_)
-        find_edit_brush_ = CreateSolidBrush(FindEditBgColor(dark_));
+        find_edit_brush_ = CreateSolidBrush(FindEditBrushColor(dark_));
     SendMessageW(find_edit_, EM_SETLIMITTEXT, static_cast<WPARAM>(kFindQueryLimit), 0);
     SendMessageW(find_edit_, EM_SETCUEBANNER, TRUE,
         reinterpret_cast<LPARAM>(pulse::l10n::Get(pulse::l10n::StringId::Search).c_str()));
@@ -1053,8 +1044,8 @@ void QuickPreviewWindow::PaintFindEditLuma(HWND hwnd, HDC hdc) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
     if (!find_edit_brush_)
-        find_edit_brush_ = CreateSolidBrush(FindEditBgColor(dark_));
-    FillRect(hdc, &rc, find_edit_brush_);
+        find_edit_brush_ = CreateSolidBrush(FindEditBrushColor(dark_));
+    FillRect(hdc, &rc, EditBackBrush(find_edit_brush_));
 }
 
 LRESULT QuickPreviewWindow::ForwardFindEditKeepLuma(HWND hwnd, UINT message,
@@ -1190,8 +1181,8 @@ LRESULT CALLBACK QuickPreviewWindow::FindEditProc(HWND hwnd, UINT message, WPARA
             RECT rc{};
             GetClientRect(hwnd, &rc);
             if (!self->find_edit_brush_)
-                self->find_edit_brush_ = CreateSolidBrush(FindEditBgColor(self->dark_));
-            FillRect(reinterpret_cast<HDC>(wparam), &rc, self->find_edit_brush_);
+                self->find_edit_brush_ = CreateSolidBrush(FindEditBrushColor(self->dark_));
+            FillRect(reinterpret_cast<HDC>(wparam), &rc, EditBackBrush(self->find_edit_brush_));
             return 1;
         }
     }
@@ -2563,13 +2554,11 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         break;
     case WM_CTLCOLOREDIT: {
         if (find_edit_ && reinterpret_cast<HWND>(lparam) == find_edit_) {
-            const COLORREF fg = FindEditFgColor(dark_);
-            const COLORREF bg = FindEditBgColor(dark_);
-            if (!find_edit_brush_) find_edit_brush_ = CreateSolidBrush(bg);
-            SetTextColor(reinterpret_cast<HDC>(wparam), fg);
-            SetBkColor(reinterpret_cast<HDC>(wparam), bg);
+            if (!find_edit_brush_) find_edit_brush_ = CreateSolidBrush(FindEditBrushColor(dark_));
+            SetTextColor(reinterpret_cast<HDC>(wparam), EditTextColor(dark_));
+            SetBkColor(reinterpret_cast<HDC>(wparam), EditBackColor(dark_));
             SetBkMode(reinterpret_cast<HDC>(wparam), OPAQUE);
-            return reinterpret_cast<LRESULT>(find_edit_brush_);
+            return reinterpret_cast<LRESULT>(EditBackBrush(find_edit_brush_));
         }
         break;
     }

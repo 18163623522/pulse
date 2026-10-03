@@ -1,4 +1,5 @@
 #include "global_search_window.h"
+#include "../ui/FluentTokens.h"
 #include "resource.h"
 #include "../ui/empty_state_layout.h"
 #include "../ui/fluent_components.h"
@@ -573,7 +574,8 @@ struct GlobalSearchWindow::Impl {
         case WM_COMMAND: if (reinterpret_cast<HWND>(lp) == edit && HIWORD(wp) == EN_CHANGE) Changed(); return 0;
         case WM_CTLCOLOREDIT: {
             const auto dc = reinterpret_cast<HDC>(wp); SetBkColor(dc, Background());
-            SetTextColor(dc, dark ? RGB(245, 245, 247) : RGB(32, 33, 36)); return reinterpret_cast<LRESULT>(background);
+            SetTextColor(dc, ui::HcEditText(dark ? RGB(245, 245, 247) : RGB(32, 33, 36)));
+            return reinterpret_cast<LRESULT>(ui::EditBackBrush(background));
         }
         case WM_TIMER:
             if (wp == kDebounce) Search();

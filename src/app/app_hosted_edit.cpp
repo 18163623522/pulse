@@ -1,4 +1,5 @@
 #include "../ui/edit_host.h"
+#include "../ui/FluentTokens.h"
 // app_hosted_edit.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
 #include "address_bar_command.h"
@@ -68,7 +69,7 @@ static bool EraseHostedEditBackground(HWND hwnd, WPARAM wParam, AppState* s) {
     EnsureEditVisuals(*s);
     RECT rc{};
     GetClientRect(hwnd, &rc);
-    FillRect(reinterpret_cast<HDC>(wParam), &rc, s->editBrush);
+    FillRect(reinterpret_cast<HDC>(wParam), &rc, ui::EditBackBrush(s->editBrush));
     return true;
 }
 
@@ -544,13 +545,11 @@ void HideTagRenameOverlay(AppState& s, bool commit) {
 
 
 D2D1_COLOR_F HostedEditForeground(const AppState& s) {
-    return s.darkMode ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                      : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
+    return ui::ColorFromRef(ui::EditTextColor(s.darkMode));
 }
 
 D2D1_COLOR_F HostedEditBackground(const AppState& s) {
-    return s.darkMode ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                      : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+    return ui::ColorFromRef(ui::EditBackColor(s.darkMode));
 }
 
 IDWriteTextFormat* HostedEditFormat(AppState& s, HWND hwnd) {
@@ -571,7 +570,7 @@ bool HandleHostedEditMessage(AppState& s, HWND hwnd, UINT msg, WPARAM wParam,
     }
     EnsureEditVisuals(s);
     return ui::HandleChildEditMessage(s.compositor, HostedEditFormat(s, hwnd),
-        HostedEditForeground(s), HostedEditBackground(s), s.editBrush,
+        HostedEditForeground(s), HostedEditBackground(s), ui::EditBackBrush(s.editBrush),
         hwnd, msg, wParam, lParam, result);
 }
 

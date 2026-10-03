@@ -342,12 +342,12 @@ LRESULT CALLBACK FluentMenu::MenuWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     case WM_CTLCOLOREDIT: {
         const bool dark = self->dark_;
         HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(hdc, dark ? RGB(255, 255, 255) : RGB(26, 26, 26));
-        SetBkColor(hdc, dark ? RGB(30, 30, 30) : RGB(255, 255, 255));
+        SetTextColor(hdc, EditTextColor(dark));
+        SetBkColor(hdc, EditBackColor(dark));
         if (!self->edit_brush_) {
             self->edit_brush_ = CreateSolidBrush(dark ? RGB(30, 30, 30) : RGB(255, 255, 255));
         }
-        return reinterpret_cast<LRESULT>(self->edit_brush_);
+        return reinterpret_cast<LRESULT>(EditBackBrush(self->edit_brush_));
     }
     case WM_COMMAND:
         if (HIWORD(wParam) == EN_CHANGE && self->edit_ &&
@@ -1144,12 +1144,8 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
             const LRESULT result = self->compositor_->CallLumaEditMouse(
                 hwnd, msg, wParam, lParam, self->compositor_->TextFormat());
             if (msg != WM_MOUSEMOVE || GetCapture() == hwnd) {
-                const D2D1_COLOR_F fg = self->dark_
-                    ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                    : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-                const D2D1_COLOR_F bg = self->dark_
-                    ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                    : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+                const D2D1_COLOR_F fg = ColorFromRef(EditTextColor(self->dark_));
+                const D2D1_COLOR_F bg = ColorFromRef(EditBackColor(self->dark_));
                 self->compositor_->PresentLumaEdit(hwnd, self->compositor_->TextFormat(),
                                                    fg, bg);
             }
@@ -1181,12 +1177,8 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
     case WM_PAINT: {
         if (!self->compositor_ || !self->compositor_->LumaTextEnabled()) break;
         HideCaret(hwnd);
-        const D2D1_COLOR_F fg = self->dark_
-            ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-            : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-        const D2D1_COLOR_F bg = self->dark_
-            ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-            : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+        const D2D1_COLOR_F fg = ColorFromRef(EditTextColor(self->dark_));
+        const D2D1_COLOR_F bg = ColorFromRef(EditBackColor(self->dark_));
         if (!self->compositor_->PresentLumaEdit(hwnd, self->compositor_->TextFormat(),
                                                 fg, bg)) {
             PAINTSTRUCT ps{};
@@ -1197,7 +1189,7 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 self->edit_brush_ = CreateSolidBrush(
                     self->dark_ ? RGB(30, 30, 30) : RGB(255, 255, 255));
             }
-            FillRect(hdc, &rc, self->edit_brush_);
+            FillRect(hdc, &rc, EditBackBrush(self->edit_brush_));
             EndPaint(hwnd, &ps);
         }
         return 0;
@@ -1207,12 +1199,8 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
         if (self->compositor_ && self->compositor_->LumaTextEnabled()) {
             HideCaret(hwnd);
             SetTimer(hwnd, 71, GetCaretBlinkTime(), nullptr);
-            const D2D1_COLOR_F fg = self->dark_
-                ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-            const D2D1_COLOR_F bg = self->dark_
-                ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+            const D2D1_COLOR_F fg = ColorFromRef(EditTextColor(self->dark_));
+            const D2D1_COLOR_F bg = ColorFromRef(EditBackColor(self->dark_));
             self->compositor_->PresentLumaEdit(hwnd, self->compositor_->TextFormat(),
                                                fg, bg);
         } else {
@@ -1227,12 +1215,8 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
         if (wParam == 71) {
             if (GetCapture() != hwnd && self->compositor_ &&
                 self->compositor_->LumaTextEnabled()) {
-                const D2D1_COLOR_F fg = self->dark_
-                    ? D2D1::ColorF(1.0f, 1.0f, 1.0f)
-                    : D2D1::ColorF(26.0f / 255.0f, 26.0f / 255.0f, 26.0f / 255.0f);
-                const D2D1_COLOR_F bg = self->dark_
-                    ? D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f)
-                    : D2D1::ColorF(1.0f, 1.0f, 1.0f);
+                const D2D1_COLOR_F fg = ColorFromRef(EditTextColor(self->dark_));
+                const D2D1_COLOR_F bg = ColorFromRef(EditBackColor(self->dark_));
                 self->compositor_->PresentLumaEdit(hwnd, self->compositor_->TextFormat(),
                                                    fg, bg);
             } else if (GetCapture() != hwnd) {
@@ -1250,7 +1234,7 @@ LRESULT CALLBACK FluentMenu::FilterEditProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 self->edit_brush_ = CreateSolidBrush(
                     self->dark_ ? RGB(30, 30, 30) : RGB(255, 255, 255));
             }
-            FillRect(reinterpret_cast<HDC>(wParam), &rc, self->edit_brush_);
+            FillRect(reinterpret_cast<HDC>(wParam), &rc, EditBackBrush(self->edit_brush_));
             return 1;
         }
     }

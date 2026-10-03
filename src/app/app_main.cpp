@@ -1,4 +1,5 @@
 #include "../common/windows_compat.h"
+#include "../ui/FluentTokens.h"
 #include "quick_access.h"
 #include "app_prompts.h"
 #include "vertical_tabs.h"
@@ -976,10 +977,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (!s) break;
         EnsureEditVisuals(*s);
         HDC hdc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(hdc, s->darkMode ? RGB(255, 255, 255) : RGB(26, 26, 26));
-        SetBkColor(hdc, s->darkMode ? RGB(30, 30, 30) : RGB(255, 255, 255));
+        SetTextColor(hdc, ui::EditTextColor(s->darkMode));
+        SetBkColor(hdc, ui::EditBackColor(s->darkMode));
         SetBkMode(hdc, OPAQUE);
-        return reinterpret_cast<LRESULT>(s->editBrush);
+        return reinterpret_cast<LRESULT>(ui::EditBackBrush(s->editBrush));
     }
 
     case WM_EXPLORER_TAKEOVER: {
