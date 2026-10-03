@@ -690,6 +690,20 @@ int wmain(int argc, wchar_t** argv) {
     passed &= Report("pinned tab names toggle on and persist",
         prefs.show_pinned_tab_names && parsed_prefs.FromJson(prefs.ToJson()) &&
         parsed_prefs.show_pinned_tab_names);
+    {
+        pulse::app::AppPrefs update_prefs;
+        passed &= Report("automatic update checks default on, also for an older app.json",
+            prefs.auto_check_updates && update_prefs.FromJson(L"{\"show_hints\":true}") &&
+            update_prefs.auto_check_updates);
+        settings_ui.ToggleUi(31);
+        passed &= Report("automatic update checks toggle off and persist",
+            !prefs.auto_check_updates && update_prefs.FromJson(prefs.ToJson()) &&
+            !update_prefs.auto_check_updates);
+        settings_ui.ToggleUi(31);
+        passed &= Report("automatic update checks toggle back on and persist",
+            prefs.auto_check_updates && update_prefs.FromJson(prefs.ToJson()) &&
+            update_prefs.auto_check_updates);
+    }
     settings_ui.Wallpaper(0);
     {
         using pulse::app::kBlankClickOff;

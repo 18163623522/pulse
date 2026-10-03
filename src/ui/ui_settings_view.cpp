@@ -564,6 +564,35 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
                     pulse::l10n::StringId::DownloadUpdate), {},
                 fluent::ButtonKind::Primary, download});
         }
+        if (lay.update_auto_row.bottom > lay.update_auto_row.top) {
+            // Same row as the diagnostics card's performance switch.
+            const D2D1_RECT_F& row = lay.update_auto_row;
+            const bool hovered = IsHovered(vm, HitTestResult::SettingsToggle, 31);
+            if (hovered) {
+                MakeBrush(dc, theme.fill_hover, brFillHover_);
+                FillRoundedRect(dc, brFillHover_.get(), row.left + 4.0f * scale_, row.top,
+                                row.right - row.left - 8.0f * scale_, row.bottom - row.top,
+                                4.0f * scale_);
+            }
+            MakeBrush(dc, theme.text, brText_);
+            DrawTextRect(dc, compositor_->TextFormat(), brText_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::SettingsAutoUpdate),
+                         row.left + 16.0f * scale_, row.top + 8.0f * scale_,
+                         row.right - row.left - 80.0f * scale_, 22.0f * scale_);
+            MakeBrush(dc, theme.text_secondary, brTextSecondary_);
+            DrawTextRect(dc, compositor_->SmallFormat(), brTextSecondary_.get(),
+                         pulse::l10n::Get(pulse::l10n::StringId::SettingsAutoUpdateDesc),
+                         row.left + 16.0f * scale_, row.top + 30.0f * scale_,
+                         row.right - row.left - 80.0f * scale_, 18.0f * scale_);
+            fluent::ControlState st{};
+            st.checked = vm.settings_update_auto;
+            st.hovered = hovered;
+            painter_.DrawSwitch(D2D1::RectF(row.right - 16.0f * scale_ - switch_w,
+                                            row.top + (56.0f * scale_ - switch_h) * 0.5f,
+                                            row.right - 16.0f * scale_,
+                                            row.top + (56.0f * scale_ + switch_h) * 0.5f),
+                                L"", st);
+        }
         if (!vm.settings_index_error.empty()) {
             MakeBrush(dc, theme.danger, brDanger_);
             DrawTextRect(dc, compositor_->SmallFormat(), brDanger_.get(),
@@ -930,6 +959,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::Exclusions: target=l.index_exclude_action;break;
     case I::ServerFolders: target=l.network_action[0];break;
     case I::ReleaseNotes: target=l.release_card;break;
+    case I::SettingsAutoUpdate: target=l.update_auto_row;break;
     default: return 0;
     }
     return (std::max)(0.0f,target.top-l.content_origin-20*scale_);

@@ -703,6 +703,7 @@ struct WindowViewModel {
     bool settings_update_downloading = false;
     bool settings_update_installing = false;
     bool settings_update_available = false;
+    bool settings_update_auto = true;  // background checks + reminders (AppPrefs::auto_check_updates)
     bool settings_diagnostics_exporting = false;
     bool settings_show_performance = false;
     int dup_scope = 0;

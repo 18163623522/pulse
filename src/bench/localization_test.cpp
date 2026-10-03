@@ -101,6 +101,19 @@ int main() {
             !Get(StringId::UpdateClickToInstall).empty() && !Get(StringId::UpdateCancelled).empty() &&
             !Get(StringId::UpdateBusy).empty() && !Get(StringId::UpdateInstallFailed).empty());
     }
+    {
+        // Ids above the last one Get() serves come back empty: keep kLastString current.
+        bool newest = true;
+        for (const auto language : {L"zh-CN", L"zh-TW", L"en-US"}) {
+            SetLanguage(language);
+            for (const auto id : {StringId::LanguageZhTW, StringId::SettingsAutoUpdate,
+                                  StringId::SettingsAutoUpdateDesc, StringId::UpdateDescManual})
+                newest &= !Get(id).empty();
+        }
+        SetLanguage(L"zh-TW");
+        newest &= Get(StringId::SettingsAutoUpdate) == L"\u81EA\u52D5\u6AA2\u67E5\u66F4\u65B0";  // 自動檢查更新
+        passed &= Report("newest string ids load in every language", newest);
+    }
     SetLanguage(L"zh-CN");
     passed &= Report("zh-CN quick access and compatibility resources",
         Get(StringId::PinQuickAccess) == L"固定到快速访问" &&

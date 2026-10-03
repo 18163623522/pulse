@@ -50,7 +50,8 @@ void TickUpdates(AppState& state, unsigned long long now) {
                                       false, WM_SHOW_RELEASE_NOTES);
         state.whatsNewVersion.clear();
     }
-    if (state.shot.active || !app::UpdateChecker::Enabled() || now < state.next_update_check) return;
+    if (state.shot.active || !app::UpdateChecker::Enabled() || !state.appPrefs.auto_check_updates ||
+        now < state.next_update_check) return;
     if (state.update_installer.downloading() || state.update_installer.installing() || state.update_checker.checking()) return;
     state.next_update_check = now + kCheckInterval;
     CheckForUpdates(state);

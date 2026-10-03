@@ -91,6 +91,7 @@ void AppPrefs::ResetToDefaults() {
     address_search_content = false;
     tray_icon_size = 48;
     show_hints = true;
+    auto_check_updates = true;
     tips_seen = 0;
     accent_rgb.clear();
     accent_follow_system = false;
@@ -191,6 +192,8 @@ std::wstring AppPrefs::ToJson() const {
     out += std::to_wstring(tray_icon_size);
     out += L",\n  \"show_hints\":";
     out += show_hints ? L"true" : L"false";
+    out += L",\n  \"auto_check_updates\":";
+    out += auto_check_updates ? L"true" : L"false";
     out += L",\n  \"tips_seen\":" + std::to_wstring(tips_seen);
     // Legacy three-level keys stay for older builds reading the same app.json.
     out += L",\n  \"wallpaper_look\":";
@@ -314,6 +317,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     if (row_height < 24 || row_height > 48) row_height = 34;
     tray_icon_size = pulse::json::ExtractInt(json, L"tray_icon_size", 48);
     show_hints = pulse::json::ExtractBool(json, L"show_hints", true);
+    auto_check_updates = pulse::json::ExtractBool(json, L"auto_check_updates", true);
     const int seen = pulse::json::ExtractInt(json, L"tips_seen", 0);
     tips_seen = seen > 0 ? static_cast<uint32_t>(seen) : 0u;
     if (tray_icon_size < 32 || tray_icon_size > 64) tray_icon_size = 48;

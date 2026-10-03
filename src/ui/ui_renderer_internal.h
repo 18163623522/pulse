@@ -1789,6 +1789,7 @@ struct SettingsLayout {
     D2D1_RECT_F diagnostics_action[3]{};
     D2D1_RECT_F update_card{};
     D2D1_RECT_F update_action[2]{};
+    D2D1_RECT_F update_auto_row{};  // empty when this build has no updater
     D2D1_RECT_F about_action[2]{};
     D2D1_RECT_F release_card{};
     D2D1_RECT_F release_all{};
@@ -2074,9 +2075,15 @@ SettingsLayout MakeSettingsLayout(const WindowViewModel& vm, const D2D1_RECT_F& 
         const float download_w = std::min(available_width, label_btn_w(
             pulse::l10n::Get(pulse::l10n::StringId::DownloadUpdate)));
         const bool stack_updates = vm.settings_update_available && check_w + gap + download_w > available_width;
-        const float update_h = 174.0f * scale +
+        // The automatic-check switch sits between the status text and the buttons,
+        // like the performance switch in the diagnostics card.
+        const float auto_h = vm.settings_update_enabled ? 56.0f * scale : 0.0f;
+        const float update_h = 174.0f * scale + auto_h +
             (stack_updates ? 40.0f * scale : 0.0f);
         l.update_card = D2D1::RectF(card_left, y, card_right, y + update_h);
+        if (vm.settings_update_enabled)
+            l.update_auto_row = D2D1::RectF(card_left + 8.0f * scale, y + 106.0f * scale,
+                                            card_right - 8.0f * scale, y + 162.0f * scale);
         const float check_y = y + update_h - (stack_updates ? 88.0f : 48.0f) * scale;
         l.update_action[0] = D2D1::RectF(card_left + 16.0f * scale,
                                          check_y,
