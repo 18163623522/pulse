@@ -1026,16 +1026,31 @@ int wmain(int argc, wchar_t** argv) {
             tab.current_path = loaded;
             loaded_paths.push_back(loaded);
         });
-    passed &= Report("session layout restore skips empty panes and grows to the preset",
+    // An empty saved path is This PC, a real location: the pane is kept, not skipped.
+    passed &= Report("session layout restore keeps This PC (empty path) panes",
         restored.pinned && restored.tab_group == 0 &&
         restored.layout == pulse::app::LayoutPreset::TwoVertical &&
-        restored.panes.size() == 2 && restored.focused_index == 1 &&
-        loaded_paths.size() >= 2 && loaded_paths[0] == L"C:\\first");
+        restored.panes.size() == 3 && restored.focused_index == 1 &&
+        loaded_paths.size() == 3 && loaded_paths[0] == L"C:\\first" && loaded_paths[2].empty());
+    pulse::app::LayoutTabSnapshot single;
+    single.layout = 1;
+    single.panes.push_back({ L"", pulse::ui::ViewMode::Details, {}, {} });
+    pulse::app::LayoutTab grown;
+    std::vector<std::wstring> grown_paths;
+    pulse::app::RestoreLayoutTab(grown, single,
+        [&](pulse::app::Tab& tab, const std::wstring& loaded) {
+            tab.current_path = loaded;
+            grown_paths.push_back(loaded);
+        });
+    passed &= Report("session layout restore grows to the preset by cloning This PC",
+        grown.panes.size() == 2 && grown_paths.size() == 2 &&
+        grown_paths[0].empty() && grown_paths[1].empty());
     const auto captured = pulse::app::CaptureLayoutTab(restored);
     passed &= Report("session layout restore and capture preserve the tab marker",
         restored.marker_rgb == 0x0078D4 && captured.marker_rgb == 0x0078D4);
     passed &= Report("session layout capture preserves folder presentation state",
-        captured.pinned && captured.layout == 1 && captured.panes.size() == 2 &&
+        captured.pinned && captured.layout == 1 && captured.panes.size() == 3 &&
+        captured.panes[2].path.empty() &&
         captured.panes[0].view == pulse::ui::ViewMode::Tiles &&
         captured.panes[0].columns[1] == 0.5f);
     pulse::app::LayoutTab empty_restored;
