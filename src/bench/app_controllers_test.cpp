@@ -1161,6 +1161,64 @@ int wmain(int argc, wchar_t** argv) {
         context_menu.ConsumeDueRefreshes(2399) == 0 &&
         context_menu.ConsumeDueRefreshes(2400) == 1 &&
         context_menu.ConsumeDueRefreshes(3600) == 1);
+    // The shell host answers a right-click twice: a fast partial list (whatever
+    // handlers finished inside its budget) and then the complete list. Only the
+    // complete one may become the cache a later right-click paints from - that
+    // is what made packaged verbs (WinRAR and friends) appear on one
+    // right-click and vanish on the next.
+    {
+        pulse::app::ContextMenuController cache_menu;
+        cache_menu.SetShellOperations({
+            [](std::vector<std::wstring>, HWND, bool, bool, std::vector<std::wstring>) {
+                return 31u;
+            },
+            [](uint32_t) {}, [](uint32_t, uint32_t, std::wstring, std::wstring) {}, {}, {},
+        });
+        pulse::app::ContextMenuPrefs cache_prefs;
+
+        // First right-click: complete answer, so this is what must be cached.
+        cache_menu.CompleteStaticVerbs(L".zip", {});
+        cache_menu.StartQuery(cache_prefs, nullptr, { L"C:\\one.zip" }, false, L".zip",
+                              false, [](const std::wstring& path) { return path; }, {});
+        std::vector<pulse::ops::ShellMenuItem> complete;
+        pulse::ops::ShellMenuItem packaged;
+        packaged.id = 5;
+        packaged.verb = L"{b41db860-64e4-11d2-9906-e49fadc173ca}";
+        packaged.text = L"WinRAR";
+        complete.push_back(packaged);
+        pulse::ops::ShellMenuItem classic;
+        classic.id = 6;
+        classic.text = L"Classic only";
+        complete.push_back(classic);
+        cache_menu.CompleteComQuery(31, complete, GetTickCount64());
+
+        // A slow handler can make the host's next right-click answer with a
+        // partial list that is missing the packaged verb; it must not overwrite
+        // the complete one. Starting the session clears com_items_, exactly as
+        // a real right-click does.
+        cache_menu.StartQuery(cache_prefs, nullptr, { L"C:\\two.zip" }, false, L".zip",
+                              false, [](const std::wstring& path) { return path; }, {});
+        std::vector<pulse::ops::ShellMenuItem> early;
+        pulse::ops::ShellMenuItem early_classic;
+        early_classic.id = 9;
+        early_classic.text = L"Classic only";
+        early.push_back(early_classic);
+        cache_menu.CompleteComQuery(31, early, GetTickCount64(), true);
+
+        // What a later right-click paints before its own answer arrives.
+        cache_menu.StartQuery(cache_prefs, nullptr, { L"C:\\three.zip" }, false, L".zip",
+                              false, [](const std::wstring& path) { return path; }, {});
+        cache_menu.SeedComItemsFromCache();
+        bool cache_changed = false;
+        const auto cached_display = cache_menu.BuildDisplay(
+            cache_prefs, { pulse::ui::FluentMenuItem{} }, cache_changed);
+        bool packaged_survived = false;
+        for (const auto& row : cached_display)
+            if (row.text == L"WinRAR") packaged_survived = true;
+        passed &= Report("context menu never caches a partial COM snapshot",
+            packaged_survived);
+    }
+
     const bool handled_shell = context_menu.ExecuteShellCommand(
         pulse::app::CmdShellComBase + 23, {}, [&] { ++folder_refreshes; });
     passed &= Report("context menu invokes by verb when live ids differ",
