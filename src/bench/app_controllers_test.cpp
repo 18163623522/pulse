@@ -1177,7 +1177,7 @@ int wmain(int argc, wchar_t** argv) {
         pulse::app::ContextMenuPrefs cache_prefs;
 
         // First right-click: complete answer, so this is what must be cached.
-        cache_menu.CompleteStaticVerbs(L".zip", {});
+        cache_menu.CompleteStaticVerbs(L".zip", {}, cache_menu.cache_generation());
         cache_menu.StartQuery(cache_prefs, nullptr, { L"C:\\one.zip" }, false, L".zip",
                               false, [](const std::wstring& path) { return path; }, {});
         std::vector<pulse::ops::ShellMenuItem> complete;
