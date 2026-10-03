@@ -3210,10 +3210,9 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     if (app::BlankClickGoesBack(s->appPrefs.blank_click_action, tab->CanGoBack())) {
                         GoBack(*s);
                     } else if (!fs::IsVirtualPath(tab->current_path)) {
-                        const std::wstring current = fs::NormalizePath(tab->current_path);
-                        const std::wstring parent = fs::ParentPath(current);
-                        if (!parent.empty() && _wcsicmp(parent.c_str(), current.c_str()) != 0)
-                            GoUp(*s);
+                        // Same as the Up button: a drive or share root goes on
+                        // to This PC, where it stops (#68).
+                        GoUp(*s);
                     }
                 }
             } else if (s->clickCollapseIndex >= 0) {

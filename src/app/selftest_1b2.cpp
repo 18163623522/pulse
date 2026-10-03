@@ -1099,6 +1099,15 @@ void TestBlankPaneClickNavigation() {
         press();
         release();
         Check(tab->current_path == L"C:\\", L"blank pane: drive root with no history stays put");
+        // A double click there goes on to This PC, like the Up button (#68).
+        press();
+        release();
+        SendMessageW(hwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, point);
+        release();
+        Check(tab->current_path.empty(), L"blank pane: double click at a drive root goes up to This PC");
+        tab->back_stack = {};
+        tab->forward_stack = {};
+        tab->current_path = L"C:\\";
         auto& layout = *state->window_tabs.Active();
         auto other = std::make_unique<Pane>();
         other->NewTab(L"C:\\PulseBlankClickSplit\\Child");
@@ -1121,6 +1130,12 @@ void TestBlankPaneClickNavigation() {
             Check(right->ActiveTab()->current_path == fs::NormalizePath(L"C:\\PulseBlankClickSplit") &&
                   tab->current_path == L"C:\\",
                   L"blank pane: split click navigates only the clicked pane");
+            // Growing the layout from a This PC pane clones This PC, not C:\ (#68).
+            right->ActiveTab()->current_path.clear();
+            ApplyLayoutPreset(*state, LayoutPreset::Three);
+            Check(layout.panes.size() == 3 && layout.panes.back()->ActiveTab() &&
+                  layout.panes.back()->ActiveTab()->current_path.empty(),
+                  L"split: a new pane cloned from This PC opens This PC");
         }
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         state->renderer.SetCompositor(nullptr);

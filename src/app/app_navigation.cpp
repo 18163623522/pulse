@@ -1541,7 +1541,9 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
     ui::ViewMode cloneView = ui::ViewMode::Details;
     ui::DetailsColumnWidths cloneColumns{};
     std::array<float, 4> cloneSearchColumns{};
-    if (s.pane && s.pane->ActiveTab() && !s.pane->ActiveTab()->current_path.empty())
+    // New panes clone the focused folder, This PC included: its path is empty,
+    // and it used to fall back to C:\ (#68).
+    if (s.pane && s.pane->ActiveTab())
         clone = s.pane->ActiveTab()->current_path;
     if (s.pane && s.pane->ActiveTab()) {
         cloneView = s.pane->ActiveTab()->view_mode;
@@ -1903,9 +1905,12 @@ void GoUp(AppState& s) {
         if (tab->CanGoBack()) GoBack(s);
         return;
     }
-    const std::wstring up = fs::ParentPath(tab->current_path);
-    if (_wcsicmp(up.c_str(), tab->current_path.c_str()) != 0) NavigateTo(s, up);
-    else if (!tab->current_path.empty()) NavigateTo(s, L""); // drive root -> This PC
+    // ParentPath answers in normalized form; compare like with like so an
+    // unnormalized C:\ is still seen as a root (#68).
+    const std::wstring current = fs::NormalizePath(tab->current_path);
+    const std::wstring up = fs::ParentPath(current);
+    if (_wcsicmp(up.c_str(), current.c_str()) != 0) NavigateTo(s, up);
+    else if (!current.empty()) NavigateTo(s, L""); // drive root -> This PC
 }
 
 void GoBack(AppState& s) {
