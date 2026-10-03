@@ -67,6 +67,8 @@ struct ButtonSpec {
     bool drop_down = false;
     bool bordered = true;
     bool skip_glyph = false;
+    // Drop-down chevron turn, 0..1 = 0..180 degrees (its menu opening).
+    float chevron_turn = 0.0f;
 };
 
 struct TextFieldSpec {

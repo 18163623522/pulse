@@ -841,9 +841,21 @@ void Painter::DrawButton(const ButtonSpec& spec) {
         float right = content.right;
         if (spec.drop_down) {
             const float arrow_width = Px(16.0f);
-            DrawGlyph(kChevronDown,
-                      D2D1::RectF(right - arrow_width, content.top, right, content.bottom),
-                      foreground);
+            const D2D1_RECT_F arrow =
+                D2D1::RectF(right - arrow_width, content.top, right, content.bottom);
+            const float turn = std::clamp(spec.chevron_turn, 0.0f, 1.0f);
+            if (turn > 0.0f) {
+                // Rotate about the glyph centre (the vector chevron is centred there).
+                D2D1::Matrix3x2F saved;
+                dc_->GetTransform(&saved);
+                const D2D1_POINT_2F centre = D2D1::Point2F((arrow.left + arrow.right) * 0.5f,
+                                                           (arrow.top + arrow.bottom) * 0.5f);
+                dc_->SetTransform(D2D1::Matrix3x2F::Rotation(180.0f * turn, centre) * saved);
+                DrawGlyph(kChevronDown, arrow, foreground);
+                dc_->SetTransform(saved);
+            } else {
+                DrawGlyph(kChevronDown, arrow, foreground);
+            }
             right -= arrow_width + Px(4.0f);
         }
         IDWriteTextFormat* body = BodyFormat();

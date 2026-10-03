@@ -59,6 +59,9 @@ public:
     void Close();                          // fades out (instant without animation)
     bool IsOpen() const noexcept { return open_; }
     bool Visible() const noexcept { return open_ || closing_; }
+    // 0..1 open amount, frame-stable (follows the fade; 0/1 without animation).
+    float OpenAmount() const noexcept { return Visible() ? fade_value_ : 0.0f; }
+    bool IsSortPicker() const noexcept { return data_.sort_controls; }
 
     bool Contains(float x, float y) const noexcept;
     void Step(int delta);                  // roll by whole rows (keys, wheel)

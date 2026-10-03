@@ -16,7 +16,7 @@ struct ToolbarLayout {
 // edited, borrowing from the address bar but leaving it at least 120 DIP.
 inline ToolbarLayout MakeToolbarLayout(float width, float scale, float top, float margin, float create_width,
                                       float left, float filter_expand = 0.0f, float search_min_dip = 0.0f,
-                                      float group_width = 0.0f) {
+                                      float group_width = 0.0f, float sort_width = 0.0f) {
     ToolbarLayout out;
     const float available = width - left;
     const float nav_step = available < 500*scale ? 26*scale : 34*scale;
@@ -50,8 +50,9 @@ inline ToolbarLayout MakeToolbarLayout(float width, float scale, float top, floa
     }
     if (overflow) { for (auto& command : out.commands) command = {}; x = out.create.right; }
     x += 8*scale;
-    const float sort_width = available >= 700*scale ? 88*scale : 32*scale;
-    out.sort = {x,top+50*scale,x+sort_width,top+82*scale};
+    // sort_width: measured "icon + label + chevron" width (0 = legacy 88 DIP).
+    const float sort_w = available >= 700*scale ? (sort_width > 0.0f ? sort_width : 88*scale) : 32*scale;
+    out.sort = {x,top+50*scale,x+sort_w,top+82*scale};
     x = out.sort.right + 6*scale;
     const float filter_base = available >= 700*scale ? 88*scale : 32*scale;
     const float group_room = group_width > 0.0f ? group_width + 6*scale : 0.0f;
