@@ -10,7 +10,7 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_LANGUAGE_ZH_TW;
+constexpr UINT kLastString = IDS_UPDATE_DESC_MANUAL;
 static_assert(static_cast<UINT>(StringId::Downloads) <= kLastString);
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
               static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
@@ -30,6 +30,9 @@ static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstStrin
 static_assert(static_cast<UINT>(StringId::SettingsCloseLastTabDesc) <= kLastString);
 static_assert(static_cast<UINT>(StringId::LockedItemTitle) <= kLastString &&
               static_cast<UINT>(StringId::LockedItemRetry) <= kLastString);
+static_assert(static_cast<UINT>(StringId::LanguageZhTW) <= kLastString &&
+              static_cast<UINT>(StringId::SettingsAutoUpdate) <= kLastString &&
+              static_cast<UINT>(StringId::UpdateDescManual) <= kLastString);
 
 HINSTANCE g_module = nullptr;
 std::atomic<Language> g_preference{Language::System};

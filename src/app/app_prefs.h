@@ -76,6 +76,8 @@ struct AppPrefs {
     int tray_icon_size = 48; // staging-tray deck icon edge in DIPs (32..64)
     // Interaction hints: status-bar context hints + one-time teaching tips.
     bool show_hints = true;
+    // Background update checks and their "update available" toasts (Settings > About).
+    bool auto_check_updates = true;
     uint32_t tips_seen = 0; // bit per app::TeachTip already shown or dismissed
     // Empty = theme default, or Windows when explicitly selected.
     std::wstring accent_rgb;

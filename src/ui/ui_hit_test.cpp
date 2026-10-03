@@ -504,6 +504,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         return r;
                     }
                 }
+                if (ContainsPt(lay.update_auto_row, x, y)) {
+                    r.region = HitTestResult::SettingsToggle; r.index = 31; return r;
+                }
             } else if (vm.settings_page == 4) {
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.dup_scope[i], x, y)) {

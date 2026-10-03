@@ -468,6 +468,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_build_id = build_text;
             vm.settings_update_enabled = app::UpdateChecker::Enabled() ||
                 s.shot.update_available;
+            vm.settings_update_auto = s.appPrefs.auto_check_updates;
             vm.settings_update_checking = s.update_checker.checking();
             vm.settings_update_downloading = s.update_installer.downloading();
             vm.settings_update_installing = s.update_installer.installing();
@@ -500,7 +501,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             } else if (!vm.settings_update_enabled) {
                 vm.settings_update_status = l10n::Get(l10n::StringId::UpdateDisabled);
             } else if (!s.update_result_ready) {
-                vm.settings_update_status = l10n::Get(l10n::StringId::UpdateDesc);
+                vm.settings_update_status = l10n::Get(s.appPrefs.auto_check_updates ?
+                    l10n::StringId::UpdateDesc : l10n::StringId::UpdateDescManual);
             } else if (s.update_result.error == app::UpdateError::UnsupportedWindows) {
                 vm.settings_update_status =
                     l10n::Get(l10n::StringId::UpdateUnsupportedWindows);
