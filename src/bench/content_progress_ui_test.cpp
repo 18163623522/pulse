@@ -1,12 +1,14 @@
 #include "../app/app_internal.h"
 #include "../app/app_input.h"
+#include "../app/content_results_ui.h"
+#include "../app/app_navigation.h"
 #include "../app/update_status.h"
 #include "../ui/ui_renderer_internal.h"
 #include <filesystem>
 #include <iostream>
 #include <cmath>
 
-int main() {
+int main(int argc, char** argv) {
     using namespace pulse;
     CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     l10n::Initialize(GetModuleHandleW(nullptr),L"zh-CN");
@@ -36,6 +38,85 @@ int main() {
         result.progress.done=done; result.progress.error=error; result.progress.truncated=truncated;
         result.results=store; ApplyContentSearchUpdate(s,std::move(result));
     };
+    if (argc > 1 && std::string_view(argv[1]) == "--selection-only") {
+        auto a=hit,b=hit,c=hit;
+        a.path=L"C:\\Fixture\\b.txt"; a.name=L"b.txt"; a.file_id=11;
+        b.path=L"C:\\Fixture\\c.txt"; b.name=L"c.txt"; b.file_id=12;
+        c.path=L"C:\\Fixture\\a.txt"; c.name=L"a.txt"; c.file_id=13;
+        start();
+        store->StreamUpsert({a,b},index::ContentResultSort::Name,false); update(2,0);
+        RefreshContentResults(s);
+        index::ContentResultStore::Row row;
+        const auto until=GetTickCount64()+3000;
+        while(!store->Get(0,row) && GetTickCount64()<until) Sleep(1);
+        RefreshContentResults(s); tab->SelectIndices({0,1});
+        check(tab->content_selected_paths.size()==2,"selection records both stable paths before streamed insertion");
+        store->StreamUpsert({c},index::ContentResultSort::Name,false);
+        RefreshContentResults(s);
+        const auto restored=GetTickCount64()+3000;
+        while(tab->SelectedCount()!=2 && GetTickCount64()<restored) { Sleep(1); RefreshContentResults(s); }
+        check(tab->SelectedCount()==2 && tab->IsSelected(1) && tab->IsSelected(2) && !tab->IsSelected(0),
+              "streaming insertion restores multiselection to original files");
+        check(tab->selected_index==1,"streaming insertion preserves keyboard focus identity");
+        bool acted=false, correct=false;
+        DeferContentSelection(s,[&](AppState&) {
+            acted=true;
+            correct=tab->EntryAt(1).full_path==a.path && tab->EntryAt(2).full_path==b.path;
+        });
+        const auto action_due=GetTickCount64()+3000;
+        while(!acted && GetTickCount64()<action_due) { Sleep(1); CompleteContentSelection(s); }
+        check(acted && correct,"deferred operation resolves only original selected file identities");
+        tab->content_results.reset(); tab->search_content_active=false;
+        tab->current_path=app::MakeSearchPath(L"fixture");
+        tab->pending_generation=990; tab->filename_live_generation=990;
+        tab->pending_search_offset=0; tab->search_entries.reset();
+        AppState::PendingIndexSearch pending; pending.query.subscribe=true;
+        pending.query.limit=2048; pending.network_ready=false;
+        s.pendingIndexSearches.emplace(990,std::move(pending));
+        index::SearchResult local; local.total=1;
+        index::Hit local_hit; local_hit.path=a.path; local_hit.name=a.name; local.hits.push_back(local_hit);
+        AcceptIndexProviderResult(s,990,std::move(local),false);
+        check(tab->EntryCount()==1 && !tab->loading,"local filename hits display while network reply is pending");
+        index::SearchResult network; network.error=ERROR_CONNECTION_ABORTED;
+        AcceptIndexProviderResult(s,990,std::move(network),true);
+        check(tab->EntryCount()==1 && !tab->banner_title.empty(),"network failure preserves local hits and displays incomplete status");
+        app::SavedSearch saved; saved.name=L"fixture saved"; saved.query=L"fixture"; saved.root=L"C:\\Fixture";
+        check(s.savedSearches.Add(saved),"saved filename query fixture is in memory only");
+        tab->current_path=L"pulse:saved-search:0";
+        tab->search_total=2200; tab->search_next_offset=2048;
+        tab->search_loading_more=false; tab->search_content_stopped=false; tab->search_awaiting_content=false;
+        tab->loading=false; tab->search_session_id=9911;
+        MaybePrefetchSearchPage(s);
+        const auto page=s.pendingIndexSearches.find(static_cast<uint32_t>(tab->pending_generation));
+        const bool requested=page!=s.pendingIndexSearches.end() && page->second.query.limit>2048 &&
+            page->second.query.path_prefix==saved.root && page->second.query.needle==saved.query;
+        check(requested,"saved filename search requests next window and preserves root and query");
+        if (requested) {
+            const auto id=static_cast<uint32_t>(tab->pending_generation);
+            index::SearchResult next; next.total=2200;
+            for (int i=0;i<2200;++i) { index::Hit item; item.name=L"fixture"+std::to_wstring(i); item.path=saved.root+L"\\"+item.name; next.hits.push_back(std::move(item)); }
+            AcceptIndexProviderResult(s,id,std::move(next),false);
+            check(tab->EntryCount()==2200 && tab->search_next_offset==2200,"saved filename search displays hits beyond initial 2048");
+        }
+        const auto previous_request=tab->pending_generation;
+        RefreshActiveTab(s,RefreshReason::Explicit);
+        const auto refresh=s.pendingIndexSearches.find(static_cast<uint32_t>(tab->pending_generation));
+        check(tab->pending_generation!=previous_request && refresh!=s.pendingIndexSearches.end() &&
+              refresh->second.query.path_prefix==saved.root,
+              "explicit saved-search refresh dispatches a new query for the same root");
+        tab->current_path=L"C:\\Fixture";
+        tab->pending_generation=0; tab->banner_title.clear();
+        app::WorkResult foreign; foreign.path=tab->current_path; foreign.generation=991; foreign.error=true;
+        ApplyWorkerResult(s,foreign);
+        check(tab->banner_title.empty(),"completed pane ignores another pane's same-path failure");
+        tab->pending_generation=992;
+        ApplyWorkerResult(s,foreign);
+        check(tab->pending_generation==992 && tab->banner_title.empty(),"pending pane ignores another request generation");
+        foreign.generation=992; ApplyWorkerResult(s,foreign);
+        check(tab->pending_generation==0 && !tab->banner_title.empty(),"own request failure still completes pane");
+        s.renderer.SetCompositor(nullptr); s.compositor.Shutdown(); DestroyWindow(s.hwnd); s.hwnd=nullptr;
+        CoUninitialize(); return failures ? 1:0;
+    }
     const auto output=std::filesystem::absolute(L"../bench_data/content-progress-ui");
     std::filesystem::create_directories(output);
     auto capture=[&](const wchar_t* label, bool hovered=false) {

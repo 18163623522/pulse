@@ -17,7 +17,14 @@ struct AppPrefs {
     bool open_folders_in_pulse = false;
     bool take_over_win_e = false;
     bool take_over_this_pc = false; // HKCU This PC open verb (default_file_manager.h)
-    bool take_over_explorer_windows = false; // experimental: close new Explorer windows, show them in Pulse
+    bool integration_enabled = false;
+    bool integration_folders = true;
+    bool integration_win_e = true;
+    bool integration_this_pc = true;
+    bool integration_configured = false; // runtime: new-format preferences were loaded
+    bool integration_residual = false; // runtime: some association still belongs to Pulse
+    bool integration_incomplete = false;
+    bool take_over_explorer_windows = false; // experimental choice; runtime is gated by integration_enabled
     bool shell_tag_menu = false;    // File Explorer "Pulse tags" submenu (shell_tag_menu.cpp syncs HKCU)   // registry is the source of truth (not in app.json)
     bool verify_copies = false;
     bool show_status_performance = false;
@@ -92,12 +99,16 @@ struct AppPrefs {
     std::wstring last_seen_version;
     std::wstring tray_dests; // staging tray: recent drop folders, newest first, '|'-joined (max 3)
     bool had_file = false; // runtime only: app.json existed when Load() ran
+    bool load_failed = false; // blocks saving defaults over an unreadable/damaged existing file
 
     void ResetToDefaults();
     bool Load();
     bool Save() const;
     std::wstring ToJson() const;
     bool FromJson(const std::wstring& json);
+    void MigrateIntegration();
+    bool ReadIntegrationResidual() const;
+    bool ReadIntegrationIncomplete() const;
 
     // HKCU Run key is the source of truth; call after Load() and on toggle.
     bool ReadLaunchOnStartup() const;
@@ -108,8 +119,8 @@ struct AppPrefs {
     bool ApplyFolderOpen(bool on);
 
     // HKCU "File Explorer" launch verb used by Win+E and the taskbar Explorer
-    // pin ({52205fd8-...}\shell\opennewwindow). A user's previous custom
-    // command is kept as PulseBackup and restored when turned off.
+    // pin ({52205fd8-...}\shell\opennewwindow). Original values are kept by
+    // shell_integration_registry and restored only while Pulse still owns them.
     bool ReadWinE() const;
     bool ApplyWinE(bool on);
 

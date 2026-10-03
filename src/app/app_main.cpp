@@ -50,6 +50,7 @@
 #include "startup_location.h"
 #include "update_checker.h"
 #include "app_updates.h"
+#include "update_shutdown.h"
 #include "link_resolve.h"
 #include "../ui/color_picker.h"
 #include "../ui/bloom_accent_picker.h"
@@ -345,6 +346,8 @@ static void NoteUiActivity(HWND hwnd, bool visible) {
 
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
+    if (s && msg != 0 && msg == app::UpdateShutdownMessage())
+        return CloseForUpdate(*s) ? app::kUpdateShutdownAccepted : app::kUpdateShutdownBusy;
     if (s && IsUiActivityMessage(msg)) NoteUiActivity(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
     if (s && s->notification_toast.HandleMessage(hwnd, msg, wParam, lParam)) return 0;
     if (s && GroupWheelMessage(*s, hwnd, msg, wParam, lParam)) return 0;
@@ -502,6 +505,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         settings_callbacks.apply_effects = [s](app::SettingsEffect effects) {
             ApplySettingsEffects(*s, effects);
         };
+        settings_callbacks.integration_changing = [s] { StopShellWindows(*s); };
+        settings_callbacks.show_error = [s](const std::wstring& message) {
+            s->notification_toast.Show(s->hwnd, l10n::Get(l10n::StringId::SettingsGeneral), message);
+        };
+        if (s->appPrefs.load_failed) {
+            settings_callbacks.show_error(l10n::HantText(l10n::Pick(
+                L"原设置未能读取，已阻止覆盖。请关闭后重试打开 Pulse。",
+                L"The original settings could not be read. Saving is blocked to protect them. Restart Pulse to retry.")));
+        }
+        settings_callbacks.integration_changed = [s] { SyncShellWindows(*s); };
         settings_callbacks.task_completion = SettingsCompletion(hwnd);
         settings_callbacks.open_path = [hwnd](const std::wstring& path) {
             ShellExecuteW(hwnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -565,6 +578,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         ApplyGlobalSearchSettings(*s);
 
         s->worker.Start([s](app::WorkResult res) { PostWorkerResult(*s, std::move(res)); });
+        if (s->appPrefs.persist) QueueTagAds(*s, {});
         RequestRecycleOccupancy(*s);
 
         // Ops layer: queue worker + shell host IPC; notify repaints the status bar.
@@ -578,7 +592,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         const ops::RecoverySnapshot recovery = s->isolatedTest
             ? ops::RecoverySnapshot{} : s->ops.PendingRecovery();
         if (!recovery.entries.empty()) {
-            if (AskRetryRecovery(*s, recovery.entries.size(), recovery.has_uncertain_destructive))
+            const bool duplicate_cleanup = std::any_of(recovery.entries.begin(), recovery.entries.end(),
+                [](const ops::RecoveryEntry& entry) { return entry.request.duplicate_cleanup; });
+            if (AskRetryRecovery(*s, recovery.entries.size(), recovery.has_uncertain_destructive, duplicate_cleanup))
                 s->ops.RetryRecovery();
             else
                 s->ops.DiscardRecovery();
@@ -649,9 +665,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 if (AppState* st = GetAppState(hwnd)) ClearDropFeedback(*st);
             };
             dcb.drop = [hwnd](const std::vector<std::wstring>& srcs, POINT pt,
-                              DWORD keys, DWORD preferred) -> DWORD {
+                              DWORD keys, DWORD allowed) -> DWORD {
                 AppState* st = GetAppState(hwnd);
-                return st ? DropExecute(*st, srcs, pt, keys, preferred) : DROPEFFECT_NONE;
+                return st ? DropExecute(*st, srcs, pt, keys, allowed) : DROPEFFECT_NONE;
             };
             s->dropTarget = new ui::WindowDropTarget(hwnd, std::move(dcb));
             RegisterDragDrop(hwnd, s->dropTarget);
@@ -860,6 +876,15 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             // Explorer "Pulse tags" verb: tag in place, never raise the window.
             QueueShellTagRequest(*s, std::move(tag_request), false);
             return TRUE;
+        }
+        if (cds && cds->dwData == app::SingleInstanceCoordinator::OpenRequestMessageId()) {
+            app::SingleInstanceCoordinator::OpenRequest request;
+            if (!s || !app::SingleInstanceCoordinator::DecodeOpenRequest(cds, request)) return FALSE;
+            const auto accepted = s->single_instance.AcceptOpenRequest(request, GetTickCount64());
+            if (accepted == app::SingleInstanceCoordinator::OpenAcceptance::Invalid) return FALSE;
+            if (accepted == app::SingleInstanceCoordinator::OpenAcceptance::New)
+                OpenFolderInNewTab(*s, request.path);
+            return TRUE; // acceptance, not a claim that asynchronous enumeration succeeded
         }
         std::wstring path;
         if (!s || !app::SingleInstanceCoordinator::DecodeOpenPath(cds, path)) return FALSE;
@@ -2249,11 +2274,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (!SkipSingletonFromArgv()) {
         const auto result = state.single_instance.Acquire();
         if (result == app::SingleInstanceCoordinator::AcquireResult::Existing) {
-            if (shell_tag) app::ForwardShellTagRequest(*shell_tag);
+            bool forwarded = true;
+            if (shell_tag) forwarded = app::ForwardShellTagRequest(*shell_tag);
             // A sign-in launch must not pop up the window that is already running.
-            else if (!startup_launch) state.single_instance.ForwardOpenPath(state.open_path);
+            else if (!startup_launch) forwarded = state.single_instance.ForwardOpenPath(state.open_path, 5000);
+            if (!forwarded) {
+                // This process exits before WM_CREATE initializes localization.
+                // Read the preference without repairing startup registration.
+                app::AppPrefs failure_prefs;
+                failure_prefs.persist = false;
+                failure_prefs.Load();
+                l10n::Initialize(hInstance, failure_prefs.language);
+                const std::wstring message = l10n::HantText(l10n::Pick(
+                    L"无法确认运行中的 Pulse 已收到此请求。原窗口可能仍会处理它，请先检查原窗口再重试。",
+                    L"Pulse could not confirm that the running instance received this request. "
+                    L"The running instance may still open it. Check that window before trying again."));
+                MessageBoxW(nullptr, message.c_str(), L"Pulse", MB_OK | MB_ICONERROR);
+            }
             OleUninitialize();
-            return 0;
+            return forwarded ? 0 : 1;
         }
     }
 
@@ -2411,7 +2450,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     if (state.shot.active) {
         wchar_t settings_fixture[32]{};
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_EXPANDED",settings_fixture,ARRAYSIZE(settings_fixture)))
-            state.settingsExpanded=static_cast<unsigned>(wcstoul(settings_fixture,nullptr,10)) & 0x3f07u;
+            state.settingsExpanded=static_cast<unsigned>(wcstoul(settings_fixture,nullptr,10)) & 0x3f0fu;
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_SCROLL",settings_fixture,ARRAYSIZE(settings_fixture))) {
             auto vm=BuildVm(state,false);
             state.settings.SetScroll(static_cast<float>(_wtof(settings_fixture))*state.scale,

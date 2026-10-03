@@ -173,7 +173,31 @@ void Tab::SetShowProtectedOsFiles(bool show) {
     ++view_generation;
 }
 
+void Tab::RememberContentSelection() {
+    if (!content_results) return;
+    content_selected_paths.clear();
+    // Keep selection capture bounded by the display cache; unresolved selections
+    // are cancelled on a later re-order rather than naming different files.
+    if (SelectedCount() > index::ContentResultStore::kCachePages * index::ContentResultStore::kPageSize) return;
+    const auto order = content_results->OrderRevision();
+    if (order != content_order_revision) return;
+    for (int selected_row : SelectedIndices()) {
+        index::ContentResultStore::Row row;
+        if (!content_results->Get(static_cast<size_t>(selected_row), row)) { content_selected_paths.clear(); return; }
+        content_selected_paths.push_back(row.entry.full_path);
+        if (selected_row == selected_index) content_focus_path = row.entry.full_path;
+    }
+    if (order != content_results->OrderRevision()) content_selected_paths.clear();
+}
+namespace {
+struct RememberSelection {
+    Tab& tab;
+    ~RememberSelection() { tab.RememberContentSelection(); }
+};
+}
+
 void Tab::ClearSelection() {
+    RememberSelection remember{*this};
     ++selection_revision;
     selected_index = -1;
     selection_anchor = -1;
@@ -196,6 +220,7 @@ void Tab::MaterializeSelection() {
 }
 
 void Tab::SelectOnly(int index) {
+    RememberSelection remember{*this};
     ++selection_revision;
     selected.clear();
     all_selected = false;
@@ -211,6 +236,7 @@ void Tab::SelectOnly(int index) {
 }
 
 void Tab::ToggleSelect(int index) {
+    RememberSelection remember{*this};
     ++selection_revision;
     const int n = CountBound();
     if (index < 0 || index >= n || !EntryVisible(index)) return;
@@ -227,6 +253,7 @@ void Tab::ToggleSelect(int index) {
 }
 
 void Tab::SelectRange(int from, int to) {
+    RememberSelection remember{*this};
     ++selection_revision;
     const int n = CountBound();
     if (n <= 0) {
@@ -246,6 +273,7 @@ void Tab::SelectRange(int from, int to) {
 }
 
 void Tab::SelectAll() {
+    RememberSelection remember{*this};
     ++selection_revision;
     if (!content_results && !ShowsEveryEntry()) {
         std::vector<int> visible;
@@ -265,6 +293,7 @@ void Tab::SelectAll() {
 }
 
 void Tab::SelectIndices(const std::vector<int>& indices) {
+    RememberSelection remember{*this};
     ++selection_revision;
     const int n = CountBound();
     if (n <= 0 || indices.empty()) {
@@ -293,6 +322,7 @@ void Tab::SelectIndices(const std::vector<int>& indices) {
 }
 
 void Tab::InvertIndices(const std::vector<int>& universe) {
+    RememberSelection remember{*this};
     ++selection_revision;
     const int n = CountBound();
     if (n <= 0) {

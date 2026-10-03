@@ -917,6 +917,7 @@ float MainRenderer::SettingsDestinationOffset(const WindowViewModel& vm, int set
     case I::SettingsThemeColor: target=l.accent_card;break;
     case I::SettingsWindowEffect: target=l.effect_card;break;
     case I::SettingsLanguage: target=l.language_card;break;
+    case I::SettingsIntegration: target=l.integration_section;break;
     case I::SettingsDefaultManager: target=l.default_manager_row;break;
     case I::SettingsLaunch: target=l.startup_row[0];break;
     case I::SettingsStartInTray: target=l.start_in_tray_row;break;

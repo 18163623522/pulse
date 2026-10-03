@@ -198,6 +198,8 @@ std::wstring MenuItemText(HMENU menu, UINT pos) {
 }
 
 constexpr ULONGLONG kNestedFlyoutBudgetMs = 80;
+constexpr CLSID kSendToHandler = {0x7BA4C740, 0x9E81, 0x11CF,
+                                 {0x99, 0xD3, 0x00, 0xAA, 0x00, 0x4A, 0xE8, 0x37}};
 
 void InitMenuPopup(IContextMenu2* menu2, IContextMenu3* menu3, HMENU submenu, UINT pos) {
     if (!submenu) return;
@@ -205,10 +207,10 @@ void InitMenuPopup(IContextMenu2* menu2, IContextMenu3* menu3, HMENU submenu, UI
         if (menu3) {
             LRESULT ignored = 0;
             menu3->HandleMenuMsg2(WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(submenu),
-                                  MAKELPARAM(pos, TRUE), &ignored);
+                                  MAKELPARAM(pos, FALSE), &ignored);
         } else if (menu2) {
             menu2->HandleMenuMsg(WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(submenu),
-                                 MAKELPARAM(pos, TRUE));
+                                 MAKELPARAM(pos, FALSE));
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
@@ -419,6 +421,41 @@ HRESULT QueryOneHandler(const CtxHandlerDesc& handler, const CtxBind& bind,
         ReleaseHandlerSlot(slot);
         return hr;
     }
+    if (handler.clsid == kSendToHandler && bind.data) {
+        // The standalone SendTo extension exposes only a placeholder on modern
+        // Windows. The default Shell menu supplies the services that populate
+        // and invoke its destinations. Keep the CLSID-provided localized title
+        // to isolate that submenu without hardcoding any display language.
+        for (int i = 0; i < GetMenuItemCount(slot.hmenu); ++i) {
+            if (GetSubMenu(slot.hmenu, i)) {
+                slot.send_to_title = MenuItemText(slot.hmenu, static_cast<UINT>(i));
+                break;
+            }
+        }
+        if (!slot.send_to_title.empty()) {
+            IShellItemArray* selection = nullptr;
+            IContextMenu* native = nullptr;
+            HRESULT native_hr = SHCreateShellItemArrayFromDataObject(bind.data, IID_PPV_ARGS(&selection));
+            if (SUCCEEDED(native_hr)) {
+                native_hr = selection->BindToHandler(nullptr, BHID_SFUIObject, IID_PPV_ARGS(&native));
+                selection->Release();
+            }
+            HMENU native_popup = native ? CreatePopupMenu() : nullptr;
+            if (native_popup) {
+                native_hr = SafeQueryContextMenu(native, native_popup, 0, id_first, id_last,
+                                                 qcm_flags | CMF_SYNCCASCADEMENU);
+                if (SUCCEEDED(native_hr)) {
+                    ReleaseHandlerSlot(slot);
+                    slot.menu = native;
+                    slot.hmenu = native_popup;
+                    native = nullptr;
+                    native_popup = nullptr;
+                }
+            }
+            if (native_popup) DestroyMenu(native_popup);
+            if (native) native->Release();
+        }
+    }
     slot.menu->QueryInterface(IID_PPV_ARGS(&slot.menu3));
     slot.menu->QueryInterface(IID_PPV_ARGS(&slot.menu2));
     return S_OK;
@@ -427,6 +464,7 @@ HRESULT QueryOneHandler(const CtxHandlerDesc& handler, const CtxBind& bind,
 void CollectHandlerItems(const CtxHandlerSlot& slot, bool background,
                          std::vector<CtxItemOut>& out) {
     if (!slot.menu || !slot.hmenu) return;
+    if (!slot.send_to_title.empty()) InitMenuPopup(slot.menu2, slot.menu3, slot.hmenu, 0);
     const int count = GetMenuItemCount(slot.hmenu);
     const ULONGLONG deadline = GetTickCount64() + kNestedFlyoutBudgetMs;
     bool pending_separator = false;
@@ -445,26 +483,32 @@ void CollectHandlerItems(const CtxHandlerSlot& slot, bool background,
         mii.fMask = MIIM_ID | MIIM_STATE | MIIM_FTYPE | MIIM_SUBMENU;
         if (!GetMenuItemInfoW(slot.hmenu, i, TRUE, &mii)) continue;
         if (mii.fType & MFT_SEPARATOR) {
+            if (!slot.send_to_title.empty()) continue;
             if (!out.empty()) pending_separator = true;
             continue;
         }
         const bool enabled = !(mii.fState & (MFS_DISABLED | MFS_GRAYED));
+        const std::wstring title = MenuItemText(slot.hmenu, static_cast<UINT>(i));
+        if (!slot.send_to_title.empty() && title != slot.send_to_title) continue;
         if (mii.hSubMenu) {
-            const std::wstring parent_verb = CtxVerbOf(slot.menu, mii.wID, slot.id_first);
+            const std::wstring parent_verb = slot.send_to_title.empty()
+                ? CtxVerbOf(slot.menu, mii.wID, slot.id_first) : L"sendto";
             if (IsBuiltinContextVerb(parent_verb, background) ||
                 IsDroppedContextSubmenu(parent_verb)) continue;
-            const std::wstring parent_text = MenuItemText(slot.hmenu, static_cast<UINT>(i));
+            const std::wstring& parent_text = title;
             if (parent_text.empty()) continue;
             std::vector<CtxItemOut> kids;
             CollectSubmenuLeaves(slot.menu, slot.menu2, slot.menu3, mii.hSubMenu,
                                  static_cast<UINT>(i), background, slot.id_first, enabled, 0,
-                                 deadline, kids);
+                                 slot.send_to_title.empty() ? deadline : GetTickCount64() + kNestedFlyoutBudgetMs,
+                                 kids);
             if (kids.empty()) {
                 if (!KeepFlyoutParentWithoutLeaves(mii.wID, slot.id_first, slot.id_last))
                     continue;
                 CtxItemOut item;
                 item.id = mii.wID;
-                item.enabled = enabled;
+                // An empty SendTo flyout is not an invokable destination.
+                item.enabled = enabled && slot.send_to_title.empty();
                 item.verb = parent_verb;
                 item.text = parent_text;
                 push(std::move(item));

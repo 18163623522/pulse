@@ -6,6 +6,7 @@
 
 namespace pulse {
 struct AppState;
+namespace app { struct Tab; }
 
 // After each frame: publishes the panes' folders when they changed (while
 // Pulse opens folders) and starts/stops the experimental Explorer window
@@ -15,7 +16,8 @@ void SyncShellWindows(AppState& s);
 void StopShellWindows(AppState& s);
 // WM_SHELL_SELECT: brings the pane forward and selects the item.
 void HandleShellSelect(AppState& s, const app::ShellSelectRequest& request);
-// WM_EXPLORER_TAKEOVER: shows a closed Explorer window's folder and selection.
+// WM_EXPLORER_TAKEOVER: opens the source folder, then acknowledges the actual load.
 void HandleExplorerTakeover(AppState& s, const app::ExplorerTakeoverRequest& request);
+void CompleteExplorerNavigation(app::Tab& tab, uint64_t generation, bool success);
 
 } // namespace pulse

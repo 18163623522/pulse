@@ -89,6 +89,9 @@ public:
         std::function<bool(std::wstring&)> pick_image;
         std::function<bool(std::wstring&, std::wstring_view)> pick_folder;
         std::function<void(SettingsEffect)> apply_effects;
+        std::function<void(const std::wstring&)> show_error;
+        std::function<void()> integration_changing;
+        std::function<void()> integration_changed;
         SettingsTaskCompletion task_completion;
         std::function<void(const std::wstring&)> open_path;
         std::function<void()> open_diagnostics;
@@ -153,6 +156,11 @@ public:
     void Language(std::wstring_view language_id);
     void Wallpaper(int action);
     void ToggleUi(int index);
+    void IntegrationAction(int index);
+    int IntegrationState() const noexcept;
+    std::wstring IntegrationSummary() const;
+    bool IntegrationCanRestore() const noexcept;
+    bool IntegrationCanRetry() const noexcept { return !integration_error_.empty() || integration_save_failed_; }
     void BeginGlobalSearchHotkeyCapture() noexcept { global_search_capturing_ = true; }
     void CancelGlobalSearchHotkeyCapture() noexcept { global_search_capturing_ = false; }
     bool CaptureGlobalSearchHotkey(uint32_t key, uint32_t modifiers);
@@ -191,6 +199,8 @@ private:
     std::vector<std::thread> workers_;
     bool stopping_ = false;
     std::wstring error_;
+    std::wstring integration_error_;
+    bool integration_save_failed_ = false;
     bool service_installed_ = false;
     AppPrefs* prefs_ = nullptr;
     ContextMenuPrefs* context_ = nullptr;

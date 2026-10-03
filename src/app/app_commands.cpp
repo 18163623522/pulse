@@ -1,3 +1,4 @@
+#include "tag_ads_sync.h"
 #include "../ui/shortcut_help.h"
 // app_commands.cpp — extracted from app_main.cpp.
 #include "quick_access.h"
@@ -120,14 +121,13 @@ void QueueTagAds(AppState& s, std::vector<app::TagAdsUpdate> updates) {
     const HWND notify = s.hwnd;
     const auto network_location = l10n::Get(l10n::StringId::TagNetworkLocation);
     const auto this_location = l10n::Get(l10n::StringId::TagThisLocation);
-    s.worker.EnqueueIo([updates = std::move(updates), notify, network_location, this_location] {
+    s.worker.EnqueueSerialIo([updates = std::move(updates), notify, network_location, this_location] {
         auto failed = std::make_unique<std::vector<std::wstring>>();
-        for (const auto& update : updates) {
-            if (app::WriteTagAdsV2(update.path, update.tags)) continue;
+        for (const auto& failed_path : app::SyncTagAdsUpdates(updates)) {
             wchar_t volume[MAX_PATH]{};
-            if (GetVolumePathNameW(update.path.c_str(), volume, ARRAYSIZE(volume)))
+            if (GetVolumePathNameW(failed_path.c_str(), volume, ARRAYSIZE(volume)))
                 failed->push_back(ClipboardPath(volume));
-            else if (fs::IsUncPath(update.path))
+            else if (fs::IsUncPath(failed_path))
                 failed->push_back(network_location);
             else
                 failed->push_back(this_location);

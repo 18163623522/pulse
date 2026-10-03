@@ -83,20 +83,14 @@ void CancelDuplicateScan(AppState& s) {
 }
 
 void RecycleDuplicateGroup(AppState& s, size_t group) {
-    auto paths = s.duplicateScan.FilesToDelete(group);
-    if (paths.empty()) return;
     ops::OpRequest req;
-    req.type = ops::OpType::RecycleDelete;
-    req.sources = std::move(paths);
+    if (!s.duplicateScan.BuildCleanupRequest(req, group)) return;
     s.ops.Submit(std::move(req));
 }
 
 void RecycleAllDuplicateExtras(AppState& s) {
-    auto paths = s.duplicateScan.AllFilesToDelete();
-    if (paths.empty()) return;
     ops::OpRequest req;
-    req.type = ops::OpType::RecycleDelete;
-    req.sources = std::move(paths);
+    if (!s.duplicateScan.BuildCleanupRequest(req)) return;
     s.ops.Submit(std::move(req));
 }
 

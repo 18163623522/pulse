@@ -12,6 +12,8 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <algorithm>
+#include <mutex>
 #include <set>
 #include <type_traits>
 
@@ -24,6 +26,8 @@ struct ExplorerWindowTakeover::Shared {
     UINT message = 0;
     std::atomic<bool> stopping{false};
     std::atomic<DWORD> thread_id{0};
+    std::mutex handoffs_mutex;
+    std::vector<std::weak_ptr<ExplorerHandoff>> handoffs;
 };
 
 namespace {
@@ -102,12 +106,16 @@ struct Candidate {
     HWND hwnd = nullptr;
     ULONGLONG registered_at = 0;
     ComPtr<IWebBrowser2> browser;
+    DWORD process_id = 0;
+    ExplorerTakeoverRequest submitted;
 };
 
 class Watcher {
 public:
     explicit Watcher(ExplorerWindowTakeover::Shared& shared) : shared_(shared) {}
     ~Watcher() {
+        for (auto& candidate : candidates_)
+            if (candidate.submitted.handoff) candidate.submitted.handoff->Cancel();
         if (point_ && advise_cookie_) point_->Unadvise(advise_cookie_);
         if (timer_) KillTimer(nullptr, timer_);
     }
@@ -150,6 +158,7 @@ public:
             candidate.hwnd = hwnd;
             candidate.registered_at = GetTickCount64();
             candidate.browser = browser;
+            candidate.process_id = pid;
             candidates_.push_back(std::move(candidate));
             TraceShellWindows(L"takeover: new Explorer window hwnd=%p", hwnd);
         });
@@ -159,6 +168,25 @@ public:
     void Poll() {
         for (auto it = candidates_.begin(); it != candidates_.end();) {
             if (!IsWindow(it->hwnd)) {
+                if (it->submitted.handoff) it->submitted.handoff->Cancel();
+                it = candidates_.erase(it);
+                continue;
+            }
+            if (it->submitted.handoff) {
+                const auto handoff = it->submitted.handoff;
+                if (shared_.stopping || GetTickCount64() >= handoff->deadline_tick)
+                    handoff->Cancel(HandoffState::Expired);
+                const auto state = handoff->state.load();
+                if (state == HandoffState::Pending) { ++it; continue; }
+                bool close_committed = false;
+                if (state == HandoffState::Ready && SourceUnchanged(*it)) {
+                    std::lock_guard lock(shared_.handoffs_mutex);
+                    close_committed = !shared_.stopping && handoff->ClaimClose(GetTickCount64());
+                }
+                // ClaimClose is the commitment point. Stop can cancel requests
+                // before it, but cannot revoke an already committed COM call.
+                if (close_committed) it->browser->Quit();
+                else handoff->Cancel();
                 it = candidates_.erase(it);
                 continue;
             }
@@ -174,7 +202,10 @@ public:
             TraceShellWindows(L"takeover: hwnd=%p %s after %u ms folder=[%s] selected=%zu", it->hwnd,
                               step == ExplorerTakeoverStep::Take ? L"taken" : L"left", probe.age_ms,
                               request.folder.c_str(), request.names.size());
-            if (step == ExplorerTakeoverStep::Take) Take(*it, std::move(request));
+            if (step == ExplorerTakeoverStep::Take && Take(*it, std::move(request))) {
+                ++it;
+                continue;
+            }
             it = candidates_.erase(it);
         }
         UpdateTimer();
@@ -235,19 +266,60 @@ private:
             PWSTR name = nullptr;
             if (FAILED(items->GetItemAt(i, &item)) ||
                 FAILED(item->GetDisplayName(SIGDN_PARENTRELATIVEPARSING, &name)) || !name)
-                continue;
+                return;
             request.names.emplace_back(name);
             CoTaskMemFree(name);
         }
+        request.selection_read = true;
         probe.selected = request.names.size();
     }
 
-    void Take(const Candidate& candidate, ExplorerTakeoverRequest request) {
+    bool SourceUnchanged(const Candidate& candidate) {
+        // IShellWindows exposes active views, not a reliable complete tab
+        // inventory on Windows 11. Never close a potentially tabbed window.
+        using VersionFn = LONG (WINAPI*)(OSVERSIONINFOW*);
+        const auto version_fn = reinterpret_cast<VersionFn>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+        OSVERSIONINFOW version{};
+        version.dwOSVersionInfoSize = sizeof(version);
+        if (!version_fn || version_fn(&version) != 0 || version.dwBuildNumber >= 22000) return false;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(candidate.hwnd, &pid);
+        SHANDLE_PTR handle = 0;
+        if (pid != candidate.process_id || !IsExplorerProcess(pid) ||
+            FAILED(candidate.browser->get_HWND(&handle)) ||
+            reinterpret_cast<HWND>(handle) != candidate.hwnd) return false;
+        size_t views = 0;
+        ForEachExplorerWindow([&](HWND hwnd, IWebBrowser2*) {
+            if (GetAncestor(hwnd, GA_ROOT) == GetAncestor(candidate.hwnd, GA_ROOT)) ++views;
+        });
+        if (views != 1) return false;
+        ExplorerWindowProbe probe;
+        ExplorerTakeoverRequest current;
+        Read(candidate, probe, current);
+        if (!probe.view_ready || !probe.supported || !current.selection_read ||
+            current.folder != candidate.submitted.folder) return false;
+        auto previous = candidate.submitted.names;
+        std::sort(previous.begin(), previous.end());
+        std::sort(current.names.begin(), current.names.end());
+        return previous == current.names;
+    }
+
+    bool Take(Candidate& candidate, ExplorerTakeoverRequest request) {
+        if (!request.selection_read || shared_.stopping) return false;
+        request.handoff = std::make_shared<ExplorerHandoff>(GetTickCount64() + 10000);
+        candidate.submitted = request;
+        std::lock_guard lock(shared_.handoffs_mutex);
+        if (shared_.stopping) { request.handoff->Cancel(); return false; }
+        std::erase_if(shared_.handoffs, [](const auto& value) { return value.expired(); });
+        shared_.handoffs.push_back(request.handoff);
         auto posted = std::make_unique<ExplorerTakeoverRequest>(std::move(request));
-        // Pulse must have it before the Explorer window goes away.
-        if (!PostMessageW(shared_.window, shared_.message, 0, reinterpret_cast<LPARAM>(posted.get()))) return;
+        if (!PostMessageW(shared_.window, shared_.message, 0, reinterpret_cast<LPARAM>(posted.get()))) {
+            candidate.submitted.handoff->Cancel();
+            return false;
+        }
         posted.release();
-        candidate.browser->Quit();
+        return true;
     }
 
     void UpdateTimer() {
@@ -314,7 +386,11 @@ ExplorerWindowTakeover::~ExplorerWindowTakeover() { Stop(); }
 
 void ExplorerWindowTakeover::Stop(DWORD timeout_ms) {
     if (!thread_) return;
-    shared_->stopping = true;
+    {
+        std::lock_guard lock(shared_->handoffs_mutex);
+        shared_->stopping = true;
+        for (auto& weak : shared_->handoffs) if (auto handoff = weak.lock()) handoff->Cancel();
+    }
     // Before the thread has a queue the post fails; it checks `stopping`
     // right after creating one.
     if (const DWORD thread_id = shared_->thread_id) PostThreadMessageW(thread_id, kStopMessage, 0, 0);

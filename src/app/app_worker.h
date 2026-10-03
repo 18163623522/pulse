@@ -1,6 +1,7 @@
 // app_worker.h — Async enumeration/sort worker with generation tracking.
 #pragma once
 #include "../fs/fs_enum.h"
+#include "io_task_queue.h"
 #include "../fs/fs_recycle.h"
 #include "../fs/fs_snapshot.h"
 #include "../ui/ui_renderer.h"
@@ -64,6 +65,7 @@ public:
                        int group_by = 0);
 
     void EnqueueIo(std::function<void()> task);
+    void EnqueueSerialIo(std::function<void()> task);
 
 private:
     void WorkerThread();
@@ -74,7 +76,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::queue<WorkItem> queue_;
-    std::queue<std::function<void()>> io_queue_;
+    IoTaskQueue io_queue_;
     std::atomic<bool> running_{false};
     bool stopped_ = false;
     uint64_t global_gen_ = 0;

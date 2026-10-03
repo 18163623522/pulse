@@ -1,7 +1,8 @@
 // explorer_window_takeover.h — Experimental (B站 #1 phase 2b): File Explorer
 // windows that programs open directly (explorer.exe /select,<file>, which
-// bypasses the folder verbs and IShellWindows lookups) are read, closed and
-// shown in Pulse instead.
+// bypasses the folder verbs and IShellWindows lookups) are opened in Pulse.
+// A source is closed only after navigation/selection acknowledgement, another
+// source identity check, and proof that the source cannot contain other tabs.
 //
 // Only windows that appear while this runs are touched; windows already open
 // are left alone, as are virtual locations Pulse cannot show and any window
@@ -12,12 +13,15 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "explorer_handoff.h"
 
 namespace pulse::app {
 
 struct ExplorerTakeoverRequest {
     std::wstring folder;               // file system folder; empty = This PC
     std::vector<std::wstring> names;   // items selected in the Explorer window
+    std::shared_ptr<ExplorerHandoff> handoff;
+    bool selection_read = false;
 };
 
 class ExplorerWindowTakeover {

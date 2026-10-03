@@ -345,6 +345,11 @@ struct EngineTestAccess {
             check(attempts == 3, "failed volume becomes eligible after sixty seconds");
             engine.RecoverFailedVolumes({failed}, epoch + 121000, [](const VolumeInfo&) { return true; });
             check(engine.volume_retry_after_.empty(), "successful recovery clears its retry state");
+            unsigned successful_attempts = 0;
+            engine.RecoverFailedVolumes({failed}, epoch + 122000, [&](const VolumeInfo&) { ++successful_attempts; return true; });
+            check(successful_attempts == 0, "successful recovery suppresses repeated overflow during cooldown");
+            engine.RecoverFailedVolumes({failed}, epoch + 181000, [&](const VolumeInfo&) { ++successful_attempts; return true; });
+            check(successful_attempts == 1, "persistent overflow becomes eligible after successful recovery cooldown");
         }
         {
             Engine engine;

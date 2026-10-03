@@ -1,5 +1,6 @@
 // app_navigation.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "shell_window_sync.h"
 #include "app_column_view.h"
 #include "content_navigation.h"
 #include "../ui/lumatext_renderer.h"
@@ -328,6 +329,14 @@ void ApplySearchHits(app::Tab& tab, const std::wstring& rest,
         e.attrs = hit.is_dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
         entries.push_back(std::move(e));
     }
+    if (result.error) {
+        tab.banner_title = l10n::Get(l10n::StringId::SearchIncomplete);
+        wchar_t error[128]{};
+        swprintf_s(error, l10n::Get(l10n::StringId::ErrorCodeFormat).c_str(), result.error);
+        tab.banner_message = error;
+    } else if (tab.banner_title == l10n::Get(l10n::StringId::SearchIncomplete)) {
+        tab.banner_title.clear(); tab.banner_message.clear();
+    }
     tab.search_total = result.total;
     tab.search_next_offset = entries.size();
     if (tab.search_snippets && tab.search_snippets->size() < entries.size())
@@ -635,6 +644,8 @@ void DeliverIndexSearchResult(AppState& s, uint32_t id,
         } else {
             return;
         }
+        if (!s.networkIndex.Roots().empty() && tab->banner_title.empty())
+            tab->banner_message = l10n::Get(l10n::StringId::NetworkSearchSnapshot);
         applied = true;
         InvalidateRect(s.hwnd, nullptr, FALSE);
     });
@@ -652,9 +663,9 @@ void AcceptIndexProviderResult(AppState& s, uint32_t id,
         pending.local = std::move(result);
         pending.local_ready = true;
     }
-    if (!pending.local_ready || !pending.network_ready) return;
+    if (!pending.local_ready) return;
     index::SearchResult merged = index::MergeSearchResults(pending.query, pending.local, pending.network);
-    if (!pending.query.subscribe) s.pendingIndexSearches.erase(found);
+    if (!pending.query.subscribe && pending.network_ready) s.pendingIndexSearches.erase(found);
     DeliverIndexSearchResult(s, id, std::move(merged));
 }
 
@@ -665,13 +676,29 @@ void MaybePrefetchSearchPage(AppState& s) {
         tab->search_next_offset >= tab->search_total ||
         tab->search_awaiting_content || tab->search_content_active) return;
     std::wstring kind, rest;
-    if (!app::ParsePulsePath(tab->current_path, &kind, &rest) || kind != L"search") return;
+    if (!app::ParsePulsePath(tab->current_path, &kind, &rest) ||
+        (kind != L"search" && kind != L"saved-search")) return;
     const D2D1_RECT_F list = ListRect(s);
     const float view_h = std::max(0.0f, list.bottom - list.top);
     const float max_scroll = MaxScrollForActivePane(s);
     const float scroll_y = std::max(tab->scroll_y, s.scrollTargetY);
-    if (scroll_y + view_h * 2.0f >= max_scroll)
-        RequestSearchPage(s, *tab, rest, false);
+    if (scroll_y + view_h * 2.0f < max_scroll) return;
+    if (kind == L"saved-search") {
+        wchar_t* end = nullptr;
+        const auto saved_index = wcstoull(rest.c_str(), &end, 10);
+        if (!end || *end || saved_index >= s.savedSearches.items().size()) return;
+        const auto& saved = s.savedSearches.items()[static_cast<size_t>(saved_index)];
+        if (saved.mode != app::SavedSearchMode::Name) return;
+        auto query = MakeSearchPageQuery(*tab, saved.query, 0);
+        query.path_prefix = saved.root;
+        query.limit = (std::min)(index::kSearchPageCap, tab->search_next_offset + index::kSearchUiPageSize);
+        if (query.limit <= tab->search_next_offset) return;
+        query.session_id = tab->search_session_id; query.subscribe = true;
+        const auto id = ++s.nextIndexReq;
+        tab->pending_generation = id; tab->filename_live_generation = id;
+        tab->pending_search_offset = 0; tab->search_loading_more = true;
+        DispatchIndexSearch(s, query, id);
+    } else RequestSearchPage(s, *tab, rest, false);
 }
 
 void CancelActiveContentSearch(AppState& s, app::Tab& tab) {
@@ -692,6 +719,7 @@ void CancelActiveContentSearch(AppState& s, app::Tab& tab) {
 }
 
 void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
+    tab.explorer_handoff.reset();
     tab.current_path = path;
     tab.loading = false;
     tab.pending_generation = 0;
@@ -813,6 +841,7 @@ int FolderGroupFor(const AppState& s, const std::wstring& path) {
 }
 
 void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
+    tab.explorer_handoff.reset();
     SyncTagGroups(s);
     s.index.CancelSession(tab.search_session_id);
     std::erase_if(s.pendingIndexSearches,[&](const auto& item){return item.second.query.session_id==tab.search_session_id;});
@@ -957,11 +986,11 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
         ForEachPane(s, [&](app::Pane& pane) {
             app::Tab* tab = pane.ActiveTab();
             if (!tab || tab->current_path != res.path) return;
-            if (tab->pending_generation != 0 &&
-                tab->pending_generation != res.generation) return;
+            if (tab->pending_generation != res.generation) return;
             tab->loading = false;
             tab->pending_generation = 0;
             tab->net_readonly = fs::IsUncPath(res.path);
+            CompleteExplorerNavigation(*tab, res.generation, false);
             tab->banner_title = l10n::Get(tab->net_readonly
                 ? l10n::StringId::Offline : l10n::StringId::CannotOpen);
             tab->banner_message = tab->snapshot
@@ -981,7 +1010,7 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
     ForEachPane(s, [&](app::Pane& pane) {
         app::Tab* tab = pane.ActiveTab();
         if (!tab || tab->current_path != res.path) return;
-        if (tab->pending_generation != 0 && tab->pending_generation != res.generation) return;
+        if (tab->pending_generation != res.generation) return;
         if (tab->applied_generation != 0 && res.generation < tab->applied_generation) return;
         any = true;
 
@@ -1083,6 +1112,7 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
                 s.scrollTargetY = tab->scroll_y;
                 s.scrollAnimating = false;
             }
+            CompleteExplorerNavigation(*tab, res.generation, !res.cancelled && res.snapshot != nullptr);
     });
     if (again) RefreshPath(s, res.path);
     if (!any) return;

@@ -105,6 +105,7 @@ private:
     Item* StaleBitmap(const std::wstring& identity, const std::wstring& except_key);
     static uint32_t ResponseTimeoutMs(const std::wstring& path, ipc::PreviewRequestKind kind);
     void Worker();
+    void SelectDetailsLocked(const std::wstring& identity);
     bool StoreResult(const Request& request, Item result);
     void Touch(Item& item);
     bool Connect();

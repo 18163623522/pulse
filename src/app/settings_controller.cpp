@@ -249,7 +249,12 @@ void SettingsController::Apply(SettingsEffect effect) const {
 }
 
 void SettingsController::SaveAndApply(SettingsEffect effect) const {
-    prefs_->Save();
+    if (!prefs_->Save() && ui_.show_error)
+        ui_.show_error(l10n::HantText(prefs_->load_failed ?
+            l10n::Pick(L"原设置未能读取，已阻止覆盖。请关闭后重试打开 Pulse。",
+                L"The original settings could not be read. Saving is blocked to protect them. Restart Pulse to retry.") :
+            l10n::Pick(L"设置未能保存，重启后可能恢复原值。",
+                L"Settings could not be saved and may revert after a restart.")));
     Apply(effect);
 }
 
@@ -383,8 +388,11 @@ void SettingsController::Wallpaper(int action) {
     if (!prefs_ || !ui_.apply_effects) return;
     std::wstring path;
     if (action == 0 && ui_.pick_image && ui_.pick_image(path)) {
-        if (!path.empty() && prefs_->StoreBackgroundImage(path))
-            SaveAndApply(SettingsEffect::WindowMaterial);
+        if (!path.empty()) {
+            if (prefs_->StoreBackgroundImage(path)) Apply(SettingsEffect::WindowMaterial);
+            else if (ui_.show_error) ui_.show_error(l10n::HantText(l10n::Pick(
+                L"新壁纸未能保存，已保留原壁纸。", L"The new wallpaper could not be saved. The previous wallpaper was kept.")));
+        }
     } else if (action == 1 && !prefs_->background_image.empty()) {
         prefs_->ClearBackgroundImage();
         SaveAndApply(SettingsEffect::WindowMaterial);
@@ -443,6 +451,75 @@ std::wstring SettingsController::GlobalSearchHotkeyText() const {
     return text;
 }
 
+bool SettingsController::IntegrationCanRestore() const noexcept {
+    return prefs_ && (prefs_->integration_enabled || prefs_->open_folders_in_pulse ||
+        prefs_->take_over_win_e || prefs_->take_over_this_pc || prefs_->integration_residual ||
+        IntegrationCanRetry());
+}
+
+int SettingsController::IntegrationState() const noexcept {
+    if (!prefs_) return 0;
+    if (IntegrationCanRetry()) return 3;
+    const auto& p = *prefs_;
+    if (p.integration_incomplete) return 2;
+    const bool active = p.open_folders_in_pulse || p.take_over_win_e || p.take_over_this_pc ||
+        p.integration_residual;
+    if (!p.integration_enabled) return active ? 2 : 0;
+    if (p.open_folders_in_pulse != p.integration_folders ||
+        p.take_over_win_e != p.integration_win_e || p.take_over_this_pc != p.integration_this_pc)
+        return 2;
+    return active || p.take_over_explorer_windows ? 1 : 0;
+}
+
+std::wstring SettingsController::IntegrationSummary() const {
+    // Only problem details are surfaced; the status pill and checkboxes describe healthy states.
+    if (!prefs_) return {};
+    if (IntegrationCanRetry()) {
+        std::wstring message;
+        if (!integration_error_.empty())
+            message = std::wstring(l10n::Pick(L"没能设置：", L"Could not apply: ")) + integration_error_ +
+                l10n::Pick(L"。可能被安全软件拦截，可以重试。", L". Security software may have blocked it; try again.");
+        if (integration_save_failed_) {
+            if (!message.empty()) message += L" ";
+            message += l10n::Pick(L"你的选择没能保存，重启后可能变回原来的设置。",
+                L"Your choices could not be saved and may revert after a restart.");
+        }
+        return message;
+    }
+    if (IntegrationState() == 2) return l10n::Get(l10n::StringId::IntegrationDriftDesc);
+    return {};
+}
+
+void SettingsController::IntegrationAction(int index) {
+    if (!prefs_ || index < 0 || index > 6) return;
+    if (ui_.integration_changing) ui_.integration_changing();
+    auto& p = *prefs_;
+    p.integration_configured = true;
+    if (index == 0) p.integration_enabled = !p.integration_enabled;
+    else if (index == 1) p.integration_folders = !p.integration_folders;
+    else if (index == 2) p.integration_win_e = !p.integration_win_e;
+    else if (index == 3) p.integration_this_pc = !p.integration_this_pc;
+    else if (index == 4) p.take_over_explorer_windows = !p.take_over_explorer_windows;
+    else if (index == 6) p.integration_enabled = false;
+    // Editing a disabled integration only changes the saved selection.
+    if (p.integration_enabled || index == 0 || index == 5 || index == 6) {
+        integration_error_.clear();
+        auto failed = [&](const wchar_t* label) {
+            if (!integration_error_.empty()) integration_error_ += l10n::Pick(L"、", L", ");
+            integration_error_ += label;
+        };
+        if (!p.ApplyFolderOpen(p.integration_enabled && p.integration_folders))
+            failed(l10n::Pick(L"文件夹和磁盘", L"Folders and drives"));
+        if (!p.ApplyWinE(p.integration_enabled && p.integration_win_e))
+            failed(L"Win + E");
+        if (!ApplyThisPcOpen(p, p.integration_enabled && p.integration_this_pc))
+            failed(l10n::Pick(L"桌面上的「此电脑」", L"This PC on the desktop"));
+    }
+    integration_save_failed_ = !p.Save();
+    if (ui_.integration_changed) ui_.integration_changed();
+    Apply(SettingsEffect::None);
+}
+
 void SettingsController::ToggleUi(int index) {
     if (!prefs_ || !context_) return;
     if (index == 1) {
@@ -452,8 +529,7 @@ void SettingsController::ToggleUi(int index) {
         prefs_->keep_running_on_close = !prefs_->keep_running_on_close;
         SaveAndApply(SettingsEffect::TrayVisibility);
     } else if (index == 3) {
-        prefs_->ApplyFolderOpen(!prefs_->open_folders_in_pulse);
-        SaveAndApply(SettingsEffect::None);
+        IntegrationAction(1);
     } else if (index == 4) {
         prefs_->show_status_performance = !prefs_->show_status_performance;
         SaveAndApply(SettingsEffect::StatusBarPerformance);
@@ -467,20 +543,13 @@ void SettingsController::ToggleUi(int index) {
         prefs_->show_pinned_tab_names = !prefs_->show_pinned_tab_names;
         SaveAndApply(SettingsEffect::None);
     } else if (index == 20) {
-        prefs_->ApplyWinE(!prefs_->take_over_win_e);
-        SaveAndApply(SettingsEffect::None);
+        IntegrationAction(2);
     } else if (index == 28) {
-        // Partial counts as off: the switch fills in what is missing.
-        ApplyDefaultFileManager(*prefs_,
-                                DefaultFileManagerState(*prefs_) != DefaultManagerState::Full);
-        SaveAndApply(SettingsEffect::None);
+        IntegrationAction(0);
     } else if (index == 29) {
-        ApplyThisPcOpen(*prefs_, !prefs_->take_over_this_pc);
-        SaveAndApply(SettingsEffect::None);
+        IntegrationAction(3);
     } else if (index == 30) {
-        // shell_window_sync.cpp starts/stops the watcher on the next frame.
-        prefs_->take_over_explorer_windows = !prefs_->take_over_explorer_windows;
-        SaveAndApply(SettingsEffect::None);
+        IntegrationAction(4);
     } else if (index == 31) {
         // app_updates.cpp reads it on every tick; turning it back on checks right away
         // because the skipped interval has already elapsed.
@@ -558,6 +627,8 @@ void SettingsController::ToggleUi(int index) {
         const auto& seen = context_->seen[item];
         const bool enabled = context_->ItemEnabled(seen.key, seen.category, seen.from_com);
         context_->SetItemEnabled(seen.key, !enabled);
+        if (!enabled)
+            context_->SetGroupEnabled(ipc::GroupOf(seen.category), true);
         context_->Save();
     }
 }

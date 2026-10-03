@@ -8,6 +8,7 @@
 #include "../common/path_utils.h"
 
 #include <shlobj.h>
+#include <algorithm>
 
 namespace pulse {
 namespace {
@@ -28,12 +29,12 @@ bool ShellIntegrationAllowed(const AppState& s, const wchar_t* variable) {
 
 bool ShellWindowsEnabled(const AppState& s) {
     if (s.isolatedTest) return ShellIntegrationAllowed(s, L"PULSE_TEST_SHELL_WINDOWS");
-    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.open_folders_in_pulse;
+    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.integration_enabled && s.appPrefs.open_folders_in_pulse;
 }
 
 bool ExplorerTakeoverEnabled(const AppState& s) {
     if (s.isolatedTest) return ShellIntegrationAllowed(s, L"PULSE_TEST_EXPLORER_TAKEOVER");
-    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.take_over_explorer_windows;
+    return ShellIntegrationAllowed(s, nullptr) && s.appPrefs.integration_enabled && s.appPrefs.take_over_explorer_windows;
 }
 
 void SyncExplorerTakeover(AppState& s) {
@@ -111,6 +112,14 @@ void SyncShellWindows(AppState& s) {
 void StopShellWindows(AppState& s) {
     if (s.explorer_takeover) s.explorer_takeover->Stop();
     s.explorer_takeover.reset();
+    // Stop synchronizes with posting; release requests which the destroyed
+    // target window will no longer dispatch.
+    MSG pending{};
+    while (PeekMessageW(&pending, s.hwnd, WM_EXPLORER_TAKEOVER, WM_EXPLORER_TAKEOVER, PM_REMOVE)) {
+        std::unique_ptr<app::ExplorerTakeoverRequest> request(
+            reinterpret_cast<app::ExplorerTakeoverRequest*>(pending.lParam));
+        if (request && request->handoff) request->handoff->Cancel();
+    }
     if (s.shell_windows) s.shell_windows->Stop();
     s.shell_windows.reset();
     s.shell_windows_published.clear();
@@ -160,16 +169,56 @@ void HandleShellSelect(AppState& s, const app::ShellSelectRequest& request) {
 }
 
 void HandleExplorerTakeover(AppState& s, const app::ExplorerTakeoverRequest& request) {
+    if (!request.handoff) return;
+    if (!ExplorerTakeoverEnabled(s) || GetTickCount64() >= request.handoff->deadline_tick) {
+        request.handoff->Cancel();
+        return;
+    }
+    if (request.handoff->state != app::HandoffState::Pending) return;
+    if (!request.handoff->Receive(GetTickCount64())) return;
     app::TraceShellWindows(L"takeover request folder=[%s] names=%zu", request.folder.c_str(), request.names.size());
     // This PC travels as its parsing name, which OpenFolderInNewTab knows.
     OpenFolderInNewTab(s, request.folder.empty() ? std::wstring(L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")
                                                  : request.folder);
     BringToFront(s.hwnd);
     app::Tab* tab = ActiveTab(s);
-    if (!tab || request.folder.empty() || request.names.empty()) return;
-    SelectNameInTab(s, *tab, request.names.front());
-    for (size_t i = 1; i < request.names.size(); ++i) AddNameToSelection(s, *tab, request.names[i]);
+    if (!tab || !SameFolder(tab->current_path, request.folder)) {
+        request.handoff->Cancel();
+        return;
+    }
+    // Require a fresh successful enumeration even when an existing tab or an
+    // offline cache was activated. Capture the generation after queuing it.
+    tab->explorer_handoff.reset();
+    RefreshPath(s, tab->current_path);
+    auto lease = std::make_unique<app::ExplorerNavigationLease>();
+    lease->handoff = request.handoff;
+    lease->path = tab->current_path;
+    lease->generation = tab->pending_generation;
+    lease->names = request.names;
+    if (!lease->generation) return;
+    tab->explorer_handoff = std::move(lease);
+    tab->pending_selected_names = request.names;
+    tab->pending_selected_name = request.names.empty() ? L"" : request.names.front();
+    tab->pending_ensure_selection_visible = !request.names.empty();
     InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
+void CompleteExplorerNavigation(app::Tab& tab, uint64_t generation, bool success) {
+    auto* lease = tab.explorer_handoff.get();
+    if (!lease || lease->generation != generation) return;
+    if (!success || tab.current_path != lease->path || !tab.snapshot || tab.net_readonly) {
+        tab.explorer_handoff.reset();
+        return;
+    }
+    std::vector<std::wstring> selected;
+    for (int index : tab.SelectedIndices()) {
+        if (index >= 0 && static_cast<size_t>(index) < tab.EntryCount())
+            selected.push_back(tab.EntryAt(index).name);
+    }
+    // Empty Explorer selections must remain empty, instead of the normal
+    // first-row selection used when a folder loads.
+    if (lease->names.empty()) { tab.ClearSelection(); selected.clear(); }
+    lease->Complete(tab.current_path, generation, true, std::move(selected), GetTickCount64());
 }
 
 } // namespace pulse

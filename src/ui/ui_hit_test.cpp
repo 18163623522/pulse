@@ -218,7 +218,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             }
         }
         if (ContainsPt(lay.content, x, y)) {
-            for(int i=0;i<3;++i) if(ContainsPt(lay.disclosure[i],x,y)) {
+            for(int i=0;i<4;++i) if(ContainsPt(lay.disclosure[i],x,y)) {
                 r.region=HitTestResult::SettingsDisclosure;r.index=i;return r;
             }
             for(int i=0;i<kPreviewCodecCount;++i) if(ContainsPt(lay.preview_codec_button[i],x,y)) {
@@ -237,6 +237,17 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             for(int i=0;i<3;++i) if(ContainsPt(actions[i],x,y)) {r.region=HitTestResult::SettingsContentAction;r.index=i+1;return r;}
 
             if (vm.settings_page == 0) {
+                const D2D1_RECT_F integration_rows[]={lay.default_manager_row,lay.startup_row[2],
+                    lay.win_e_row,lay.this_pc_row,lay.explorer_windows_row};
+                for(int i=0;i<5;++i) if(ContainsPt(integration_rows[i],x,y)) {
+                    r.region=HitTestResult::SettingsIntegration;r.index=i;return r;
+                }
+                if(vm.settings_integration_can_retry && ContainsPt(lay.integration_retry,x,y)) {
+                    r.region=HitTestResult::SettingsIntegration;r.index=5;return r;
+                }
+                if(vm.settings_integration_can_restore && ContainsPt(lay.integration_restore,x,y)) {
+                    r.region=HitTestResult::SettingsIntegration;r.index=6;return r;
+                }
                 if (vm.settings_bloom) {
                     vm.settings_bloom->SetDisk(lay.accent_picker);
                     const int dot = vm.settings_bloom->HitDot(x, y);
@@ -362,9 +373,6 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(lay.shell_tags_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 21; return r;
                 }
-                if (ContainsPt(lay.win_e_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle; r.index = 20; return r;
-                }
                 for (int i = 0; i < 3; ++i) if (ContainsPt(lay.blank_click_choice[i], x, y)) {
                     r.region = HitTestResult::SettingsBlankClick; r.index = i; return r;
                 }
@@ -374,16 +382,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 for (int i = 0; i < 3; ++i) if (ContainsPt(lay.change_days[i], x, y)) {
                     r.region = HitTestResult::SettingsChangeDays; r.index = i; return r;
                 }
-                if (ContainsPt(lay.default_manager_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle; r.index = 28; return r;
-                }
-                if (ContainsPt(lay.this_pc_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle; r.index = 29; return r;
-                }
-                if (ContainsPt(lay.explorer_windows_row, x, y)) {
-                    r.region = HitTestResult::SettingsToggle; r.index = 30; return r;
-                }
-                for (int i = 0; i < 3; ++i) {
+                for (int i = 0; i < 2; ++i) {
                     if (ContainsPt(lay.startup_row[i], x, y)) {
                         r.region = HitTestResult::SettingsToggle;
                         r.index = i + 1;

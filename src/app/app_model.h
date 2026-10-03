@@ -6,6 +6,7 @@
 #include "../ui/ui_renderer.h"
 #include "places.h"
 #include "column_view_model.h"
+#include "explorer_handoff.h"
 #include "entry_order_hold.h"
 #include "pane_header_animation.h"
 #include "../index/content_result_store.h"
@@ -33,6 +34,7 @@ std::wstring NavigationReturnChildName(const std::wstring& from_path,
                                        const std::wstring& destination_path);
 
 struct Tab {
+    std::unique_ptr<ExplorerNavigationLease> explorer_handoff;
     std::wstring current_path;
     std::stack<std::wstring> back_stack;
     std::stack<std::wstring> forward_stack;
@@ -159,6 +161,9 @@ struct Tab {
     std::wstring content_focus_path;
     uint64_t content_focus_selection = UINT64_MAX;
     uint64_t content_focus_revision = UINT64_MAX;
+    uint64_t content_order_revision = 0;
+    std::vector<std::wstring> content_selected_paths;
+    void RememberContentSelection();
     std::wstring search_origin_path;
     bool search_origin_valid = false;
     bool search_retaining_results = false;

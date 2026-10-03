@@ -105,7 +105,8 @@ private:
 
 // Runs the modal DoDragDrop loop. Returns the performed DROPEFFECT_*.
 DWORD DoFileDragDrop(const std::vector<std::wstring>& paths, DWORD allowed_effects,
-                     std::function<bool()> esc_consumed);
+                     std::function<bool()> esc_consumed,
+                     const std::wstring& source_view = {});
 
 // ---------------------------------------------------------------------------
 // Drop-in target.
@@ -116,9 +117,10 @@ struct DropTargetCallbacks {
     std::function<DWORD(const std::vector<std::wstring>& sources, POINT pt,
                         DWORD key_state, DWORD allowed)> drag_over;
     std::function<void()> drag_leave;
-    // Returns the performed effect.
+    // The last argument is the source's allowed mask, not its preference.
+    // Returns one allowed performed effect, or NONE.
     std::function<DWORD(const std::vector<std::wstring>& sources, POINT pt,
-                        DWORD key_state, DWORD preferred)> drop;
+                        DWORD key_state, DWORD allowed)> drop;
 };
 
 class WindowDropTarget final : public IDropTarget {
@@ -140,7 +142,6 @@ private:
     HWND hwnd_ = nullptr;
     DropTargetCallbacks cb_;
     std::vector<std::wstring> sources_; // cached from DragEnter
-    DWORD preferred_ = 0;
 };
 
 } // namespace pulse::ui

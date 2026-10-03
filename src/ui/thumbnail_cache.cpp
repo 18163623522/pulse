@@ -173,17 +173,7 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
     {
         std::lock_guard lock(mutex_);
         const std::wstring identity = Key(path, 0, modified, size);
-        if (direct_preview && identity != latest_details_identity_) {
-            latest_details_identity_ = identity;
-            for (auto queued = queue_.begin(); queued != queue_.end();) {
-                if (queued->details) {
-                    pending_.erase(queued->key);
-                    queued = queue_.erase(queued);
-                } else {
-                    ++queued;
-                }
-            }
-        }
+        if (direct_preview) SelectDetailsLocked(identity);
         auto queue_request = [&] {
             if (pending_.contains(key)) return;
             pending_.insert(key);
@@ -298,6 +288,19 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
     return PreviewDrawResult::Pending;
 }
 
+void ThumbnailCache::SelectDetailsLocked(const std::wstring& identity) {
+    if (identity == latest_details_identity_) return;
+    latest_details_identity_ = identity;
+    for (auto queued = queue_.begin(); queued != queue_.end();) {
+        if (queued->details) {
+            pending_.erase(queued->key);
+            queued = queue_.erase(queued);
+        } else {
+            ++queued;
+        }
+    }
+}
+
 bool ThumbnailCache::Properties(const std::wstring& path, DWORD attrs, uint64_t generation,
                                 uint64_t modified, uint64_t size,
                                 std::vector<PreviewProperty>& properties) {
@@ -305,11 +308,12 @@ bool ThumbnailCache::Properties(const std::wstring& path, DWORD attrs, uint64_t 
     const std::wstring identity = Key(path, 0, modified, size);
     const std::wstring key = identity + L":properties";
     std::lock_guard lock(mutex_);
-    if (identity != latest_details_identity_) return false;
+    SelectDetailsLocked(identity);
     if (auto it = items_.find(key); it != items_.end()) {
         Touch(it->second);
         properties = it->second.properties;
-        return !it->second.failed;
+        if (!it->second.failed) return true;
+        if (!it->second.transient || GetTickCount64() < it->second.retry_at) return false;
     }
     if (!pending_.contains(key) && queue_.size() < 128) {
         pending_.insert(key);

@@ -15,6 +15,7 @@
 #pragma once
 #include <windows.h>
 #include "file_lock_owner.h"
+#include "duplicate_cleanup_guard.h"
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -64,6 +65,8 @@ struct OpRequest {
     // Retry of a locked-file failure (with or without ending processes): the
     // failed attempt may have handled part of the selection already.
     bool lock_retry = false;
+    bool duplicate_cleanup = false;
+    std::vector<DuplicateCleanupGroup> duplicate_groups;
 };
 
 struct UndoEntry {
@@ -153,6 +156,9 @@ public:
     HWND UiWindow() const noexcept { return ui_hwnd_.load(); }
 
     uint64_t Submit(OpRequest req);
+    // Atomically reject shutdown when work is queued/running and stop new submissions.
+    bool TryPrepareForUpdate();
+    void CancelUpdatePreparation();
     void CancelCurrent();
     void PauseCurrent();
     void ResumeCurrent();
@@ -275,6 +281,8 @@ private:
     std::deque<QueueItem> queue_;
     std::deque<std::wstring> recovery_cleanup_roots_;
     std::optional<QueueItem> active_item_;
+    bool update_preparing_ = false;
+    bool recovery_cleanup_active_ = false;
     struct LockRetry {
         uint64_t task_id = 0;
         OpRequest req;
@@ -323,6 +331,7 @@ private:
     mutable std::mutex menu_mutex_;
     std::condition_variable menu_cv_;
     std::deque<MenuJob> menu_queue_;
+    bool menu_dispatching_ = false;
     ShellMenuCallback menu_cb_;
     uint32_t next_menu_token_ = 1;
     std::map<uint32_t, uint32_t> menu_session_by_token_;  // token -> query req id

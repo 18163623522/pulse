@@ -154,6 +154,8 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     s.dropDestDir.clear();
     s.dropBadge.clear();
     s.dropBadgeMove = false;
+    if (sources.empty() || !(allowed & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK)))
+        return DROPEFFECT_NONE;
 
     // Esc after a spring-loaded enter: go back instead of cancelling (self drags).
     if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) && s.springEntered) {
@@ -174,7 +176,8 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
     if (hit.region == ui::HitTestResult::Row && hit.index >= 0 &&
         tab->snapshot && hit.index < (int)tab->EntryCount() &&
         tab->EntryAt(hit.index).is_dir) {
-        if (tab->EntryAt(hit.index).change_record_only) return DROPEFFECT_NONE;
+        if (tab->EntryAt(hit.index).change_record_only ||
+            !tab->EntryAt(hit.index).recycle_path.empty()) return DROPEFFECT_NONE;
         std::wstring full = EntryFullPath(*tab, hit.index);
         if (full.empty()) return DROPEFFECT_NONE;
         s.dropDestDir = full;
@@ -220,6 +223,7 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
         return DROPEFFECT_NONE;
     } else if (hit.region == ui::HitTestResult::SidebarItem && !hit.path.empty()) {
         if (hit.path.starts_with(L"pulse:tag:")) {
+            if (!(allowed & DROPEFFECT_COPY)) return DROPEFFECT_NONE;
             s.dropDestDir = hit.path;
             s.dropSidebar = hit.index;
             destName.clear();
@@ -288,11 +292,12 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
         D2D1_RECT_F trayRc = s.renderer.StagingTrayRect(trayVm, rect.right, rect.bottom);
         if (pt.x >= trayRc.left && pt.x < trayRc.right &&
             pt.y >= trayRc.top && pt.y < trayRc.bottom) {
+            if (!(allowed & DROPEFFECT_COPY)) return DROPEFFECT_NONE;
             s.dropTray = true;
             s.springRow = -1;
             // Staging defaults to a copy batch; Shift stages it as a move.
             // The source is never touched here, so the OLE effect stays COPY.
-            const bool stage_move = (key_state & MK_SHIFT) != 0;
+            const bool stage_move = (key_state & MK_SHIFT) != 0 && (allowed & DROPEFFECT_MOVE) != 0;
             s.dropBadge = l10n::Get(stage_move ? l10n::StringId::DropStageMove
                                                : l10n::StringId::DropStageCopy).c_str();
             s.dropBadgeMove = stage_move;
@@ -307,7 +312,8 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
         return DROPEFFECT_NONE;
     }
 
-    DWORD effect = ui::ComputeDropEffect(key_state, sources.front(), s.dropDestDir, allowed);
+    DWORD effect = ui::ComputeDropEffect(key_state, sources.front(), s.dropDestDir,
+                                        allowed & (DROPEFFECT_COPY | DROPEFFECT_MOVE));
     s.dropBadge = (effect == DROPEFFECT_MOVE ? l10n::Get(l10n::StringId::DropMove).c_str() : l10n::Get(l10n::StringId::DropCopy).c_str()) + destName;
     // Say how to switch before the drop, not after (Explorer rules: Ctrl copies, Shift moves).
     if (effect == DROPEFFECT_MOVE && (allowed & DROPEFFECT_COPY))
@@ -322,11 +328,10 @@ DWORD ResolveDropTarget(AppState& s, const std::vector<std::wstring>& sources,
 }
 
 DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
-                         POINT pt, DWORD key_state, DWORD /*preferred*/) {
+                         POINT pt, DWORD key_state, DWORD allowed) {
     // Resolve once more for the final position.
     // Tray drag-out is copy-only: the staged originals stay where they are.
-    const DWORD allowed = s.trayDragOut ? DWORD(DROPEFFECT_COPY)
-                                        : DWORD(DROPEFFECT_COPY | DROPEFFECT_MOVE);
+    if (s.trayDragOut) allowed &= DROPEFFECT_COPY;
     DWORD effect = ResolveDropTarget(s, sources, pt, key_state, allowed);
     std::wstring dest = s.dropDestDir;
     bool tray = s.dropTray;
@@ -335,6 +340,7 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     const bool pin_quick_access = s.dropQuickAccess;
     ClearDropFeedback(s);
     s.springEntered = false;
+    if (effect == DROPEFFECT_NONE || !(effect & allowed)) return DROPEFFECT_NONE;
 
     if (pin_quick_access) {
         std::vector<std::wstring> folders;
@@ -350,7 +356,7 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
         if (folders.empty()) return DROPEFFECT_NONE;
         s.places.SetQuickAccessPinned(folders, true);
         InvalidateRect(s.hwnd, nullptr, FALSE);
-        return DROPEFFECT_COPY;  // nothing is copied; the source keeps its files
+        return effect;  // nothing is copied; the source keeps its files
     }
 
     if (header) {
@@ -366,19 +372,20 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
                 else
                     InvalidateRect(s.hwnd, nullptr, FALSE);
             }
-            return DROPEFFECT_COPY;
+            return effect;
         }
         if (app::Pane* pane = PaneAtSlot(s, header_pane)) {
             if (app::Tab* tab = pane->ActiveTab()) dest = tab->current_path;
         }
         if (dest.empty() || fs::IsVirtualPath(dest)) return DROPEFFECT_NONE;
-        effect = ui::ComputeDropEffect(key_state, sources.front(), dest, allowed);
+        effect = ui::ComputeDropEffect(key_state, sources.front(), dest,
+                                       allowed & (DROPEFFECT_COPY | DROPEFFECT_MOVE));
     }
 
     if (tray) {
         std::vector<std::wstring> paths;
         for (auto& p : sources) paths.push_back(fs::NormalizePath(p));
-        const bool stage_move = (key_state & MK_SHIFT) != 0;
+        const bool stage_move = (key_state & MK_SHIFT) != 0 && (allowed & DROPEFFECT_MOVE) != 0;
         s.tray.Collect(paths, stage_move);
         ops::WriteClipboard(sources, stage_move);
         InvalidateRect(s.hwnd, nullptr, FALSE);
@@ -394,7 +401,8 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return DROPEFFECT_COPY;
     }
-    if (dest.empty() || effect == DROPEFFECT_NONE || fs::IsVirtualPath(dest)) return DROPEFFECT_NONE;
+    if (dest.empty() || fs::IsVirtualPath(dest) || !(effect & allowed) ||
+        (effect != DROPEFFECT_COPY && effect != DROPEFFECT_MOVE)) return DROPEFFECT_NONE;
 
     ops::OpRequest req;
     req.type = (effect == DROPEFFECT_MOVE) ? ops::OpType::Move : ops::OpType::Copy;
@@ -409,7 +417,7 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
 void StartDragOut(AppState& s) {
     if(DeferContentSelection(s,[](AppState& v){if(GetKeyState(VK_LBUTTON)&0x8000) StartDragOut(v);})) return;
     app::Tab* tab = ActiveTab(s);
-    if (!tab || !tab->snapshot) return;
+    if (!tab || !tab->snapshot || IsRecycleTab(tab)) return;
     std::vector<std::wstring> paths = SelectedFullPaths(*tab);
     if (paths.empty()) return;
     for (auto& path : paths) path = ClipboardPath(path);
@@ -417,7 +425,7 @@ void StartDragOut(AppState& s) {
     s.clickCollapseIndex = -1;
     CancelScrollAnimation(s); // DoDragDrop's modal loop coexists with on-demand render
     DWORD effect = ui::DoFileDragDrop(paths, DROPEFFECT_COPY | DROPEFFECT_MOVE,
-        [&s] { return s.springEntered; }); // Esc = 退回 when spring-entered
+        [&s] { return s.springEntered; }, tab->current_path); // Esc = 退回 when spring-entered
     s.springEntered = false;
     ClearDropFeedback(s);
     if (effect == DROPEFFECT_MOVE) {

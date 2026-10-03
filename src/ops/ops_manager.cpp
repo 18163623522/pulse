@@ -5,6 +5,7 @@
 #include "../common/json_utils.h"
 #include "../common/localization.h"
 #include "../common/path_utils.h"
+#include "../common/rename_filename.h"
 #include "../common/utf8_file.h"
 #include <objbase.h>
 #include <bcrypt.h>
@@ -254,18 +255,7 @@ std::wstring Describe(const OpRequest& r) {
 // error directly: the current Shell host suppresses confirmation and can
 // overwrite an existing target, so it is not a safe rename fallback.
 bool IsRenameComponent(const std::wstring& name) {
-    if (name.empty() || name == L"." || name == L".." ||
-        name.back() == L'.' || name.back() == L' ') return false;
-    for (const auto c : name)
-        if (c < 32 || std::wstring_view(L"\\/:*?\"<>|").find(c) != std::wstring_view::npos) return false;
-    std::wstring stem = name.substr(0, name.find(L'.'));
-    while (!stem.empty() && stem.back() == L' ') stem.pop_back();
-    for (auto& c : stem) c = static_cast<wchar_t>(towupper(c));
-    if (stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
-        stem == L"CONIN$" || stem == L"CONOUT$") return false;
-    if (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")) &&
-        ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == L'\u00b9' || stem[3] == L'\u00b2' || stem[3] == L'\u00b3')) return false;
-    return true;
+    return IsRenameFilename(name);
 }
 
 enum class RenameResult { Completed, Rejected };
@@ -300,6 +290,8 @@ struct TransferEntry {
     std::wstring destination;
     bool directory = false;
     bool reparse = false;
+    bool destination_preexisting = false;
+    bool directory_prepared = false;
     uint64_t bytes = 0;
     DWORD attributes = FILE_ATTRIBUTE_NORMAL;
     FILETIME created{};
@@ -599,7 +591,7 @@ bool StartsWithPath(const std::wstring& path, const std::wstring& prefix) {
 }
 
 bool Sha256File(const std::wstring& path, const std::atomic<bool>& cancel,
-                const std::atomic<bool>& pause, std::array<uint8_t, 32>& digest,
+                const std::function<void()>& wait_if_paused, std::array<uint8_t, 32>& digest,
                 std::wstring& error) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
@@ -630,7 +622,7 @@ bool Sha256File(const std::wstring& path, const std::atomic<bool>& cancel,
     bool ok = file != INVALID_HANDLE_VALUE;
     std::vector<uint8_t> buffer(1024 * 1024);
     while (ok && !cancel.load()) {
-        while (pause.load() && !cancel.load()) Sleep(20);
+        wait_if_paused();
         if (cancel.load()) break;
         DWORD read = 0;
         if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
@@ -717,42 +709,20 @@ bool ParseRecoveryEntry(const std::wstring& object, RecoveryEntry& entry) {
     entry.request.new_name = json::ExtractString(object, L"name");
     entry.request.new_names = json::ExtractStringArray(object, L"names");
     entry.request.is_undo = json::ExtractBool(object, L"undo", false);
+    entry.request.duplicate_cleanup = json::ExtractBool(object, L"duplicate_cleanup", false);
     if (entry.request.type == OpType::EmptyRecycle) return entry.sequence != 0;
     return entry.sequence != 0 && !entry.request.sources.empty();
 }
 
 void ReconcileTemporaryFiles(const std::wstring& root) {
-    if (root.empty()) return;
-    namespace fsys = std::filesystem;
-    std::vector<fsys::path> temporary;
+    // Schema 1 journals do not record artifact identities. A name alone cannot
+    // establish ownership; preserve both user files and interrupted backups.
+    (void)root;
+}
+
+bool SameFileObject(const std::wstring& left, const std::wstring& right) {
     std::error_code error;
-    fsys::recursive_directory_iterator it(fsys::path(root),
-        fsys::directory_options::skip_permission_denied, error);
-    fsys::recursive_directory_iterator end;
-    for (; !error && it != end; it.increment(error)) {
-        const std::wstring path = it->path().wstring();
-        if (path.find(L".pulse-copy-") != std::wstring::npos ||
-            path.find(L".pulse-backup-") != std::wstring::npos) {
-            temporary.push_back(it->path());
-            if (it->is_directory(error)) it.disable_recursion_pending();
-        }
-    }
-    std::sort(temporary.begin(), temporary.end(), [](const auto& left, const auto& right) {
-        return left.native().size() > right.native().size();
-    });
-    for (const auto& item : temporary) {
-        const std::wstring path = item.wstring();
-        const size_t backup = path.find(L".pulse-backup-");
-        if (backup != std::wstring::npos) {
-            const std::wstring original = path.substr(0, backup);
-            if (!PathExists(original)) {
-                MoveFileExW(path.c_str(), original.c_str(), MOVEFILE_WRITE_THROUGH);
-                continue;
-            }
-        }
-        std::error_code ignored;
-        fsys::remove_all(item, ignored);
-    }
+    return std::filesystem::equivalent(left, right, error) && !error;
 }
 
 // Folder that contains `path`, for ShellExecuteEx's lpDirectory. Empty for
@@ -808,10 +778,11 @@ bool OpsManager::RetryRecovery() {
     bool all_retryable = true;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (update_preparing_) return false;
         for (auto& recovery : pending_recovery_) {
             if (!recovery.request.dest_dir.empty())
                 recovery_cleanup_roots_.push_back(recovery.request.dest_dir);
-            if (recovery.request.type == OpType::RealDelete) {
+            if (recovery.request.type == OpType::RealDelete || recovery.request.duplicate_cleanup) {
                 all_retryable = false;
                 continue;
             }
@@ -830,6 +801,7 @@ bool OpsManager::RetryRecovery() {
 void OpsManager::DiscardRecovery() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (update_preparing_) return;
         for (const auto& recovery : pending_recovery_) {
             if (!recovery.request.dest_dir.empty())
                 recovery_cleanup_roots_.push_back(recovery.request.dest_dir);
@@ -852,6 +824,7 @@ std::wstring OpsManager::JournalJsonLocked() const {
             L",\"type\":" + std::to_wstring(static_cast<int>(item.req.type)) +
             L",\"policy\":" + std::to_wstring(static_cast<int>(item.req.collision_policy)) +
             L",\"undo\":" + (item.req.is_undo ? std::wstring(L"true") : std::wstring(L"false")) +
+            L",\"duplicate_cleanup\":" + (item.req.duplicate_cleanup ? std::wstring(L"true") : std::wstring(L"false")) +
             L",\"sources\":" + StringArrayJson(item.req.sources) +
             L",\"dest\":" + JsonString(item.req.dest_dir) +
             L",\"name\":" + JsonString(item.req.new_name) +
@@ -920,12 +893,27 @@ void OpsManager::Stop() {
     PersistJournal();
 }
 
+bool OpsManager::TryPrepareForUpdate() {
+    std::scoped_lock lock(mutex_, menu_mutex_);
+    if (update_preparing_ || active_item_ || !queue_.empty() || status_.active ||
+        recovery_cleanup_active_ || !recovery_cleanup_roots_.empty() ||
+        menu_dispatching_ || !menu_queue_.empty() || !ctx_invoke_ids_.empty()) return false;
+    update_preparing_ = true;
+    return true;
+}
+
+void OpsManager::CancelUpdatePreparation() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    update_preparing_ = false;
+}
+
 uint64_t OpsManager::Submit(OpRequest req) {
     QueueItem item;
     item.req = std::move(req);
     uint64_t seq = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (update_preparing_) return 0;
         seq = next_seq_++;
         item.seq = seq;
         queue_.push_back(std::move(item));
@@ -1272,7 +1260,7 @@ void OpsManager::Undo() {
     UndoEntry e;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (undo_.empty()) return;
+        if (update_preparing_ || undo_.empty()) return;
         e = undo_.back();
         if (!e.supported) {
             // Leave the entry; report why it cannot be undone.
@@ -1577,6 +1565,7 @@ void OpsManager::WorkerThread() {
             if (!recovery_cleanup_roots_.empty()) {
                 cleanup_root = std::move(recovery_cleanup_roots_.front());
                 recovery_cleanup_roots_.pop_front();
+                recovery_cleanup_active_ = true;
             } else {
                 item = std::move(queue_.front());
                 queue_.pop_front();
@@ -1586,6 +1575,8 @@ void OpsManager::WorkerThread() {
 
         if (!cleanup_root.empty()) {
             ReconcileTemporaryFiles(cleanup_root);
+            std::lock_guard<std::mutex> lock(mutex_);
+            recovery_cleanup_active_ = false;
             continue;
         }
 
@@ -1654,8 +1645,8 @@ void OpsManager::InvokeShellMenu(uint32_t token, uint32_t item_id,
     job.verb = std::move(verb);
     job.text = std::move(text);
     {
-        std::lock_guard<std::mutex> lock(menu_mutex_);
-        if (!menu_running_) return;
+        std::scoped_lock lock(mutex_, menu_mutex_);
+        if (update_preparing_ || !menu_running_) return;
         menu_queue_.push_back(std::move(job));
     }
     menu_cv_.notify_one();
@@ -1708,6 +1699,7 @@ void OpsManager::MenuThread() {
             if (!menu_running_) break; // drop queued jobs; sessions die with the host
             job = std::move(menu_queue_.front());
             menu_queue_.pop_front();
+            menu_dispatching_ = true;
         }
         auto& client = ipc::ShellClient::Instance();
         switch (job.kind) {
@@ -1754,6 +1746,10 @@ void OpsManager::MenuThread() {
             break;
         }
         }
+        {
+            std::lock_guard<std::mutex> lock(menu_mutex_);
+            menu_dispatching_ = false;
+        }
     }
 }
 
@@ -1793,7 +1789,6 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
     HRESULT failure_hr = S_OK;   // lets a lock-style failure be traced to its owner
     bool cancelled = false;
     std::vector<TransferEntry> entries;
-    std::vector<bool> root_destination_preexisting;
     std::vector<std::wstring> completed_sources;
     std::vector<std::wstring> completed_destinations;
     struct ReplacementBackup {
@@ -1804,6 +1799,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
     if (req.sources.empty() || req.dest_dir.empty()) {
         failure = l10n::Pick(L"复制或移动请求缺少来源/目标", L"The copy or move request is missing a source or destination");
+    }
+    if (failure.empty() && req.is_undo && req.type == OpType::Move) {
+        // A merged move can remove the now-empty source directories. Its
+        // per-file undo must recreate them before attempting the fast rename.
+        EnsureDirectories(req.dest_dir, failure);
     }
 
     // A single unobstructed same-volume move is an atomic rename and should
@@ -1849,7 +1849,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 break;
             }
             const bool same_location =
-                _wcsicmp(root.source.c_str(), root.destination.c_str()) == 0;
+                _wcsicmp(root.source.c_str(), root.destination.c_str()) == 0 ||
+                SameFileObject(root.source, root.destination);
             if (same_location && req.type == OpType::Move) {
                 // Dropping an item onto its current folder is a no-op, like Explorer.
                 continue;
@@ -1861,7 +1862,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
                 failure = l10n::Pick(L"不能将目录复制或移动到其自身内部：", L"Cannot copy or move a folder into itself: ") + source;
                 break;
             }
-            root_destination_preexisting.push_back(PathExists(root.destination));
+            root.destination_preexisting = PathExists(root.destination);
             entries.push_back(root);
             if (!root.directory || root.reparse) continue;
 
@@ -2014,6 +2015,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             mark_skipped(entry);
             continue;
         }
+        if (SameFileObject(entry.source, entry.destination)) {
+            if (entry.directory) skipped_prefixes.push_back(entry.source);
+            mark_skipped(entry);
+            continue;
+        }
 
         bool destination_is_directory = false;
         bool destination_exists = PathExists(entry.destination, &destination_is_directory);
@@ -2139,6 +2145,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
         if (entry.directory) {
             if (!EnsureDirectories(entry.destination, failure)) break;
+            entry.directory_prepared = true;
             ++processed_items;
             SetStatus([&](OpStatus& st) {
                 st.current_item = FileName(entry.source);
@@ -2232,8 +2239,24 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             });
             std::array<uint8_t, 32> source_hash{};
             std::array<uint8_t, 32> copied_hash{};
-            if (!Sha256File(entry.source, transfer_cancel_, transfer_pause_, source_hash, failure) ||
-                !Sha256File(copy_destination, transfer_cancel_, transfer_pause_, copied_hash, failure)) {
+            auto wait_if_paused = [&] {
+                if (!transfer_pause_.load() || transfer_cancel_.load()) return;
+                SetStatus([&](OpStatus& st) {
+                    st.phase = OpPhase::Paused;
+                    st.summary = std::wstring(OpVerb(req.type)) + l10n::Pick(L"已暂停", L" paused");
+                });
+                std::unique_lock<std::mutex> lock(transfer_control_mutex_);
+                transfer_control_cv_.wait(lock, [&] {
+                    return transfer_cancel_.load() || !transfer_pause_.load();
+                });
+                lock.unlock();
+                if (!transfer_cancel_.load()) SetStatus([&](OpStatus& st) {
+                    st.phase = OpPhase::Verifying;
+                    st.summary = l10n::Pick(L"正在校验 ", L"Verifying ") + FileName(entry.source);
+                });
+            };
+            if (!Sha256File(entry.source, transfer_cancel_, wait_if_paused, source_hash, failure) ||
+                !Sha256File(copy_destination, transfer_cancel_, wait_if_paused, copied_hash, failure)) {
                 DeleteFileW(copy_destination.c_str());
                 if (transfer_cancel_.load()) cancelled = true;
                 break;
@@ -2246,6 +2269,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             SetStatus([&](OpStatus& st) { st.phase = OpPhase::Running; });
         }
 
+        if (SameFileObject(entry.source, entry.destination)) {
+            DeleteFileW(copy_destination.c_str());
+            mark_skipped(entry);
+            continue;
+        }
         if (replacing) {
             DWORD old_attributes = GetFileAttributesW(entry.destination.c_str());
             if (old_attributes != INVALID_FILE_ATTRIBUTES &&
@@ -2293,7 +2321,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
     if (failure.empty() && !cancelled) {
         for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
-            if (!it->directory) continue;
+            if (!it->directory_prepared) continue;
             if (req.type == OpType::Move) {
                 RemoveDirectoryW(it->source.c_str());
             } else if (!it->reparse) {
@@ -2336,8 +2364,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
             if (found == entries.end()) continue;
             const std::wstring original_destination = JoinPath(req.dest_dir,
                                                                FileName(req.sources[root_index]));
-            const bool independent_root = root_index >= root_destination_preexisting.size()
-                || !root_destination_preexisting[root_index]
+            const bool independent_root = !found->destination_preexisting
                 || _wcsicmp(found->destination.c_str(), original_destination.c_str()) != 0;
             if (independent_root) {
                 committed.sources.push_back(req.sources[root_index]);
@@ -2418,6 +2445,25 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
         st.eta_seconds = 0;
         if (req.type == OpType::EmptyRecycle) st.percent = -1.0f;
     });
+
+    DuplicateCleanupGuard duplicate_guard;
+    if (req.duplicate_cleanup) {
+        SetStatus([](OpStatus& st) { st.phase = OpPhase::Verifying; st.percent = -1.0f; });
+        const auto cancelled = [&] { return stopping_.load() || shell_cancel_requested_.load(); };
+        if (req.type != OpType::RecycleDelete ||
+            !duplicate_guard.Validate(req.duplicate_groups, req.sources, cancelled)) {
+            SetStatus([&](OpStatus& st) {
+                st.active = false;
+                st.phase = OpPhase::Failed;
+                ++st.completed_ops;
+                st.last_error = cancelled() ? l10n::Pick(L"已取消", L"Canceled") :
+                    l10n::Pick(L"重复文件已变化或无法验证。请重新扫描后再清理。",
+                               L"Duplicate files changed or could not be verified. Scan again before cleaning up.");
+            });
+            return;
+        }
+        SetStatus([](OpStatus& st) { st.phase = OpPhase::Running; st.percent = 0.0f; });
+    }
 
     if (req.type == OpType::EmptyRecycle) {
         SHQUERYRBINFO start{};

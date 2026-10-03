@@ -112,7 +112,15 @@ void WorkerPool::EnqueueIo(std::function<void()> task) {
     if (!task) return;
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_ || stopped_) return;
-    io_queue_.push(std::move(task));
+    io_queue_.Push(std::move(task), false);
+    cv_.notify_one();
+}
+
+void WorkerPool::EnqueueSerialIo(std::function<void()> task) {
+    if (!task) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!running_ || stopped_) return;
+    io_queue_.Push(std::move(task), true);
     cv_.notify_one();
 }
 
@@ -259,25 +267,26 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
 void WorkerPool::WorkerThread() {
     while (running_) {
         WorkItem item;
-        std::function<void()> io_task;
+        IoTaskQueue::Job io_job;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [&] {
-                return stopped_ || !queue_.empty() || !io_queue_.empty() || !running_;
+                return stopped_ || !queue_.empty() || io_queue_.Ready() || !running_;
             });
             if (!running_ || stopped_) return;
             if (!queue_.empty()) {
                 item = std::move(queue_.front());
                 queue_.pop();
-            } else if (!io_queue_.empty()) {
-                io_task = std::move(io_queue_.front());
-                io_queue_.pop();
+            } else if (io_queue_.Ready()) {
+                io_job = io_queue_.Pop();
             } else {
                 continue;
             }
         }
-        if (io_task) {
-            try { io_task(); } catch (...) {}
+        if (io_job.task) {
+            try { io_job.task(); } catch (...) {}
+            { std::lock_guard lock(mutex_); io_queue_.Complete(io_job); }
+            cv_.notify_all();
             continue;
         }
         WorkResult res = Process(item);

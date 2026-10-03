@@ -1623,6 +1623,7 @@ bool NetworkIndex::TakeResult(uint32_t id, SearchResult& result) {
 SearchResult MergeSearchResults(const Query& query, SearchResult local,
                                 SearchResult network) {
     SearchResult result;
+    result.error = local.error ? local.error : network.error;
     result.total = local.total + network.total;
     result.hits.reserve(local.hits.size() + network.hits.size());
     for (auto& hit : local.hits) result.hits.push_back(std::move(hit));

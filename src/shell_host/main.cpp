@@ -400,60 +400,56 @@ bool ReadRecycleOriginal(const std::wstring& i_path, std::wstring& original) {
     return false;
 }
 
-bool RestoreOneFromRecycle(const std::wstring& wanted_canon, std::wstring& error) {
-    const wchar_t drive = wanted_canon.size() >= 2 && wanted_canon[1] == L':'
-        ? wanted_canon[0] : L'\0';
-    if (!drive) {
-        error = L"无法确定回收站卷";
-        return false;
-    }
-
-    wchar_t bin[32];
-    swprintf_s(bin, L"%c:\\$Recycle.Bin", drive);
+bool RestoreOneFromRecycle(const std::wstring& payload, std::wstring& error) {
+    const std::wstring wanted = CanonPath(payload);
     const std::wstring sid = pulse::CurrentUserSidString();
-    if (sid.empty()) {
+    if (wanted.size() < 3 || wanted[1] != L':' || sid.empty()) {
         error = L"无法确定当前用户的回收站";
         return false;
     }
-    const std::wstring sidDir = std::wstring(bin) + L"\\" + sid;
-    WIN32_FIND_DATAW iFd{};
-    HANDLE iFind = FindFirstFileW((sidDir + L"\\$I*").c_str(), &iFd);
-    if (iFind == INVALID_HANDLE_VALUE) {
-        error = L"无法打开当前用户的回收站";
+    const std::wstring parent = wanted.substr(0, wanted.find_last_of(L'\\'));
+    const std::wstring expected = CanonPath(wanted.substr(0, 2) + L"\\$Recycle.Bin\\" + sid);
+    const std::wstring name = wanted.substr(wanted.find_last_of(L'\\') + 1);
+    if (parent != expected || name.size() <= 2 || name.substr(0, 2) != L"$R") {
+        // Legacy undo records contain only the original path. Never guess
+        // between multiple versions of that path.
+        WIN32_FIND_DATAW data{};
+        HANDLE find = FindFirstFileW((expected + L"\\$I*").c_str(), &data);
+        std::wstring match;
+        bool ambiguous = false;
+        if (find != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring original;
+                const std::wstring index = expected + L"\\" + data.cFileName;
+                if (!ReadRecycleOriginal(index, original) || CanonPath(original) != wanted) continue;
+                std::wstring candidate = index;
+                candidate[candidate.find_last_of(L'\\') + 2] = L'R';
+                if (GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
+                if (!match.empty()) { ambiguous = true; break; }
+                match = std::move(candidate);
+            } while (FindNextFileW(find, &data));
+            FindClose(find);
+        }
+        if (!match.empty() && !ambiguous) return RestoreOneFromRecycle(match, error);
+        error = L"无法唯一确定回收站版本，请在回收站中选择具体条目";
         return false;
     }
-    bool restored = false;
-    do {
-        if (iFd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        std::wstring iPath = sidDir + L"\\" + iFd.cFileName;
-        std::wstring original;
-        if (!ReadRecycleOriginal(iPath, original)) continue;
-        if (CanonPath(original) != wanted_canon) continue;
-
-        std::wstring rName = iFd.cFileName;
-        if (rName.size() >= 2) rName[1] = (rName[1] == L'I') ? L'R' : L'r';
-        std::wstring rPath = sidDir + L"\\" + rName;
-        if (GetFileAttributesW(rPath.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-
-        std::wstring dest = ToParsingPath(original);
-        if (GetFileAttributesW(dest.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            error = L"还原目标已存在";
-            FindClose(iFind);
-            return false;
-        }
-        if (!MoveFileExW(rPath.c_str(), dest.c_str(), 0)) {
-            error = L"还原失败";
-            FindClose(iFind);
-            return false;
-        }
-        DeleteFileW(iPath.c_str());
-        restored = true;
-        break;
-    } while (FindNextFileW(iFind, &iFd));
-    FindClose(iFind);
-
-    if (!restored) error = L"回收站中未找到该项";
-    return restored;
+    std::wstring index = payload;
+    const size_t slash = index.find_last_of(L"\\/");
+    if (slash == std::wstring::npos || slash + 2 >= index.size()) return false;
+    index[slash + 2] = L'I';
+    std::wstring original;
+    if (!ReadRecycleOriginal(index, original)) {
+        error = L"无法读取所选回收站条目";
+        return false;
+    }
+    const std::wstring dest = ToParsingPath(original);
+    if (!MoveFileExW(payload.c_str(), dest.c_str(), 0)) {
+        error = L"还原失败（目标可能已存在）";
+        return false;
+    }
+    DeleteFileW(index.c_str());
+    return true;
 }
 
 HRESULT ExecuteRestore(const std::vector<std::wstring>& paths, std::wstring& error) {
@@ -461,7 +457,7 @@ HRESULT ExecuteRestore(const std::vector<std::wstring>& paths, std::wstring& err
     size_t ok = 0;
     for (const auto& src : paths) {
         std::wstring one_error;
-        if (RestoreOneFromRecycle(CanonPath(src), one_error)) {
+        if (RestoreOneFromRecycle(src, one_error)) {
             ++ok;
         } else if (error.empty()) {
             error = one_error;

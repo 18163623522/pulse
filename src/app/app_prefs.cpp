@@ -3,9 +3,11 @@
 #include "blank_pane_click.h"
 #include "startup_launch.h"
 #include "default_file_manager.h"
+#include "shell_integration_registry.h"
 #include "session.h"
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
+#include "../common/config_json.h"
 #include "../common/utf8_file.h"
 #include <windows.h>
 #include <shlwapi.h>
@@ -33,16 +35,13 @@ std::wstring ExePath() {
 
 namespace {
 
-void DeleteStoredWallpapers(const std::wstring& dir) {
-    static constexpr const wchar_t* kExt[] = {
-        L".jpg", L".jpeg", L".png", L".bmp", L".webp", L".jfif", L".img"
-    };
-    for (const wchar_t* ext : kExt)
-        DeleteFileW((dir + L"\\wallpaper" + ext).c_str());
-}
-
-bool SamePath(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+bool IsStoredWallpaper(const std::wstring& path, const std::wstring& dir) {
+    const std::wstring prefix = dir + L"\\";
+    if (!path.starts_with(prefix)) return false;
+    const std::wstring name = path.substr(prefix.size());
+    return name.find_first_of(L"\\/") == std::wstring::npos &&
+        (name.starts_with(L"wallpaper.") ||
+         (name.starts_with(L"pwp") && name.find(L".tmp.") != std::wstring::npos));
 }
 
 } // namespace
@@ -51,6 +50,13 @@ void AppPrefs::ResetToDefaults() {
     launch_on_startup = false;
     keep_running_on_close = false;
     open_folders_in_pulse = false;
+    take_over_win_e = false;
+    take_over_this_pc = false;
+    integration_enabled = false;
+    integration_folders = integration_win_e = integration_this_pc = true;
+    integration_configured = false;
+    integration_residual = false;
+    integration_incomplete = false;
     take_over_explorer_windows = false;
     shell_tag_menu = false;
     verify_copies = false;
@@ -116,6 +122,14 @@ std::wstring AppPrefs::ToJson() const {
     out += keep_running_on_close ? L"true" : L"false";
     out += L",\n  \"open_folders_in_pulse\":";
     out += open_folders_in_pulse ? L"true" : L"false";
+    out += L",\n  \"integration_enabled\":";
+    out += integration_enabled ? L"true" : L"false";
+    out += L",\n  \"integration_folders\":";
+    out += integration_folders ? L"true" : L"false";
+    out += L",\n  \"integration_win_e\":";
+    out += integration_win_e ? L"true" : L"false";
+    out += L",\n  \"integration_this_pc\":";
+    out += integration_this_pc ? L"true" : L"false";
     out += L",\n  \"take_over_explorer_windows\":";
     out += take_over_explorer_windows ? L"true" : L"false";
     out += L",\n  \"shell_tag_menu\":";
@@ -253,7 +267,7 @@ std::wstring AppPrefs::ToJson() const {
 }
 
 bool AppPrefs::FromJson(const std::wstring& json) {
-    if (json.empty()) return false;
+    if (!pulse::json::ValidConfigObject(json)) return false;
     folder_views.ReadJson(json);
     folder_sorts.ReadJson(json);
     folder_groups.ReadJson(json);
@@ -261,6 +275,11 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
     take_over_explorer_windows = pulse::json::ExtractBool(json, L"take_over_explorer_windows", false);
+    integration_configured = json.find(L"\"integration_enabled\"") != std::wstring::npos;
+    integration_enabled = pulse::json::ExtractBool(json, L"integration_enabled", false);
+    integration_folders = pulse::json::ExtractBool(json, L"integration_folders", true);
+    integration_win_e = pulse::json::ExtractBool(json, L"integration_win_e", true);
+    integration_this_pc = pulse::json::ExtractBool(json, L"integration_this_pc", true);
     shell_tag_menu = pulse::json::ExtractBool(json, L"shell_tag_menu", false);
     verify_copies = pulse::json::ExtractBool(json, L"verify_copies", false);
     show_status_performance = pulse::json::ExtractBool(json, L"show_status_performance", false);
@@ -366,34 +385,31 @@ bool AppPrefs::FromJson(const std::wstring& json) {
 bool AppPrefs::StoreBackgroundImage(const std::wstring& source_path) {
     if (source_path.empty()) return false;
     const std::wstring dir = GetPulseDataDir();
-    if (dir.empty()) {
-        background_image = source_path;
-        return true;
-    }
+    if (dir.empty() || load_failed) return false;
     const wchar_t* ext = PathFindExtensionW(source_path.c_str());
-    std::wstring dest = dir + L"\\wallpaper";
-    dest += (ext && ext[0]) ? ext : L".img";
-    if (!SamePath(source_path, dest)) {
-        DeleteStoredWallpapers(dir);
-        if (!CopyFileW(source_path.c_str(), dest.c_str(), FALSE)) {
-            background_image = source_path;
-            return true;
-        }
+    wchar_t temporary[MAX_PATH]{};
+    if (!GetTempFileNameW(dir.c_str(), L"pwp", 0, temporary)) return false;
+    const std::wstring staged = temporary;
+    const std::wstring dest = staged + ((ext && ext[0]) ? ext : L".img");
+    if (!CopyFileW(source_path.c_str(), staged.c_str(), FALSE) ||
+        !MoveFileExW(staged.c_str(), dest.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(staged.c_str());
+        return false;
     }
+    const std::wstring previous = background_image;
     background_image = dest;
+    if (!Save()) {
+        background_image = previous;
+        DeleteFileW(dest.c_str());
+        return false;
+    }
+    if (IsStoredWallpaper(previous, dir)) DeleteFileW(previous.c_str());
     return true;
 }
 
 void AppPrefs::ClearBackgroundImage() {
     const std::wstring dir = GetPulseDataDir();
-    if (!dir.empty() && !background_image.empty()) {
-        const std::wstring prefix = dir + L"\\wallpaper";
-        if (background_image.size() >= prefix.size() &&
-            CompareStringOrdinal(background_image.c_str(), static_cast<int>(prefix.size()),
-                                 prefix.c_str(), static_cast<int>(prefix.size()), TRUE) == CSTR_EQUAL) {
-            DeleteFileW(background_image.c_str());
-        }
-    }
+    if (IsStoredWallpaper(background_image, dir)) DeleteFileW(background_image.c_str());
     background_image.clear();
 }
 
@@ -447,234 +463,50 @@ std::wstring FolderOpenCommandLine(const std::wstring& exe) {
 }
 
 bool FolderOpenCommandIsOurs(const std::wstring& command, const std::wstring& exe) {
-    if (command.empty() || exe.empty()) return false;
-    size_t i = 0;
-    while (i < command.size() && iswspace(command[i])) ++i;
-    std::wstring token;
-    if (i < command.size() && command[i] == L'"') {
-        ++i;
-        const size_t start = i;
-        while (i < command.size() && command[i] != L'"') ++i;
-        token = command.substr(start, i - start);
-    } else {
-        const size_t start = i;
-        while (i < command.size() && !iswspace(command[i])) ++i;
-        token = command.substr(start, i - start);
-    }
-    return !token.empty() &&
-           CompareStringOrdinal(token.c_str(), -1, exe.c_str(), -1, TRUE) == CSTR_EQUAL;
+    return ShellCommandTargetsExecutable(command, exe);
 }
-
-namespace {
-
-constexpr const wchar_t* kFolderOpenClasses[] = { L"Directory", L"Drive" };
-
-std::wstring FolderOpenKey(const wchar_t* cls) {
-    return std::wstring(L"Software\\Classes\\") + cls + L"\\shell\\open";
-}
-
-std::wstring FolderShellKey(const wchar_t* cls) {
-    return std::wstring(L"Software\\Classes\\") + cls + L"\\shell";
-}
-
-std::wstring ReadRegDefault(const std::wstring& key) {
-    HKEY h = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS)
-        return {};
-    wchar_t value[1024] = {};
-    DWORD bytes = sizeof(value);
-    DWORD type = 0;
-    const LONG st = RegQueryValueExW(h, nullptr, nullptr, &type,
-                                     reinterpret_cast<LPBYTE>(value), &bytes);
-    RegCloseKey(h);
-    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return {};
-    return value;
-}
-
-bool WriteFolderOpenClass(const wchar_t* cls, const std::wstring& exe) {
-    const std::wstring open = FolderOpenKey(cls);
-    const std::wstring command = open + L"\\command";
-    HKEY h = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, command.c_str(), 0, nullptr, 0,
-                        KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
-        return false;
-    const std::wstring line = FolderOpenCommandLine(exe);
-    const LONG st = RegSetValueExW(h, nullptr, 0, REG_SZ,
-                                   reinterpret_cast<const BYTE*>(line.c_str()),
-                                   static_cast<DWORD>((line.size() + 1) * sizeof(wchar_t)));
-    RegCloseKey(h);
-    if (st != ERROR_SUCCESS) return false;
-    h = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, open.c_str(), 0, nullptr, 0,
-                        KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
-        return false;
-    const wchar_t empty[] = L"";
-    const LONG de = RegSetValueExW(h, L"DelegateExecute", 0, REG_SZ,
-                                   reinterpret_cast<const BYTE*>(empty), sizeof(wchar_t));
-    RegCloseKey(h);
-    if (de != ERROR_SUCCESS) return false;
-
-    // HKLM Directory/Drive shell default is "none", so double-click never uses
-    // the open verb and falls through to Folder → Explorer. Point HKCU at open.
-    h = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, FolderShellKey(cls).c_str(), 0, nullptr, 0,
-                        KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
-        return false;
-    const wchar_t open_verb[] = L"open";
-    const LONG def = RegSetValueExW(h, nullptr, 0, REG_SZ,
-                                    reinterpret_cast<const BYTE*>(open_verb),
-                                    sizeof(open_verb));
-    RegCloseKey(h);
-    return def == ERROR_SUCCESS;
-}
-
-bool ClearFolderOpenClass(const wchar_t* cls, const std::wstring& exe) {
-    const std::wstring command = ReadRegDefault(FolderOpenKey(cls) + L"\\command");
-    if (!command.empty() && !FolderOpenCommandIsOurs(command, exe)) return true;
-    SHDeleteKeyW(HKEY_CURRENT_USER, FolderOpenKey(cls).c_str());
-    const std::wstring shell = FolderShellKey(cls);
-    if (_wcsicmp(ReadRegDefault(shell).c_str(), L"open") == 0) {
-        HKEY h = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, shell.c_str(), 0, KEY_SET_VALUE, &h) == ERROR_SUCCESS) {
-            RegDeleteValueW(h, nullptr);
-            RegCloseKey(h);
-        }
-    }
-    return true;
-}
-
-void NotifyAssocChanged() {
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-}
-
-bool FolderOpenClassIsConfigured(const wchar_t* cls, const std::wstring& exe) {
-    const std::wstring command = ReadRegDefault(FolderOpenKey(cls) + L"\\command");
-    if (!FolderOpenCommandIsOurs(command, exe)) return false;
-    // Keep the repair path for older installs that wrote the command but left
-    // the class default verb as "none" (the HKLM default).
-    return _wcsicmp(ReadRegDefault(FolderShellKey(cls)).c_str(), L"open") == 0;
-}
-
-bool FolderOpenClassNeedsClear(const wchar_t* cls, const std::wstring& exe) {
-    const std::wstring command = ReadRegDefault(FolderOpenKey(cls) + L"\\command");
-    if (!command.empty()) return FolderOpenCommandIsOurs(command, exe);
-    // A previous cleanup or an interrupted registration can leave only the
-    // HKCU shell default behind; ClearFolderOpenClass removes that residue.
-    return _wcsicmp(ReadRegDefault(FolderShellKey(cls)).c_str(), L"open") == 0;
-}
-
-} // namespace
 
 bool AppPrefs::ReadFolderOpen() const {
+    return ReadShellIntegration(ShellIntegrationKind::Folders, ExePath());
+}
+
+bool AppPrefs::ReadIntegrationResidual() const {
     const std::wstring exe = ExePath();
-    if (exe.empty()) return false;
-    const std::wstring command =
-        ReadRegDefault(FolderOpenKey(L"Directory") + L"\\command");
-    return FolderOpenCommandIsOurs(command, exe);
+    return HasShellIntegrationOwnership(ShellIntegrationKind::Folders, exe) ||
+           HasShellIntegrationOwnership(ShellIntegrationKind::WinE, exe) ||
+           HasShellIntegrationOwnership(ShellIntegrationKind::ThisPc, exe);
+}
+
+bool AppPrefs::ReadIntegrationIncomplete() const {
+    const std::wstring exe = ExePath();
+    for (const auto kind : {ShellIntegrationKind::Folders, ShellIntegrationKind::WinE, ShellIntegrationKind::ThisPc})
+        if (HasShellIntegrationOwnership(kind, exe) && !ReadShellIntegration(kind, exe)) return true;
+    return false;
 }
 
 bool AppPrefs::ApplyFolderOpen(bool on) {
-    open_folders_in_pulse = on;
-    if (!persist) return true;
-    const std::wstring exe = ExePath();
-    if (exe.empty()) return false;
-    bool ok = true;
-    bool changed = false;
-    for (const wchar_t* cls : kFolderOpenClasses) {
-        if (on) {
-            // Load() calls this to repair old registrations. Avoid rewriting
-            // an already-correct association and rebroadcasting a global
-            // Explorer refresh every time Pulse is launched by the shell.
-            if (!FolderOpenClassIsConfigured(cls, exe)) {
-                changed = true;
-                ok = WriteFolderOpenClass(cls, exe) && ok;
-            }
-        } else {
-            if (FolderOpenClassNeedsClear(cls, exe)) {
-                changed = true;
-                ok = ClearFolderOpenClass(cls, exe) && ok;
-            }
-        }
-    }
-    if (changed) NotifyAssocChanged();
-    return ok;
+    if (!persist) { open_folders_in_pulse = on; return true; }
+    const bool ok = ApplyShellIntegration(ShellIntegrationKind::Folders, ExePath(), on);
+    open_folders_in_pulse = ReadFolderOpen();
+    integration_residual = ReadIntegrationResidual();
+    integration_incomplete = ReadIntegrationIncomplete();
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return ok && open_folders_in_pulse == on;
 }
-
-namespace {
-constexpr wchar_t kWinEVerbKey[] =
-    L"Software\\Classes\\CLSID\\{52205fd8-5dfb-447d-801a-d0b52f2e83e1}\\shell\\opennewwindow";
-constexpr wchar_t kWinEBackupValue[] = L"PulseBackup";
-
-bool SetRegString(HKEY key, const wchar_t* name, const std::wstring& value) {
-    return RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
-                          static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
-}
-
-std::wstring ReadRegString(const std::wstring& path, const wchar_t* name) {
-    HKEY h = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE, &h) != ERROR_SUCCESS)
-        return {};
-    wchar_t value[2048]{};
-    DWORD bytes = sizeof(value) - sizeof(wchar_t);
-    DWORD type = 0;
-    const LONG st = RegQueryValueExW(h, name, nullptr, &type, reinterpret_cast<LPBYTE>(value), &bytes);
-    RegCloseKey(h);
-    if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return {};
-    return value;
-}
-} // namespace
 
 bool AppPrefs::ReadWinE() const {
-    const std::wstring exe = ExePath();
-    if (exe.empty()) return false;
-    const std::wstring command = std::wstring(kWinEVerbKey) + L"\\command";
-    return FolderOpenCommandIsOurs(ReadRegString(command, nullptr), exe);
+    return ReadShellIntegration(ShellIntegrationKind::WinE, ExePath());
 }
 
 bool AppPrefs::ApplyWinE(bool on) {
-    take_over_win_e = on;
-    if (!persist) return true;
-    const std::wstring exe = ExePath();
-    if (exe.empty()) return false;
-    const std::wstring verb = kWinEVerbKey;
-    const std::wstring command_key = verb + L"\\command";
-    const std::wstring current = ReadRegString(command_key, nullptr);
-    const bool ours = FolderOpenCommandIsOurs(current, exe);
-    if (on) {
-        // No arguments: the single-instance forwarder just brings Pulse up.
-        const std::wstring line = L"\"" + exe + L"\"";
-        if (ours && current == line) return true;
-        HKEY h = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, command_key.c_str(), 0, nullptr, 0,
-                            KEY_SET_VALUE, nullptr, &h, nullptr) != ERROR_SUCCESS)
-            return false;
-        bool ok = true;
-        if (!current.empty() && !ours) ok = SetRegString(h, kWinEBackupValue, current) && ok;
-        ok = SetRegString(h, nullptr, line) && ok;
-        // Empty DelegateExecute makes the shell run the command line.
-        ok = SetRegString(h, L"DelegateExecute", L"") && ok;
-        RegCloseKey(h);
-        return ok;
-    }
-    if (!ours) return true;   // someone else's command (or none): leave it alone
-    const std::wstring backup = ReadRegString(command_key, kWinEBackupValue);
-    if (!backup.empty()) {
-        HKEY h = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, command_key.c_str(), 0, KEY_SET_VALUE, &h) != ERROR_SUCCESS)
-            return false;
-        const bool ok = SetRegString(h, nullptr, backup);
-        RegDeleteValueW(h, kWinEBackupValue);
-        RegCloseKey(h);
-        return ok;
-    }
-    SHDeleteKeyW(HKEY_CURRENT_USER, verb.c_str());
-    // Drop the now-empty parents so Explorer falls back to its HKLM defaults.
-    const std::wstring shell = verb.substr(0, verb.rfind(L'\\'));
-    SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.c_str());
-    SHDeleteEmptyKeyW(HKEY_CURRENT_USER, shell.substr(0, shell.rfind(L'\\')).c_str());
-    return true;
+    if (!persist) { take_over_win_e = on; return true; }
+    const bool ok = ApplyShellIntegration(ShellIntegrationKind::WinE, ExePath(), on);
+    take_over_win_e = ReadWinE();
+    integration_residual = ReadIntegrationResidual();
+    integration_incomplete = ReadIntegrationIncomplete();
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return ok && take_over_win_e == on;
 }
-
 int MenuRowHeightDip(int list_row_height) noexcept {
     return std::clamp(list_row_height + 2, 28, 40);
 }
@@ -694,6 +526,27 @@ bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept {
     return true;
 }
 
+void AppPrefs::MigrateIntegration() {
+    if (integration_configured) return;
+    // Legacy registrations can still own an entry without satisfying the new
+    // complete-value checks. Preserve that selected scope for repair.
+    const std::wstring exe = integration_residual ? ExePath() : std::wstring();
+    const bool folders = open_folders_in_pulse || (integration_residual &&
+        HasShellIntegrationOwnership(ShellIntegrationKind::Folders, exe));
+    const bool win_e = take_over_win_e || (integration_residual &&
+        HasShellIntegrationOwnership(ShellIntegrationKind::WinE, exe));
+    const bool this_pc = take_over_this_pc || (integration_residual &&
+        HasShellIntegrationOwnership(ShellIntegrationKind::ThisPc, exe));
+    const bool registered = folders || win_e || this_pc;
+    integration_enabled = registered || take_over_explorer_windows;
+    if (registered || take_over_explorer_windows) {
+        integration_folders = folders;
+        integration_win_e = win_e;
+        integration_this_pc = this_pc;
+    }
+    integration_configured = true;
+}
+
 bool AppPrefs::Load() {
     const std::wstring dir = GetPulseDataDir();
     if (dir.empty()) {
@@ -701,13 +554,23 @@ bool AppPrefs::Load() {
         open_folders_in_pulse = ReadFolderOpen();
         take_over_win_e = ReadWinE();
         take_over_this_pc = ReadThisPcOpen(ExePath());
+        integration_residual = ReadIntegrationResidual();
+        integration_incomplete = ReadIntegrationIncomplete();
+        MigrateIntegration();
         return false;
     }
     std::wstring json;
-    if (ReadUtf8File(dir + L"\\app.json", json) && !json.empty()) {
-        had_file = true;
-        FromJson(json);
+    const std::wstring file = dir + L"\\app.json";
+    const DWORD attributes = GetFileAttributesW(file.c_str());
+    const DWORD attribute_error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    const bool missing = attributes == INVALID_FILE_ATTRIBUTES &&
+        (attribute_error == ERROR_FILE_NOT_FOUND || attribute_error == ERROR_PATH_NOT_FOUND);
+    if (!missing && (!ReadUtf8File(file, json) || !FromJson(json))) {
+        load_failed = true;
+        return false;
     }
+    load_failed = false;
+    had_file = !missing;
     launch_on_startup = ReadLaunchOnStartup();
     open_folders_in_pulse = ReadFolderOpen();
     take_over_win_e = ReadWinE();
@@ -715,14 +578,15 @@ bool AppPrefs::Load() {
     if (persist && launch_on_startup && StartupCommandNeedsRepair(ReadRunCommand(), ExePath()))
         ApplyLaunchOnStartup(true);
     take_over_this_pc = ReadThisPcOpen(ExePath());
-    // Repair older installs that wrote open\command but left shell default as none.
-    if (persist && open_folders_in_pulse)
-        ApplyFolderOpen(true);
+    integration_residual = ReadIntegrationResidual();
+    integration_incomplete = ReadIntegrationIncomplete();
+    MigrateIntegration();
     return true;
 }
 
 bool AppPrefs::Save() const {
     if (!persist) return true;
+    if (load_failed) return false;
     const std::wstring dir = GetPulseDataDir();
     if (dir.empty()) return false;
     return WriteUtf8FileAtomic(dir + L"\\app.json", ToJson());

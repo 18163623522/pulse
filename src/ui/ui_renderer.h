@@ -675,6 +675,15 @@ struct WindowViewModel {
     // 设为默认文件管理器: 0 off, 1 partial, 2 full; the text lists what is missing.
     int settings_default_manager = 0;
     std::wstring settings_default_manager_desc;
+    bool settings_integration_enabled = false;
+    bool settings_integration_folders = false;
+    bool settings_integration_win_e = false;
+    bool settings_integration_this_pc = false;
+    bool settings_integration_experimental = false;
+    int settings_integration_state = 0; // 0 off, 1 on, 2 partial, 3 failed
+    std::wstring settings_integration_summary;
+    bool settings_integration_can_retry = false;
+    bool settings_integration_can_restore = false;
     bool settings_shell_tags = false;
     int settings_blank_click_action = 0;   // app/blank_pane_click.h
     bool settings_change_tracking = false;
@@ -826,6 +835,7 @@ struct HitTestResult {
         StatusBarCancelSearch,
         SettingsNav,
         SettingsToggle,
+        SettingsIntegration, // 0 master, 1 folders, 2 Win+E, 3 This PC, 4 experimental, 5 retry, 6 restore
         SettingsGlobalSearchHotkey,
         SettingsChangeDays,
         SettingsRestore,

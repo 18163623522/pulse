@@ -142,6 +142,13 @@ bool KeyExists(const wchar_t* key) {
     return true;
 }
 
+bool SnapshotExists(const wchar_t* group) {
+    const std::wstring key = std::wstring(L"Software\\Pulse\\ShellIntegration\\Backups\\v1\\") + group;
+    DWORD bytes = 0;
+    return RegGetValueW(HKEY_CURRENT_USER, key.c_str(), L"Snapshot", RRF_RT_REG_BINARY,
+        nullptr, nullptr, &bytes) == ERROR_SUCCESS && bytes != 0;
+}
+
 } // namespace takeover_test
 
 bool TestDefaultFileManager() {
@@ -197,6 +204,18 @@ bool TestDefaultFileManager() {
     GetModuleFileNameW(nullptr, module, MAX_PATH);
     const std::wstring exe = module;
     {
+        // Older folder-only registrations may lack values now required for a
+        // complete registration. Migration must retain only that selected scope.
+        Write(L"Software\\Classes\\Directory\\shell\\open\\command", nullptr, FolderOpenCommandLine(exe));
+        Write(L"Software\\Classes\\Directory\\shell", nullptr, L"open");
+        AppPrefs legacy;
+        legacy.Load();
+        passed &= Report("default file manager: incomplete legacy folder scope stays selected",
+            legacy.integration_enabled && legacy.integration_folders && !legacy.integration_win_e &&
+            !legacy.integration_this_pc && legacy.integration_incomplete);
+        RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\Directory");
+    }
+    {
         // Another file manager owns Win+E and This PC beforehand.
         Write(kWinECommand, nullptr, kForeign);
         Write(kThisPcCommand, nullptr, kForeign);
@@ -214,9 +233,7 @@ bool TestDefaultFileManager() {
             Read(kThisPcCommand, nullptr) == L"\"" + exe + L"\" \"" + kThisPcParsingName + L"\"" &&
             Read(kThisPcShell, nullptr) == L"open");
         passed &= Report("default file manager: the other manager's commands are kept as backups",
-            Read(kWinECommand, L"PulseBackup") == kForeign &&
-            Read(kThisPcCommand, L"PulseBackup") == kForeign &&
-            Read(kThisPcShell, L"PulseBackup") == L"openfm");
+            SnapshotExists(L"WinE") && SnapshotExists(L"ThisPc"));
 
         ApplyThisPcOpen(reread, false);
         AppPrefs partial;
@@ -235,9 +252,9 @@ bool TestDefaultFileManager() {
         off.Load();
         passed &= Report("default file manager: turning off restores the other manager's commands",
             removed && DefaultFileManagerState(off) == DefaultManagerState::Off &&
-            Read(kWinECommand, nullptr) == kForeign && Read(kWinECommand, L"PulseBackup") == L"<none>" &&
-            Read(kThisPcCommand, nullptr) == kForeign && Read(kThisPcCommand, L"PulseBackup") == L"<none>" &&
-            Read(kThisPcShell, nullptr) == L"openfm" && Read(kThisPcShell, L"PulseBackup") == L"<none>" &&
+            Read(kWinECommand, nullptr) == kForeign && !SnapshotExists(L"WinE") &&
+            Read(kThisPcCommand, nullptr) == kForeign && !SnapshotExists(L"ThisPc") &&
+            Read(kThisPcShell, nullptr) == L"openfm" &&
             Read(kThisPcCommand, L"DelegateExecute") == L"<none>" &&
             !KeyExists(L"Software\\Classes\\Directory\\shell\\open"));
 
@@ -254,12 +271,12 @@ bool TestDefaultFileManager() {
         AppPrefs prefs;
         prefs.Load();
         const bool on = ApplyThisPcOpen(prefs, true) && Read(kThisPcCommand, L"DelegateExecute").empty() &&
-            Read(kThisPcCommand, L"PulseBackupDelegateExecute") == kForeignDelegate;
+            SnapshotExists(L"ThisPc");
         const bool off = ApplyThisPcOpen(prefs, false);
         passed &= Report("default file manager: turning off restores the other manager's DelegateExecute",
             on && off && Read(kThisPcCommand, nullptr) == kForeign &&
             Read(kThisPcCommand, L"DelegateExecute") == kForeignDelegate &&
-            Read(kThisPcCommand, L"PulseBackupDelegateExecute") == L"<none>");
+            !SnapshotExists(L"ThisPc"));
     }
     {
         // Clean machine: on then off leaves no This PC / Win+E keys behind.
@@ -449,6 +466,71 @@ bool TestThisPc() {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring(argv[1]) == L"--default-manager") {
+        pulse::l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
+        return TestDefaultFileManager() ? 0 : 1;
+    }
+    if (argc == 2 && std::wstring(argv[1]) == L"--integration-settings") {
+        using namespace pulse::app;
+        AppPrefs prefs;
+        prefs.persist = false;
+        ContextMenuPrefs context;
+        context.persist = false;
+        pulse::index::IndexClient index;
+        pulse::index::NetworkAgentClient network;
+        SettingsController settings;
+        settings.BindUi(prefs, context, index, network, {});
+        settings.IntegrationAction(2);
+        bool ok = Report("off master saves scope without changing associations",
+            !prefs.integration_win_e && !prefs.take_over_win_e && !prefs.open_folders_in_pulse);
+        settings.IntegrationAction(4);
+        ok &= Report("experimental choice alone does not enable master",
+            prefs.take_over_explorer_windows && !prefs.integration_enabled && settings.IntegrationState() == 0);
+        settings.IntegrationAction(0);
+        ok &= Report("master applies exactly selected scopes",
+            prefs.open_folders_in_pulse && !prefs.take_over_win_e && prefs.take_over_this_pc &&
+            settings.IntegrationState() == 1);
+        prefs.take_over_win_e = true;
+        ok &= Report("external state mismatch is shown as partial", settings.IntegrationState() == 2);
+        settings.IntegrationAction(5);
+        ok &= Report("retry reconciles selected scopes", !prefs.take_over_win_e && settings.IntegrationState() == 1);
+        prefs.integration_incomplete = true;
+        ok &= Report("incomplete owned association remains visible even outside selected scope",
+            settings.IntegrationState() == 2 && settings.IntegrationCanRestore());
+        prefs.integration_incomplete = false;
+        settings.IntegrationAction(6);
+        ok &= Report("restore disables all mechanisms while preserving scope choices",
+            !prefs.integration_enabled && !prefs.open_folders_in_pulse && !prefs.take_over_win_e &&
+            !prefs.take_over_this_pc && prefs.integration_folders && !prefs.integration_win_e &&
+            prefs.take_over_explorer_windows && settings.IntegrationState() == 0);
+        AppPrefs loaded;
+        loaded.FromJson(prefs.ToJson());
+        loaded.MigrateIntegration();
+        ok &= Report("disabled master and retained choices round trip",
+            loaded.integration_configured && !loaded.integration_enabled && loaded.integration_folders &&
+            !loaded.integration_win_e && loaded.take_over_explorer_windows);
+        loaded.FromJson(L"{}");
+        loaded.take_over_win_e = true;
+        loaded.MigrateIntegration();
+        ok &= Report("legacy partial scope is migrated without adding scopes",
+            loaded.integration_enabled && loaded.integration_win_e && !loaded.integration_folders &&
+            !loaded.integration_this_pc);
+        AppPrefs experimental;
+        experimental.FromJson(L"{\"take_over_explorer_windows\":true}");
+        experimental.MigrateIntegration();
+        ok &= Report("legacy experiment migrates without enabling registry scopes",
+            experimental.integration_enabled && !experimental.integration_folders &&
+            !experimental.integration_win_e && !experimental.integration_this_pc);
+        prefs.persist = true; // This test's GetPulseDataDir is empty; no preferences are written.
+        settings.IntegrationAction(1);
+        ok &= Report("saving failure is visible and retryable",
+            settings.IntegrationState() == 3 && settings.IntegrationCanRetry());
+        prefs.persist = false;
+        settings.IntegrationAction(1);
+        ok &= Report("successful save clears prior save failure while master remains off",
+            settings.IntegrationState() == 0 && !settings.IntegrationCanRetry());
+        return ok ? 0 : 1;
+    }
     if (argc == 2 && std::wstring(argv[1]) == L"--this-pc") return TestThisPc() ? 0 : 1;
     if (argc == 2 && std::wstring(argv[1]) == L"--context-menu-prefs") {
         pulse::app::AppPrefs prefs;

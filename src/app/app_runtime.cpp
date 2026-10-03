@@ -449,6 +449,16 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_default_manager =
                 static_cast<int>(app::DefaultFileManagerState(s.appPrefs));
             vm.settings_default_manager_desc = app::DefaultFileManagerSummary(s.appPrefs);
+            vm.settings_integration_enabled = s.appPrefs.integration_enabled;
+            vm.settings_integration_folders = s.appPrefs.integration_folders;
+            vm.settings_integration_win_e = s.appPrefs.integration_win_e;
+            vm.settings_integration_this_pc = s.appPrefs.integration_this_pc;
+            vm.settings_integration_experimental = s.appPrefs.take_over_explorer_windows;
+            vm.settings_integration_state = s.settings.IntegrationState();
+            vm.settings_integration_summary = s.settings.IntegrationSummary();
+            vm.settings_integration_can_retry = s.settings.IntegrationCanRetry() ||
+                vm.settings_integration_state == 2;
+            vm.settings_integration_can_restore = s.settings.IntegrationCanRestore();
             vm.settings_shell_tags = s.appPrefs.shell_tag_menu;
             vm.settings_blank_click_action = s.appPrefs.blank_click_action;
             vm.settings_change_tracking = s.appPrefs.change_tracking_enabled;

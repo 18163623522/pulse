@@ -1,3 +1,4 @@
+#include <mutex>
 // fs_enum.cpp
 #include "fs_enum.h"
 #include "../common/localization.h"
@@ -106,13 +107,15 @@ static NtCreateFile_t g_NtCreateFile = nullptr;
 static NtQueryDirectoryFile_t g_NtQueryDirectoryFile = nullptr;
 
 static void InitNtApi() {
-    if (g_NtCreateFile) return;
+    static std::once_flag initialized;
+    std::call_once(initialized, [] {
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     if (!ntdll) throw std::runtime_error("ntdll.dll not loaded");
     g_NtCreateFile = reinterpret_cast<NtCreateFile_t>(GetProcAddress(ntdll, "NtCreateFile"));
     g_NtQueryDirectoryFile = reinterpret_cast<NtQueryDirectoryFile_t>(GetProcAddress(ntdll, "NtQueryDirectoryFile"));
     if (!g_NtCreateFile || !g_NtQueryDirectoryFile)
         throw std::runtime_error("NtCreateFile / NtQueryDirectoryFile not found");
+    });
 }
 
 bool IsVirtualPath(const std::wstring& path) {
@@ -212,7 +215,12 @@ static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEn
         e.cloud_recall = (fd.dwFileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
         out.push_back(std::move(e));
     } while (FindNextFileW(h, &fd));
+    const DWORD error = GetLastError();
     FindClose(h);
+    if (error != ERROR_NO_MORE_FILES) {
+        out.clear();
+        throw std::runtime_error("FindNextFileW failed, error=" + std::to_string(error));
+    }
 }
 
 static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& out) {

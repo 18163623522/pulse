@@ -2810,6 +2810,8 @@ bool Engine::CatchUpVolume(VolState& v, bool* changed, bool* structural) {
     if (stream == journal_streams_.end()) { blob.reserve(256 * 1024); buf.resize(256 * 1024); }
     bool ok = true;
     USN last = start_usn;
+    const auto catchup_started = GetTickCount64();
+    constexpr size_t catchup_bytes = 16 * 1024 * 1024;
     if (stream != journal_streams_.end()) ok = stream->second->Take(blob, last);
     else for (;;) {
         if (!running_) { ok = false; break; }
@@ -2835,10 +2837,17 @@ bool Engine::CatchUpVolume(VolState& v, bool* changed, bool* structural) {
         while (p + sizeof(USN_RECORD_COMMON_HEADER) <= end) {
             auto* hdr = reinterpret_cast<USN_RECORD_COMMON_HEADER*>(p);
             if (hdr->RecordLength == 0 || p + hdr->RecordLength > end) break;
+            if (hdr->RecordLength > catchup_bytes - blob.size() ||
+                GetTickCount64() - catchup_started >= 2000) {
+                ok = false;
+                SetLastError(ERROR_BUFFER_OVERFLOW);
+                break;
+            }
             blob.insert(blob.end(), p, p + hdr->RecordLength);
             ++nrec;
             p += hdr->RecordLength;
         }
+        if (!ok) break;
         rud.StartUsn = next;
         last = next;
         if (nrec == 0) break;
@@ -3378,6 +3387,13 @@ void Engine::RecoverFailedVolumes(const std::vector<VolumeInfo>& volumes, ULONGL
                                   const std::function<bool(const VolumeInfo&)>& rebuild) {
     for (const auto& volume : volumes) {
         if (!running_) break;
+        const auto cooldown = volume_recovered_after_.find(volume.id);
+        if (cooldown != volume_recovered_after_.end() && now < cooldown->second) {
+            volume_retry_after_[volume.id] = cooldown->second;
+            journal_streams_.erase(volume.id);
+            SetStatus(volume.mount_point + L" 的变更跟踪暂不可用，稍后重试");
+            continue;
+        }
         auto retry = volume_retry_after_.find(volume.id);
         if (retry != volume_retry_after_.end() && now < retry->second) continue;
         journal_streams_.erase(volume.id);
@@ -3402,6 +3418,7 @@ void Engine::RecoverFailedVolumes(const std::vector<VolumeInfo>& volumes, ULONGL
             continue;
         }
         volume_retry_after_.erase(volume.id);
+        volume_recovered_after_[volume.id] = (std::max)(now, GetTickCount64()) + 60000;
         const auto state = std::find_if(vols_.begin(), vols_.end(), [&](const VolState& value) {
             return NormalizeVolumeId(value.volume_id) == NormalizeVolumeId(volume.id);
         });

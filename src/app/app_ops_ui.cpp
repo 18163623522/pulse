@@ -232,8 +232,13 @@ void DeleteSelected(AppState& s, bool permanent) {
 // Stage 1B-2: built-in Fluent context menu + new-item dropdown.
 void RestoreSelected(AppState& s) {
     app::Tab* tab = ActiveTab(s);
-    if (!tab) return;
-    std::vector<std::wstring> paths = SelectedFullPaths(*tab);
+    if (!tab || !tab->snapshot || !IsRecycleTab(tab)) return;
+    std::vector<std::wstring> paths;
+    for (int index : tab->SelectedIndices()) {
+        if (index < 0 || index >= static_cast<int>(tab->EntryCount())) continue;
+        const auto& path = tab->EntryAt(static_cast<size_t>(index)).recycle_path;
+        if (!path.empty()) paths.push_back(path);
+    }
     if (paths.empty()) return;
     ops::OpRequest req;
     req.type = ops::OpType::RestoreRecycle;
@@ -248,7 +253,7 @@ void RestoreAllRecycle(AppState& s) {
     const size_t count = tab->EntryCount();
     paths.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        std::wstring full = EntryFullPath(*tab, static_cast<int>(i));
+        std::wstring full = tab->EntryAt(i).recycle_path;
         if (!full.empty()) paths.push_back(std::move(full));
     }
     if (paths.empty()) return;

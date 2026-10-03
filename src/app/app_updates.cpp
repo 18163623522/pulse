@@ -1,4 +1,5 @@
 #include "app_updates.h"
+#include "update_shutdown.h"
 #include "app_state.h"
 #include "app_internal.h"
 #include "pulse_version.h"
@@ -24,6 +25,12 @@ void CheckForUpdates(AppState& state) {
         state.next_update_check = GetTickCount64() + kCheckInterval;
         InvalidateRect(state.hwnd, nullptr, FALSE);
     }
+}
+
+bool CloseForUpdate(AppState& state) {
+    const HWND window = state.hwnd;
+    return app::RequestUpdateShutdown(state.ops, state.settings.migration_pending(),
+        [window] { return DestroyWindow(window) != FALSE; }) == app::kUpdateShutdownAccepted;
 }
 
 void TickUpdates(AppState& state, unsigned long long now) {

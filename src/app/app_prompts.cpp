@@ -68,13 +68,18 @@ bool ConfirmDiagnosticsExport(AppState& s, bool& include_service) {
     return true;
 }
 
-bool AskRetryRecovery(AppState& s, size_t count, bool uncertain_destructive) {
+bool AskRetryRecovery(AppState& s, size_t count, bool uncertain_destructive, bool duplicate_cleanup) {
     ui::ConfirmDialogSpec spec;
     spec.title = Text(l10n::StringId::RecoveryTitle);
     wchar_t message[512]{};
     swprintf_s(message, Text(l10n::StringId::RecoveryPromptFormat).c_str(), count);
     spec.message = message;
     if (uncertain_destructive) spec.note = TrimBreaks(Text(l10n::StringId::RecoveryDestructiveWarning));
+    if (duplicate_cleanup) {
+        if (!spec.note.empty()) spec.note += L"\n";
+        spec.note += l10n::Pick(L"重复文件清理不会恢复，请重新扫描。",
+                                L"Duplicate cleanup will not be resumed. Please scan again.");
+    }
     spec.confirm_text = Text(l10n::StringId::RecoveryRetry);
     spec.cancel_text = Text(l10n::StringId::RecoveryDiscard);
     spec.tone = ui::ConfirmTone::Warning;

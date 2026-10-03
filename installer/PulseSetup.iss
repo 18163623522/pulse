@@ -55,10 +55,9 @@ Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=src\app\pulse.ico
-; PrepareToInstall stops the service and leftover Pulse hosts before
-; Restart Manager scans. Keep CloseApplications as a fallback prompt if
-; something else still holds a file.
-CloseApplications=yes
+; PrepareToInstall requests an idle, orderly UI exit before stopping hosts.
+; Never let Restart Manager bypass that handshake and close busy windows.
+CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 UninstallDisplayIcon={app}\pulse.exe
@@ -74,6 +73,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 
 [CustomMessages]
+PulseUpdateBusy=Pulse 仍在处理文件或无法安全退出。请等待任务完成并退出所有 Pulse 窗口后重试。 / Pulse is busy or could not exit safely. Finish pending work and close all Pulse windows, then retry.
+chinesetrad.PulseUpdateBusy=Pulse 仍在處理檔案或無法安全結束。請等待工作完成並結束所有 Pulse 視窗後重試。 / Pulse is busy or could not exit safely. Finish pending work and close all Pulse windows, then retry.
+IntegrationRestoreFailed=部分打开命令仍指向 Pulse，卸载后这些入口可能无法打开。请重新安装 Pulse 后在系统集成设置中恢复，或修复 Windows 文件关联。 / Some open commands still point to Pulse. After uninstall they may stop working. Reinstall Pulse to restore integration, or repair Windows file associations.
+IntegrationRestoreIncomplete=Pulse 打开命令已移除，但旧版本没有保留完整的原始关联，无法确认全部恢复。现有第三方设置和备份已保留。 / Pulse open commands were removed, but old versions did not retain complete original associations. Other settings and backups were preserved.
+chinesetrad.IntegrationRestoreFailed=部分開啟命令仍指向 Pulse，解除安裝後這些入口可能無法開啟。請重新安裝 Pulse 後在系統整合設定中還原，或修復 Windows 檔案關聯。 / Some open commands still point to Pulse. After uninstall they may stop working. Reinstall Pulse to restore integration, or repair Windows file associations.
+chinesetrad.IntegrationRestoreIncomplete=Pulse 開啟命令已移除，但舊版沒有保留完整的原始關聯，無法確認全部還原。現有第三方設定與備份已保留。 / Pulse open commands were removed, but old versions did not retain complete original associations. Other settings and backups were preserved.
 ; Unprefixed values are the shared (Simplified + English) texts used by the
 ; chinesesimp and english setups; chinesetrad overrides them.
 TaskIndex=启用全盘文件索引（安装 PulseIndex 后台服务，推荐） / Enable full-disk file index (installs the PulseIndex background service, recommended)
@@ -142,6 +147,7 @@ Source: "{#BuildDir}\Pulse.Index.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\Pulse.Document.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\Pulse.Preview.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\pulse_shell.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\pulse_integration.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 #ifndef AppLocalRuntime
 [InstallDelete]
@@ -168,6 +174,7 @@ Filename: "{app}\pulse.exe"; Parameters: "--seed-shell-verbs"; StatusMsg: "{cm:S
 Filename: "{app}\pulse.exe"; Description: "{cm:LaunchProgram,Pulse}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
+
 ; Runs before files are deleted.
 Filename: "{cmd}"; Parameters: "/c net stop PulseIndex >nul 2>&1 & exit /b 0"; Flags: runhidden waituntilterminated; RunOnceId: "StopPulseIndex"
 Filename: "{app}\Pulse.Index.exe"; Parameters: "--uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemovePulseIndex"
@@ -181,10 +188,10 @@ var
   UpgradeStartupPresent: Boolean;
   UpgradeStartupCommand, UpgradePreviousExe: String;
   UpgradeFolderCommands: array[0..1] of String;
-  UpgradeWinECommand, UpgradeWinEBackup: String;
-  UpgradeThisPcCommand, UpgradeThisPcBackup, UpgradeThisPcVerbBackup: String;
-  UpgradeThisPcDelegateBackup: String;
-  UpgradeThisPcDelegatePresent: Boolean;
+  UpgradeWinECommand: String;
+  UpgradeThisPcCommand: String;
+
+
 
 const
   { Win+E / taskbar File Explorer launch verb (AppPrefs::ApplyWinE). }
@@ -200,53 +207,68 @@ begin
   if Index = 0 then Result := 'Directory' else Result := 'Drive';
 end;
 
+function CommandTargetsExe(Command, Exe: String): Boolean;
+var
+  I: Integer;
+  Token: String;
+begin
+  Command := Trim(Command);
+  Token := '';
+  if Length(Command) = 0 then begin Result := False; Exit; end;
+  if Command[1] = '"' then
+  begin
+    Delete(Command, 1, 1);
+    I := Pos('"', Command);
+    if I = 0 then begin Result := False; Exit; end;
+    Token := Copy(Command, 1, I - 1);
+  end else begin
+    I := 1;
+    while I <= Length(Command) do begin
+      if (Command[I] = ' ') or (Command[I] = #9) then Break;
+      I := I + 1;
+    end;
+    Token := Copy(Command, 1, I - 1);
+  end;
+  Result := CompareText(Token, Exe) = 0;
+end;
+
 procedure CaptureUpgradePrefs(const PreviousExe: String);
 var
   I: Integer;
-  Command, DefaultVerb: String;
+  Command: String;
 begin
   if UpgradePrefsCaptured then Exit;
   UpgradePreviousExe := PreviousExe;
   UpgradeStartupPresent := RegQueryStringValue(HKCU,
     'Software\Microsoft\Windows\CurrentVersion\Run', 'Pulse', UpgradeStartupCommand);
   for I := 0 to 1 do
-  begin
-    Command := '';
-    DefaultVerb := '';
     if RegQueryStringValue(HKCU, 'Software\Classes\' + FolderClass(I) +
-      '\shell\open\command', '', Command) and
-      (Pos(Lowercase(PreviousExe), Lowercase(Command)) > 0) and
-      RegQueryStringValue(HKCU, 'Software\Classes\' + FolderClass(I) +
-        '\shell', '', DefaultVerb) and (CompareText(DefaultVerb, 'open') = 0) then
+      '\shell\open\command', '', Command) and CommandTargetsExe(Command, PreviousExe) then
       UpgradeFolderCommands[I] := Command;
-  end;
-  { The old uninstaller may remove the Win+E override; its registry value is
-    the only record of that setting, so carry it across the upgrade. }
-  Command := '';
   if RegQueryStringValue(HKCU, WinEVerbKey + '\command', '', Command) and
-    (Pos(Lowercase(PreviousExe), Lowercase(Command)) > 0) then
-  begin
-    UpgradeWinECommand := Command;
-    if not RegQueryStringValue(HKCU, WinEVerbKey + '\command', 'PulseBackup',
-      UpgradeWinEBackup) then
-      UpgradeWinEBackup := '';
-  end;
-  { Same for This PC, with the other manager's values Pulse keeps for turn-off. }
-  Command := '';
+    CommandTargetsExe(Command, PreviousExe) then UpgradeWinECommand := Command;
   if RegQueryStringValue(HKCU, ThisPcCommandKey, '', Command) and
-    (Pos(Lowercase(PreviousExe), Lowercase(Command)) > 0) then
-  begin
-    UpgradeThisPcCommand := Command;
-    if not RegQueryStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', UpgradeThisPcBackup) then
-      UpgradeThisPcBackup := '';
-    if not RegQueryStringValue(HKCU, ThisPcShellKey, 'PulseBackup', UpgradeThisPcVerbBackup) then
-      UpgradeThisPcVerbBackup := '';
-    UpgradeThisPcDelegatePresent := RegQueryStringValue(HKCU, ThisPcCommandKey,
-      'PulseBackupDelegateExecute', UpgradeThisPcDelegateBackup);
-  end;
+    CommandTargetsExe(Command, PreviousExe) then UpgradeThisPcCommand := Command;
   UpgradePrefsCaptured := True;
 end;
-
+function PrepareIntegrationUpgrade: Boolean;
+var
+  Params: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  Params := '';
+  if UpgradeFolderCommands[0] <> '' then Params := Params + ' --directory';
+  if UpgradeFolderCommands[1] <> '' then Params := Params + ' --drive';
+  if UpgradeWinECommand <> '' then Params := Params + ' --win-e';
+  if UpgradeThisPcCommand <> '' then Params := Params + ' --this-pc';
+  if Params = '' then Exit;
+  ExtractTemporaryFile('pulse_integration.exe');
+  Result := Exec(ExpandConstant('{tmp}\pulse_integration.exe'),
+    '--prepare-upgrade --exe "' + UpgradePreviousExe + '"' + Params, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  if Result then Result := ResultCode = 0;
+end;
 function UpgradeCommand(Command: String): String;
 var
   P: Integer;
@@ -260,51 +282,36 @@ begin
   Result := Command;
 end;
 
+function ShouldRestoreIntegration: Boolean;
+begin
+  Result := ExpandConstant('{param:PULSEUPGRADE|0}') <> '1';
+end;
+
 procedure RestoreUpgradePrefs;
 var
-  I: Integer;
-  Key: String;
+  Params: String;
+  ResultCode: Integer;
 begin
   if not UpgradePrefsCaptured then Exit;
-  { Restore after file/registry installation, including when the old uninstaller
-    predates this code. Never restore associations to removed files on failure. }
   if UpgradeStartupPresent then
     RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run',
       'Pulse', UpgradeCommand(UpgradeStartupCommand))
   else
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Pulse');
-  for I := 0 to 1 do
-    if UpgradeFolderCommands[I] <> '' then
-    begin
-      Key := 'Software\Classes\' + FolderClass(I) + '\shell';
-      RegWriteStringValue(HKCU, Key + '\open\command', '',
-        UpgradeCommand(UpgradeFolderCommands[I]));
-      RegWriteStringValue(HKCU, Key + '\open', 'DelegateExecute', '');
-      RegWriteStringValue(HKCU, Key, '', 'open');
-    end;
-  if UpgradeWinECommand <> '' then
-  begin
-    RegWriteStringValue(HKCU, WinEVerbKey + '\command', '',
-      UpgradeCommand(UpgradeWinECommand));
-    RegWriteStringValue(HKCU, WinEVerbKey + '\command', 'DelegateExecute', '');
-    if UpgradeWinEBackup <> '' then
-      RegWriteStringValue(HKCU, WinEVerbKey + '\command', 'PulseBackup', UpgradeWinEBackup);
-  end;
-  if UpgradeThisPcCommand <> '' then
-  begin
-    RegWriteStringValue(HKCU, ThisPcCommandKey, '', UpgradeCommand(UpgradeThisPcCommand));
-    RegWriteStringValue(HKCU, ThisPcCommandKey, 'DelegateExecute', '');
-    RegWriteStringValue(HKCU, ThisPcShellKey, '', 'open');
-    if UpgradeThisPcBackup <> '' then
-      RegWriteStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', UpgradeThisPcBackup);
-    if UpgradeThisPcVerbBackup <> '' then
-      RegWriteStringValue(HKCU, ThisPcShellKey, 'PulseBackup', UpgradeThisPcVerbBackup);
-    if UpgradeThisPcDelegatePresent then
-      RegWriteStringValue(HKCU, ThisPcCommandKey, 'PulseBackupDelegateExecute',
-        UpgradeThisPcDelegateBackup);
-  end;
+  Params := '';
+  if UpgradeFolderCommands[0] <> '' then Params := Params + ' --directory';
+  if UpgradeFolderCommands[1] <> '' then Params := Params + ' --drive';
+  if UpgradeWinECommand <> '' then Params := Params + ' --win-e';
+  if UpgradeThisPcCommand <> '' then Params := Params + ' --this-pc';
+  if Params = '' then Exit;
+  Params := Params + ' --upgrade-from "' + UpgradePreviousExe + '" --exe "' +
+    ExpandConstant('{app}\pulse.exe') + '"';
+  if not Exec(ExpandConstant('{app}\pulse_integration.exe'), Params, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+    Log('Could not start integration migration')
+  else if ResultCode <> 0 then
+    Log('Integration migration incomplete; historical backup retained');
 end;
-
 function IsChinese: Boolean;
 begin
   Result := (ActiveLanguage = 'chinesesimp') or (ActiveLanguage = 'chinesetrad');
@@ -535,91 +542,6 @@ begin
   end;
 end;
 
-procedure DeleteFolderOpenOverride(const ClassName: String);
-var
-  Cmd: String;
-  Exe: String;
-  DefaultVerb: String;
-begin
-  Exe := Lowercase(ExpandConstant('{app}\pulse.exe'));
-  if RegQueryStringValue(HKCU,
-    'Software\Classes\' + ClassName + '\shell\open\command', '', Cmd) then
-  begin
-    if Pos(Exe, Lowercase(Cmd)) > 0 then
-      RegDeleteKeyIncludingSubkeys(HKCU,
-        'Software\Classes\' + ClassName + '\shell\open');
-  end;
-  if RegQueryStringValue(HKCU,
-    'Software\Classes\' + ClassName + '\shell', '', DefaultVerb) then
-  begin
-    if CompareText(DefaultVerb, 'open') = 0 then
-      RegDeleteValue(HKCU, 'Software\Classes\' + ClassName + '\shell', '');
-  end;
-end;
-
-{ Win+E: restore the user's earlier custom command, or drop our override so
-  Explorer falls back to its default. Never leave Win+E pointing at a removed
-  pulse.exe. }
-procedure DeleteWinEOverride;
-var
-  Cmd, Backup: String;
-begin
-  if not RegQueryStringValue(HKCU, WinEVerbKey + '\command', '', Cmd) then Exit;
-  if Pos(Lowercase(ExpandConstant('{app}\pulse.exe')), Lowercase(Cmd)) = 0 then Exit;
-  if RegQueryStringValue(HKCU, WinEVerbKey + '\command', 'PulseBackup', Backup) and
-    (Backup <> '') then
-  begin
-    RegWriteStringValue(HKCU, WinEVerbKey + '\command', '', Backup);
-    RegDeleteValue(HKCU, WinEVerbKey + '\command', 'PulseBackup');
-  end else
-  begin
-    RegDeleteKeyIncludingSubkeys(HKCU, WinEVerbKey);
-    RegDeleteKeyIfEmpty(HKCU, WinEClsidKey + '\shell');
-    RegDeleteKeyIfEmpty(HKCU, WinEClsidKey);
-  end;
-end;
-
-{ This PC: put back the file manager Pulse replaced (command line, DelegateExecute
-  and default verb), or drop Pulse's verb so This PC opens in File Explorer again.
-  Mirrors ApplyThisPcOpen(off); never leave This PC pointing at a removed pulse.exe. }
-procedure DeleteThisPcOverride;
-var
-  Cmd, Backup, VerbBackup, DelegateBackup, DefaultVerb: String;
-  HasDelegateBackup: Boolean;
-begin
-  if not RegQueryStringValue(HKCU, ThisPcCommandKey, '', Cmd) then Exit;
-  if Pos(Lowercase(ExpandConstant('{app}\pulse.exe')), Lowercase(Cmd)) = 0 then Exit;
-  if not RegQueryStringValue(HKCU, ThisPcCommandKey, 'PulseBackup', Backup) then
-    Backup := '';
-  HasDelegateBackup := RegQueryStringValue(HKCU, ThisPcCommandKey,
-    'PulseBackupDelegateExecute', DelegateBackup);
-  if (Backup <> '') or HasDelegateBackup then
-  begin
-    if Backup <> '' then
-      RegWriteStringValue(HKCU, ThisPcCommandKey, '', Backup)
-    else
-      RegDeleteValue(HKCU, ThisPcCommandKey, '');
-    RegDeleteValue(HKCU, ThisPcCommandKey, 'PulseBackup');
-    if HasDelegateBackup then
-    begin
-      RegWriteStringValue(HKCU, ThisPcCommandKey, 'DelegateExecute', DelegateBackup);
-      RegDeleteValue(HKCU, ThisPcCommandKey, 'PulseBackupDelegateExecute');
-    end else
-      RegDeleteValue(HKCU, ThisPcCommandKey, 'DelegateExecute');
-  end else
-    RegDeleteKeyIncludingSubkeys(HKCU, ThisPcShellKey + '\open');
-  if RegQueryStringValue(HKCU, ThisPcShellKey, 'PulseBackup', VerbBackup) and
-    (VerbBackup <> '') then
-  begin
-    RegWriteStringValue(HKCU, ThisPcShellKey, '', VerbBackup);
-    RegDeleteValue(HKCU, ThisPcShellKey, 'PulseBackup');
-  end else if (Backup = '') and RegQueryStringValue(HKCU, ThisPcShellKey, '', DefaultVerb) and
-    (CompareText(DefaultVerb, 'open') = 0) then
-    RegDeleteValue(HKCU, ThisPcShellKey, '');
-  RegDeleteKeyIfEmpty(HKCU, ThisPcShellKey);
-  RegDeleteKeyIfEmpty(HKCU, ThisPcClsidKey);
-end;
-
 { File Explorer "Pulse tags" submenu (shell_tag_menu.cpp) and its dot icons.
   Pulse reinstalls it on the next launch after an upgrade (app.json pref). }
 procedure DeleteShellTagMenu;
@@ -630,16 +552,33 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  RestoreResult: Integer;
+  RestoreMessage: String;
 begin
+  if (CurUninstallStep = usUninstall) and ShouldRestoreIntegration then
+  begin
+    RestoreResult := 3;
+    if not Exec(ExpandConstant('{app}\pulse_integration.exe'),
+      '--restore --exe "' + ExpandConstant('{app}\pulse.exe') + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, RestoreResult) then RestoreResult := 3;
+    if RestoreResult <> 0 then
+    begin
+      if RestoreResult = 1 then RestoreMessage := CustomMessage('IntegrationRestoreIncomplete')
+      else RestoreMessage := CustomMessage('IntegrationRestoreFailed');
+      Log(RestoreMessage + ' (result=' + IntToStr(RestoreResult) + ')');
+      SuppressibleMsgBox(RestoreMessage, mbError, MB_OK, IDOK);
+    end;
+  end;
   if CurUninstallStep = usPostUninstall then
   begin
     { Silent removal must clean up too. The upgrading installer saves and
       restores preferences only after the replacement files are installed. }
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Pulse');
-    DeleteFolderOpenOverride('Directory');
-    DeleteFolderOpenOverride('Drive');
-    DeleteWinEOverride;
-    DeleteThisPcOverride;
+
+
+
+
     DeleteShellTagMenu;
     if CleanupUserData then
       CleanupPulseData;
@@ -775,34 +714,87 @@ begin
   { Silent upgrades keep user data; an interactive uninstall still lets the
     user choose cleanup through the checkbox above. }
   CaptureUpgradePrefs(AddBackslash(ExtractFileDir(FileName)) + 'pulse.exe');
+  if not PrepareIntegrationUpgrade then
+  begin
+    Result := CustomMessage('PrevUninstStart');
+    Log('Cannot preserve shell integration backup; previous version was not removed');
+    Exit;
+  end;
   if not Exec(FileName,
-    Trim(Params + ' /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'),
+    Trim(Params + ' /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /PULSEUPGRADE=1'),
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Result := CustomMessage('PrevUninstStart')
   else if ResultCode <> 0 then
     Result := FmtMessage(CustomMessage('PrevUninstFailed'), [IntToStr(ResultCode)]);
 end;
 
+function RegisterPulseShutdownMessage(const Name: String): LongWord;
+  external 'RegisterWindowMessageW@user32.dll stdcall';
+{ Inno Setup 6 executes Pascal Script in its 32-bit Setup.e32 engine even
+  when the bootstrap loader and installed application are 64-bit. }
+function SendPulseShutdownMessage(Window: HWND; Msg: LongWord; WParam, LParam: Longint;
+  Flags, Timeout: LongWord; var Reply: LongWord): LongWord;
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
 function PulseImageRunning(const ImageName: String): Boolean;
 var
   ResultCode: Integer;
+  OutputPath: String;
+  Output: AnsiString;
 begin
-  Result := Exec('cmd.exe',
-    '/C tasklist /FI "IMAGENAME eq ' + ImageName + '" /NH | find /I "' +
-    ImageName + '" >nul',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  { A failed query is not evidence that the process exited. Keep installation
+    blocked unless tasklist completed successfully and its output was read. }
+  Result := True;
+  OutputPath := ExpandConstant('{tmp}\pulse-process-check.txt');
+  if not Exec(ExpandConstant('{cmd}'),
+    '/D /C ""' + ExpandConstant('{sys}\tasklist.exe') + '" /FI "IMAGENAME eq ' +
+    ImageName + '" /FO CSV /NH > "' + OutputPath + '" 2>&1"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then Exit;
+  if ResultCode <> 0 then Exit;
+  if not LoadStringFromFile(OutputPath, Output) then Exit;
+  DeleteFile(OutputPath);
+  if Trim(String(Output)) = '' then Exit;
+  Result := Pos(Lowercase(ImageName), Lowercase(String(Output))) <> 0;
 end;
 
-procedure StopPulseApps;
+function ClosePulseForUpdate: Boolean;
+var
+  Window: HWND;
+  Msg: LongWord;
+  Reply: LongWord;
+  I: Integer;
+begin
+  Result := False;
+  Msg := RegisterPulseShutdownMessage('Pulse.PrepareUpdateShutdown.v1');
+  if Msg = 0 then Exit;
+  { Each accepted request destroys that window. A busy/older/unresponsive
+    process blocks installation; never force-terminate the UI or its work. }
+  for I := 1 to 40 do
+  begin
+    Window := FindWindowByClassName('PulseMainWindow');
+    if Window = 0 then Break;
+    Reply := 0;
+    if SendPulseShutdownMessage(Window, Msg, 0, 0, 2, 30000, Reply) = 0 then Exit;
+    if Reply <> 1 then Exit;
+  end;
+  { Covers older versions without this window, headless instances and the
+    brief interval between window destruction and process exit. }
+  for I := 1 to 40 do
+  begin
+    if not PulseImageRunning('pulse.exe') then
+    begin
+      Result := True;
+      Exit;
+    end;
+    Sleep(250);
+  end;
+end;
+
+procedure StopPulseHosts;
 var
   ResultCode: Integer;
 begin
-  { Close the UI first so it cannot relaunch Pulse.Index.exe --network-agent. }
-  { An in-app update launches Setup as a descendant of pulse.exe. Killing
-    the UI's process tree would also terminate this installer. Hosts are
-    stopped explicitly below, so do not use /T for the UI. }
-  Exec('taskkill.exe', '/F /IM pulse.exe', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode);
+  { ClosePulseForUpdate has already confirmed all UI processes have exited. }
   Exec('net.exe', 'stop PulseIndex', '', SW_HIDE, ewWaitUntilTerminated,
     ResultCode);
   Exec('taskkill.exe', '/F /IM Pulse.Index.exe /T', '', SW_HIDE,
@@ -854,12 +846,15 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PreviousUninstallError: String;
 begin
-  { Called before CloseApplications scans. Stopping only the Windows service
-    leaves the user-mode network agent holding Pulse.Index.exe. }
-  StopPulseApps;
+  { Ask every UI process to finish safely before touching hosts or installed
+    files. Stopping only the service leaves the network agent running. }
+  Result := CustomMessage('PulseUpdateBusy');
+  if not ClosePulseForUpdate then Exit;
+  StopPulseHosts;
   WaitUntilPulseIndexGone;
   PreviousUninstallError := UninstallPreviousVersion;
-  StopPulseApps;
+  if not ClosePulseForUpdate then Exit;
+  StopPulseHosts;
   WaitUntilPulseIndexGone;
   WaitUntilPulseIndexServiceGone;
   Result := PreviousUninstallError;

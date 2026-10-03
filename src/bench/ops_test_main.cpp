@@ -5,14 +5,18 @@
 // bench_data/opstest (created/cleaned by this test). Prints one PASS/FAIL
 // line per check; exit code 0 iff all checks pass.
 #include "../ops/ops_manager.h"
+#include "../app/update_shutdown.h"
 #include "../ops/clipboard.h"
 #include "../ipc/shell_client.h"
 #include "../common/localization.h"
+#include "../common/current_user_security.h"
 #include <windows.h>
+#include <winioctl.h>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -61,6 +65,35 @@ void MakeDir(const std::wstring& path) {
     CreateDirectoryW(path.c_str(), nullptr);
 }
 
+bool MakeJunction(const std::wstring& path, const std::wstring& target) {
+    struct JunctionData {
+        DWORD tag;
+        WORD length, reserved;
+        WORD substitute_offset, substitute_length, print_offset, print_length;
+        wchar_t paths[32768];
+    };
+    const std::wstring substitute = L"\\??\\" + target;
+    if (substitute.size() + target.size() + 2 >= 32768) return false;
+    auto data = std::make_unique<JunctionData>();
+    data->tag = IO_REPARSE_TAG_MOUNT_POINT;
+    data->substitute_length = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
+    data->print_offset = static_cast<WORD>(data->substitute_length + sizeof(wchar_t));
+    data->print_length = static_cast<WORD>(target.size() * sizeof(wchar_t));
+    data->length = static_cast<WORD>(8 + data->print_offset + data->print_length + sizeof(wchar_t));
+    memcpy(data->paths, substitute.c_str(), data->substitute_length + sizeof(wchar_t));
+    memcpy(reinterpret_cast<BYTE*>(data->paths) + data->print_offset, target.c_str(), data->print_length + sizeof(wchar_t));
+    if (!CreateDirectoryW(path.c_str(), nullptr)) return false;
+    HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) { RemoveDirectoryW(path.c_str()); return false; }
+    DWORD returned = 0;
+    const bool ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, data.get(),
+        data->length + 8, nullptr, 0, &returned, nullptr) != FALSE;
+    CloseHandle(handle);
+    if (!ok) RemoveDirectoryW(path.c_str());
+    return ok;
+}
+
 uint64_t FileSize(const std::wstring& path) {
     WIN32_FILE_ATTRIBUTE_DATA fad{};
     if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return ~0ull;
@@ -70,6 +103,7 @@ uint64_t FileSize(const std::wstring& path) {
 
 ops::OpsManager g_ops;
 std::atomic<bool> g_pause_when_active{false};
+std::atomic<bool> g_pause_when_verifying{false};
 std::mutex g_status_mutex;
 std::vector<ops::OpStatus> g_status_history;
 
@@ -160,12 +194,193 @@ ops::OpRequest SimpleOp(ops::OpType type, std::initializer_list<const wchar_t*> 
 
 } // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     // Assertions below use the Simplified texts (" - 副本", "已取消"); the
     // English forms are checked separately.
     l10n::SetLanguage(L"zh-CN");
     fprintf(stderr, "[test] start\n");
+
+    if (argc > 1 && std::wstring(argv[1]) == L"--duplicate-cleanup-audit") {
+        const auto base = std::filesystem::path(SandboxRoot()).parent_path();
+        const auto fixture = base / (L"duplicate-cleanup-ops-" + std::to_wstring(GetCurrentProcessId()) +
+                                    L"-" + std::to_wstring(GetTickCount64()));
+        std::error_code error;
+        std::filesystem::create_directories(base, error);
+        const bool created = std::filesystem::create_directory(fixture, error);
+        fwprintf(stderr, L"[duplicate cleanup fixture] %s\n", fixture.c_str());
+        Check(created, L"duplicate cleanup uses an isolated new fixture");
+        if (!created) return 1;
+        const auto candidate = (fixture / L"candidate.txt").wstring();
+        const auto journal = (fixture / L"recovery.json").wstring();
+        const std::string payload = "surviving duplicate";
+        Check(MakeFile(candidate, payload.data(), static_cast<DWORD>(payload.size())),
+              L"duplicate cleanup candidate fixture created");
+        std::wstring portable = candidate;
+        for (auto& ch : portable) if (ch == L'\\') ch = L'/';
+        const int count = WideCharToMultiByte(CP_UTF8, 0, portable.c_str(), static_cast<int>(portable.size()),
+                                             nullptr, 0, nullptr, nullptr);
+        std::string utf8(count, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, portable.c_str(), static_cast<int>(portable.size()),
+                            utf8.data(), count, nullptr, nullptr);
+        const auto json = std::string("{\"schema\":1,\"entries\":[{\"seq\":\"1\",\"type\":2,\"policy\":0,") +
+            "\"duplicate_cleanup\":true,\"sources\":[\"" + utf8 + "\"]}]}";
+        Check(MakeFile(journal, json.data(), static_cast<DWORD>(json.size())), L"duplicate recovery marker fixture created");
+        g_ops.SetJournalPath(journal);
+        const auto recovery = g_ops.PendingRecovery();
+        Check(recovery.entries.size() == 1 && recovery.entries[0].request.duplicate_cleanup,
+              L"recovery retains the duplicate cleanup safety marker");
+        Check(!g_ops.RetryRecovery() && g_ops.PendingRecovery().entries.empty(),
+              L"duplicate cleanup cannot resume without a new scan");
+        g_ops.Start([] {});
+        ops::OpRequest request;
+        request.type = ops::OpType::RecycleDelete;
+        request.sources = {candidate};
+        request.duplicate_cleanup = true;
+        request.duplicate_groups = {{{(fixture / L"missing-keeper.txt").wstring(), payload.size(), 0},
+                                     {{candidate, payload.size(), 0}}}};
+        const auto status = RunOp(request);
+        Check(status.phase == ops::OpPhase::Failed &&
+                  status.last_error.find(L"重新扫描") != std::wstring::npos && Exists(candidate),
+              L"worker rejects stale keeper before invoking Shell deletion");
+        Check(status.completed_ops == 1, L"recovered duplicate cleanup was never enqueued");
+        const auto keeper = (fixture / L"keeper.txt").wstring();
+        Check(MakeFile(keeper, payload.data(), static_cast<DWORD>(payload.size())),
+              L"successful cleanup keeper fixture created");
+        auto snapshot = [](const std::wstring& file) {
+            WIN32_FILE_ATTRIBUTE_DATA data{};
+            Check(GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data) != FALSE,
+                  L"cleanup operation fixture metadata readable");
+            return ops::DuplicateCleanupFile{file,
+                (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow,
+                (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
+                    data.ftLastWriteTime.dwLowDateTime};
+        };
+        const auto expected_hash = FileHash(candidate);
+        request.duplicate_groups = {{snapshot(keeper), {snapshot(candidate)}}};
+        const auto cleaned = RunOp(request);
+        const bool recycled = cleaned.phase == ops::OpPhase::Completed && !Exists(candidate);
+        Check(recycled && Exists(keeper) && FileHash(keeper) == expected_hash,
+              L"guarded Shell cleanup recycles only the extra and preserves keeper content");
+        if (!recycled) fwprintf(stderr, L"[duplicate cleanup] %s\n", cleaned.last_error.c_str());
+        if (recycled) {
+            const auto completed = g_ops.Status().completed_ops;
+            Check(g_ops.CanUndo(), L"isolated duplicate cleanup has its own undo entry");
+            g_ops.Undo();
+            const bool undo_done = WaitOpDone(completed);
+            const auto undo_status = g_ops.Status();
+            const bool restored = undo_done && undo_status.phase == ops::OpPhase::Completed &&
+                      Exists(candidate) && FileHash(candidate) == expected_hash && FileHash(keeper) == expected_hash;
+            Check(restored,
+                  L"undo restores the exact isolated extra without changing the keeper");
+            if (!restored) {
+                const int error_bytes = WideCharToMultiByte(CP_UTF8, 0, undo_status.last_error.c_str(),
+                    static_cast<int>(undo_status.last_error.size()), nullptr, 0, nullptr, nullptr);
+                std::string utf8_error(error_bytes, '\0');
+                WideCharToMultiByte(CP_UTF8, 0, undo_status.last_error.c_str(),
+                    static_cast<int>(undo_status.last_error.size()), utf8_error.data(), error_bytes, nullptr, nullptr);
+                fprintf(stderr, "[duplicate cleanup undo error] %s\n", utf8_error.c_str());
+                fwprintf(stderr, L"[duplicate cleanup undo] done=%d phase=%d error=%s candidate=%s exists=%d hash=%llu expected=%llu keeper_exists=%d keeper_hash=%llu sid=%s\n",
+                    undo_done, static_cast<int>(undo_status.phase), undo_status.last_error.c_str(), candidate.c_str(),
+                    Exists(candidate), FileHash(candidate), expected_hash, Exists(keeper), FileHash(keeper),
+                    CurrentUserSidString().c_str());
+                g_ops.Stop();
+                g_ops.SetJournalPath(L"");
+                return 1;
+            }
+        }
+        g_ops.Stop();
+        g_ops.SetJournalPath(L"");
+        Check(DeleteFileW(candidate.c_str()) != FALSE, L"duplicate worker fixture candidate remains removable");
+        Check(DeleteFileW(keeper.c_str()) != FALSE, L"duplicate worker fixture keeper remains removable");
+        if (Exists(journal)) DeleteFileW(journal.c_str());
+        Check(RemoveDirectoryW(fixture.c_str()) != FALSE, L"duplicate worker fixture cleaned up");
+        wprintf(L"%d passed, %d failed\n", g_pass, g_fail);
+        return g_fail ? 1 : 0;
+    }
+
+    const bool update_shutdown_only = argc > 1 && std::wstring_view(argv[1]) == L"--update-shutdown";
+    if (update_shutdown_only) {
+        {
+            struct WindowFixture { ops::OpsManager operations; bool migration_pending = true; } fixture;
+            WNDCLASSW window_class{};
+            window_class.hInstance = GetModuleHandleW(nullptr);
+            window_class.lpszClassName = L"PulseUpdateShutdownTest";
+            window_class.lpfnWndProc = [](HWND window, UINT message, WPARAM wp, LPARAM lp) -> LRESULT {
+                auto* state = reinterpret_cast<WindowFixture*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+                if (state && message == app::UpdateShutdownMessage()) {
+                    return app::RequestUpdateShutdown(state->operations, state->migration_pending,
+                        [window] { return DestroyWindow(window) != FALSE; });
+                }
+                return DefWindowProcW(window, message, wp, lp);
+            };
+            RegisterClassW(&window_class);
+            const HWND window = CreateWindowExW(0, window_class.lpszClassName, L"", 0, 0, 0, 0, 0,
+                HWND_MESSAGE, nullptr, window_class.hInstance, nullptr);
+            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&fixture));
+            DWORD_PTR reply = 0;
+            Check(window && SendMessageTimeoutW(window, app::UpdateShutdownMessage(), 0, 0,
+                      SMTO_ABORTIFHUNG, 1000, &reply) && reply == app::kUpdateShutdownBusy && IsWindow(window),
+                  L"registered update message reports busy without destroying the isolated window");
+            fixture.migration_pending = false;
+            reply = 0;
+            Check(window && SendMessageTimeoutW(window, app::UpdateShutdownMessage(), 0, 0,
+                      SMTO_ABORTIFHUNG, 1000, &reply) && reply == app::kUpdateShutdownAccepted && !IsWindow(window),
+                  L"registered update message acknowledges a synchronous orderly window close");
+            if (IsWindow(window)) DestroyWindow(window);
+            UnregisterClassW(window_class.lpszClassName, window_class.hInstance);
+        }
+        {
+            ops::OpsManager queued;
+            queued.Submit({});
+            bool closed = false;
+            Check(app::RequestUpdateShutdown(queued, false, [&] { closed = true; return true; }) ==
+                      app::kUpdateShutdownBusy && !closed,
+                  L"update handshake rejects queued operations before status becomes active");
+        }
+        {
+            ops::OpsManager idle;
+            bool closed = false;
+            Check(app::RequestUpdateShutdown(idle, true, [&] { closed = true; return true; }) ==
+                      app::kUpdateShutdownBusy && !closed,
+                  L"index migration blocks update exit");
+            Check(app::RequestUpdateShutdown(idle, false, [&] {
+                      Check(idle.Submit({}) == 0, L"shutdown callback cannot enqueue new work");
+                      return false;
+                  }) == app::kUpdateShutdownBusy,
+                  L"failed window close rejects update installation");
+            Check(app::RequestUpdateShutdown(idle, false, [] { return true; }) ==
+                      app::kUpdateShutdownAccepted,
+                  L"failed close restores admission and allows a later update retry");
+            bool rejected_all = true;
+            for (const auto type : {ops::OpType::Copy, ops::OpType::Move, ops::OpType::RecycleDelete,
+                    ops::OpType::RealDelete, ops::OpType::Rename, ops::OpType::CreateFolder,
+                    ops::OpType::CreateTextFile, ops::OpType::RestoreRecycle, ops::OpType::EmptyRecycle,
+                    ops::OpType::BatchRename}) {
+                ops::OpRequest request;
+                request.type = type;
+                rejected_all &= idle.Submit(std::move(request)) == 0;
+            }
+            Check(rejected_all, L"accepted update exit blocks every file-operation type");
+            idle.CancelUpdatePreparation();
+            Check(idle.Submit({}) != 0, L"cancelled preparation restores normal submissions");
+        }
+        bool atomic_admission = true;
+        for (int i = 0; i < 100; ++i) {
+            ops::OpsManager racing;
+            std::atomic<bool> start{false};
+            uint64_t submitted = 0;
+            std::thread producer([&] {
+                while (!start.load()) std::this_thread::yield();
+                submitted = racing.Submit({});
+            });
+            start = true;
+            const bool accepted = racing.TryPrepareForUpdate();
+            producer.join();
+            atomic_admission &= accepted ? submitted == 0 : submitted != 0;
+        }
+        Check(atomic_admission, L"concurrent submission and update exit cannot both be accepted");
+    }
 
     Check(ops::TerminalCommandLine(L"C:\\A\\B") == L"-d \"C:\\A\\B\"",
           L"terminal command quotes a directory");
@@ -203,6 +418,8 @@ int wmain() {
             std::lock_guard<std::mutex> lock(g_status_mutex);
             g_status_history.push_back(status);
         }
+        if (status.phase == ops::OpPhase::Verifying && g_pause_when_verifying.exchange(false))
+            g_ops.PauseCurrent();
         if (g_pause_when_active.load() && status.active &&
             status.phase == ops::OpPhase::Scanning) {
             g_pause_when_active.store(false);
@@ -211,6 +428,225 @@ int wmain() {
     });
     Sleep(800); // let the ops worker bring up ShellClient before direct IPC calls
     fprintf(stderr, "[test] ops started\n");
+
+    if (update_shutdown_only) {
+        const std::wstring source = srcDir + L"\\update-active.bin";
+        Check(MakePatternFile(source, 8ull * 1024 * 1024), L"create isolated update-operation fixture");
+        g_pause_when_active = true;
+        const auto previous = g_ops.Status().completed_ops;
+        g_ops.Submit(SimpleOp(ops::OpType::Copy, {source.c_str()}, dstDir.c_str()));
+        const auto deadline = GetTickCount64() + 10000;
+        while (GetTickCount64() < deadline && g_ops.Status().phase != ops::OpPhase::Paused) Sleep(1);
+        Check(g_ops.Status().phase == ops::OpPhase::Paused, L"hold an actual transfer active for update handshake");
+        bool closed = false;
+        Check(app::RequestUpdateShutdown(g_ops, false, [&] { closed = true; return true; }) ==
+                  app::kUpdateShutdownBusy && !closed,
+              L"busy update handshake never closes a running transfer");
+        g_ops.CancelCurrent();
+        Check(WaitOpDone(previous), L"cancel isolated transfer normally");
+        bool accepted = false;
+        const auto idle_deadline = GetTickCount64() + 3000;
+        while (!accepted && GetTickCount64() < idle_deadline) {
+            accepted = app::RequestUpdateShutdown(g_ops, false, [] { return true; }) ==
+                       app::kUpdateShutdownAccepted;
+            if (!accepted) Sleep(1);
+        }
+        Check(accepted, L"update retry succeeds after the active transfer has finished");
+        g_ops.CancelUpdatePreparation();
+        g_ops.Stop();
+        wprintf(L"\n== update shutdown tests: %d passed, %d failed ==\n", g_pass, g_fail);
+        return g_fail == 0 ? 0 : 1;
+    }
+
+    if (argc > 1 && (std::wstring(argv[1]) == L"--audit" || std::wstring(argv[1]) == L"--recycle-audit")) {
+        const bool recycle_only = std::wstring(argv[1]) == L"--recycle-audit";
+        if (!recycle_only) {
+            // OPS-01: neither ordinary names nor ancestor names prove ownership.
+            for (bool retry : { false, true }) {
+                const auto dir = root + (retry ? L"\\retry.pulse-copy-parent" : L"\\discard.pulse-backup-parent");
+                MakeDir(dir);
+                const auto keep = dir + L"\\user.pulse-copy-123";
+                MakeDir(keep);
+                MakeFile(keep + L"\\keep.txt", payload, sizeof(payload));
+                const auto journal = root + L"\\recovery.json";
+                auto narrow = [](std::wstring value) {
+                    for (auto& c : value) if (c == L'\\') c = L'/';
+                    const int bytes = WideCharToMultiByte(CP_UTF8, 0, value.c_str(),
+                        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+                    std::string result(bytes, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()),
+                        result.data(), bytes, nullptr, nullptr);
+                    return result;
+                };
+                const auto json = std::string("{\"schema\":1,\"entries\":[{\"seq\":\"1\",\"type\":0,\"policy\":0,\"sources\":[\"")
+                    + narrow(srcDir + L"\\a.txt") + "\"],\"dest\":\"" + narrow(dir) + "\"}]}";
+                g_ops.Stop();
+                MakeFile(journal, json.data(), static_cast<DWORD>(json.size()));
+                g_ops.SetJournalPath(journal);
+                Check(g_ops.PendingRecovery().entries.size() == 1, L"OPS-01 recovery fixture loaded");
+                if (retry) g_ops.RetryRecovery(); else g_ops.DiscardRecovery();
+                const auto before = g_ops.Status().completed_ops;
+                g_ops.Start([] {});
+                RunOp(SimpleOp(ops::OpType::Copy, { (srcDir + L"\\b.txt").c_str() }, dstDir.c_str()));
+                Check(WaitOpDone(before + (retry ? 1 : 0)) && Exists(keep + L"\\keep.txt"),
+                      retry ? L"OPS-01 retry preserves unrelated marked paths" : L"OPS-01 discard preserves unrelated marked paths");
+                DeleteFileW((dstDir + L"\\b.txt").c_str());
+            }
+            g_ops.Stop();
+            g_ops.SetJournalPath(L"");
+            g_ops.Start([] {
+                if (g_ops.Status().phase == ops::OpPhase::Verifying && g_pause_when_verifying.exchange(false))
+                    g_ops.PauseCurrent();
+            });
+            // A hard-link alias exercises the same volume/file identity as a junction alias.
+            const auto alias = dstDir + L"\\a.txt";
+            Check(CreateHardLinkW(alias.c_str(), (srcDir + L"\\a.txt").c_str(), nullptr) != FALSE,
+                  L"OPS-02 create same-object alias");
+            const auto hash = FileHash(alias);
+            auto move = SimpleOp(ops::OpType::Move, { (srcDir + L"\\a.txt").c_str() }, dstDir.c_str());
+            move.collision_policy = ops::CollisionPolicy::Replace;
+            const auto alias_status = RunOp(move);
+            Check(alias_status.last_error.empty() && FileHash(alias) == hash && FileHash(srcDir + L"\\a.txt") == hash,
+                  L"OPS-02 move replace preserves same-object aliases");
+            DeleteFileW(alias.c_str());
+            const auto junction = root + L"\\junction";
+            const bool have_junction = MakeJunction(junction, srcDir);
+            Check(have_junction, L"OPS-02 create controlled directory junction");
+            if (have_junction) {
+                for (bool reverse : { false, true }) {
+                    auto request = SimpleOp(ops::OpType::Move,
+                        { ((reverse ? junction : srcDir) + L"\\a.txt").c_str() },
+                        (reverse ? srcDir : junction).c_str());
+                    request.collision_policy = ops::CollisionPolicy::Replace;
+                    const auto result = RunOp(request);
+                    Check(result.last_error.empty() && FileHash(srcDir + L"\\a.txt") == hash &&
+                          FileHash(junction + L"\\a.txt") == hash,
+                          L"OPS-02 junction move replace preserves the unique file in both directions");
+                }
+                RemoveDirectoryW(junction.c_str());
+            }
+            const auto empty = srcDir + L"\\empty";
+            MakeDir(empty);
+            MakeFile(dstDir + L"\\empty", payload, sizeof(payload));
+            auto skipped = SimpleOp(ops::OpType::Move, { empty.c_str() }, dstDir.c_str());
+            const auto skip_status = RunConflictOp(skipped, ops::ConflictChoice::Skip, true);
+            Check(skip_status.last_error.empty() && Exists(empty), L"OPS-03 skipped empty directory survives move cleanup");
+            const auto skipped_link = srcDir + L"\\skipped-link";
+            const bool have_skipped_link = MakeJunction(skipped_link, empty);
+            Check(have_skipped_link, L"OPS-03 create controlled skipped junction");
+            if (have_skipped_link) {
+                MakeFile(dstDir + L"\\skipped-link", payload, sizeof(payload));
+                const auto link_status = RunConflictOp(SimpleOp(ops::OpType::Move,
+                    { skipped_link.c_str() }, dstDir.c_str()), ops::ConflictChoice::Skip, true);
+                Check(link_status.last_error.empty() && Exists(skipped_link) && Exists(empty),
+                      L"OPS-03 skipped junction and its target survive move cleanup");
+                RemoveDirectoryW(skipped_link.c_str());
+            }
+            for (int no_op_position = 0; no_op_position < 3; ++no_op_position) {
+                const auto stem = L"merge" + std::to_wstring(no_op_position);
+                const auto source = srcDir + L"\\" + stem;
+                const auto target = dstDir + L"\\" + stem;
+                const auto same = dstDir + L"\\noop" + std::to_wstring(no_op_position);
+                const auto extra = srcDir + L"\\extra" + std::to_wstring(no_op_position);
+                MakeDir(source); MakeDir(target); MakeDir(same); MakeDir(extra);
+                MakeFile(source + L"\\new.txt", payload, sizeof(payload));
+                MakeFile(target + L"\\old.txt", payload, sizeof(payload));
+                const auto old_hash = FileHash(target + L"\\old.txt");
+                ops::OpRequest req;
+                req.type = ops::OpType::Move; req.dest_dir = dstDir;
+                req.sources = { source, extra };
+                req.sources.insert(req.sources.begin() + no_op_position, same);
+                const auto status = RunOp(req);
+                auto previous = g_ops.Status().completed_ops;
+                g_ops.Undo();
+                Check(WaitOpDone(previous + 1) && status.last_error.empty(), L"OPS-04 multi-root move and undo complete");
+                // Undo queues more than one operation; wait for its final directory restoration.
+                const auto deadline = GetTickCount64() + 5000;
+                while (!Exists(source + L"\\new.txt") && GetTickCount64() < deadline) Sleep(10);
+                Check(FileHash(target + L"\\old.txt") == old_hash && Exists(source + L"\\new.txt") && !Exists(source + L"\\old.txt"),
+                      L"OPS-04 undo preserves preexisting merge content for every no-op position");
+            }
+        }
+        // OPS-05: recycle only our isolated files, then restore exact versions.
+        const auto versioned = srcDir + L"\\versions.txt";
+        const auto bin = versioned.substr(0, 2) + L"\\$Recycle.Bin\\" + CurrentUserSidString();
+        auto version_paths = [&] {
+            std::vector<std::wstring> result;
+            WIN32_FIND_DATAW data{};
+            HANDLE find = FindFirstFileW((bin + L"\\$I*").c_str(), &data);
+            if (find == INVALID_HANDLE_VALUE) return result;
+            do {
+                const auto index = bin + L"\\" + data.cFileName;
+                HANDLE file = CreateFileW(index.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (file == INVALID_HANDLE_VALUE) continue;
+                std::vector<unsigned char> bytes(65536);
+                DWORD read = 0;
+                const bool ok = ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) != FALSE;
+                CloseHandle(file);
+                if (!ok || read < 30) continue;
+                uint64_t schema = 0; memcpy(&schema, bytes.data(), 8);
+                const size_t offset = schema == 2 ? 28 : 24;
+                const auto text = reinterpret_cast<const wchar_t*>(bytes.data() + offset);
+                const std::wstring original(text, wcsnlen(text, (read - offset) / sizeof(wchar_t)));
+                if (_wcsicmp(original.c_str(), versioned.c_str()) != 0) continue;
+                auto content = index; content[content.find_last_of(L'\\') + 2] = L'R';
+                result.push_back(content);
+            } while (FindNextFileW(find, &data));
+            FindClose(find);
+            return result;
+        };
+        MakeFile(versioned, "first", 5);
+        auto first_status = RunOp(SimpleOp(ops::OpType::RecycleDelete, { versioned.c_str() }));
+        const auto first_versions = version_paths();
+        MakeFile(versioned, "second", 6);
+        auto second_status = RunOp(SimpleOp(ops::OpType::RecycleDelete, { versioned.c_str() }));
+        auto versions = version_paths();
+        if (!first_status.last_error.empty() || !second_status.last_error.empty() || first_versions.size() != 1 || versions.size() != 2) {
+            wprintf(L"OPS-05 diagnostics: first=%s; second=%s; versions=%zu/%zu; bin=%s\n",
+                first_status.last_error.c_str(), second_status.last_error.c_str(),
+                first_versions.size(), versions.size(), bin.c_str());
+        }
+        Check(first_status.last_error.empty() && second_status.last_error.empty() && first_versions.size() == 1 && versions.size() == 2,
+              L"OPS-05 two controlled recycle versions exist");
+        if (first_versions.size() == 1 && versions.size() == 2) {
+            const auto ambiguous = RunOp(SimpleOp(ops::OpType::RestoreRecycle, { versioned.c_str() }));
+            Check(!ambiguous.last_error.empty() && !Exists(versioned) && version_paths().size() == 2,
+                  L"OPS-05 ambiguous legacy identity does not restore a guessed version");
+            for (const auto& selected : versions) {
+                const auto selected_hash = FileHash(selected);
+                const auto restored = RunOp(SimpleOp(ops::OpType::RestoreRecycle, { selected.c_str() }));
+                Check(restored.last_error.empty() && FileHash(versioned) == selected_hash && !Exists(selected),
+                      L"OPS-05 exact selected recycle version restored");
+                DeleteFileW(versioned.c_str());
+            }
+            Check(version_paths().empty(), L"OPS-05 controlled recycle fixtures cleaned");
+        }
+        if (recycle_only) {
+            g_ops.Stop();
+            wprintf(L"Recycle audit: %d passed, %d failed\n", g_pass, g_fail);
+            return g_fail ? 1 : 0;
+        }
+        const auto verify = srcDir + L"\\verify.bin";
+        Check(MakePatternFile(verify, 8 * 1024 * 1024), L"OPS-06 create verification fixture");
+        g_ops.SetVerifyCopies(true);
+        for (bool cancel : { false, true }) {
+            g_pause_when_verifying = true;
+            const auto previous = g_ops.Status().completed_ops;
+            g_ops.Submit(SimpleOp(ops::OpType::Copy, { verify.c_str() }, dstDir.c_str()));
+            const auto deadline = GetTickCount64() + 10000;
+            while (g_ops.Status().phase != ops::OpPhase::Paused && GetTickCount64() < deadline) Sleep(1);
+            Check(g_ops.Status().phase == ops::OpPhase::Paused, L"OPS-06 SHA pause is observable");
+            if (cancel) g_ops.CancelCurrent(); else g_ops.ResumeCurrent();
+            Check(WaitOpDone(previous), cancel ? L"OPS-06 SHA pause cancellation completes" : L"OPS-06 SHA resumes and completes");
+            Check(cancel ? !Exists(dstDir + L"\\verify.bin") : FileHash(verify) == FileHash(dstDir + L"\\verify.bin"),
+                  L"OPS-06 verification outcome preserves data");
+            DeleteFileW((dstDir + L"\\verify.bin").c_str());
+        }
+        g_ops.Stop();
+        wprintf(L"Audit: %d passed, %d failed\n", g_pass, g_fail);
+        return g_fail ? 1 : 0;
+    }
 
     // --- 1. Ping ------------------------------------------------------------
     {

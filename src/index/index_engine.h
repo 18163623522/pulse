@@ -66,6 +66,7 @@ struct SearchResult {
     uint64_t revision = 0;
     std::vector<Hit> hits;
     size_t total = 0;
+    DWORD error = 0;
 };
 
 #pragma pack(push, 1)
@@ -432,6 +433,7 @@ private:
     ULONGLONG last_struct_tick_ = 0;
     ULONGLONG last_delta_flush_tick_ = 0;
     std::unordered_map<std::wstring, ULONGLONG> volume_retry_after_;
+    std::unordered_map<std::wstring, ULONGLONG> volume_recovered_after_;
     FilenameTiming filename_timing_;
 
     struct WalkWatch {

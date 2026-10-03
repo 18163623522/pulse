@@ -199,19 +199,77 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         const I text_render[]={I::TextRenderAuto,I::TextRenderSharp,I::TextRenderSmooth};const int text_render_values[]={0,1,2};
         segmented(lay.text_render_card,lay.text_render_row,text_render,text_render_values,vm.settings_text_render,H::SettingsTextRender,I::SettingsTextRender,I::SettingsTextRenderDesc);
         {
-            // 设为默认文件管理器: on only when every takeover is; the summary
-            // names what File Explorer still opens.
-            const D2D1_RECT_F r=lay.default_manager_row;
-            const bool hovered=IsHovered(vm,H::SettingsToggle,28);
-            if(hovered) {
+            text(l10n::Get(I::SettingsIntegration),lay.integration_section);
+            draw_card(lay.integration_card);
+            const bool master_on=vm.settings_integration_enabled;
+            auto hover_fill=[&](D2D1_RECT_F r) {
                 MakeBrush(dc,theme.fill_hover,brFillHover_);
                 FillRoundedRect(dc,brFillHover_.get(),r.left+2*scale_,r.top+2*scale_,r.right-r.left-4*scale_,r.bottom-r.top-4*scale_,6*scale_);
+            };
+            {
+                const auto r=lay.default_manager_row;
+                fluent::ControlState state{};
+                state.checked=master_on;state.hovered=IsHovered(vm,H::SettingsIntegration,0);
+                if(state.hovered) hover_fill(r);
+                label(r,l10n::Get(I::IntegrationMaster),L"",L"\xEC50",lay.integration_text_right);
+                painter_.DrawWrappedCaption(l10n::Get(I::IntegrationMasterDesc),D2D1::Point2F(r.left+54*scale_,r.top+35*scale_),
+                    (std::max)(40*scale_,lay.integration_text_right-r.left-54*scale_),theme.text_secondary);
+                const auto badge=MakeIntegrationBadge(vm);
+                fluent::BadgeSpec pill{};
+                pill.bounds=lay.integration_badge;pill.text=badge.text;pill.kind=badge.kind;
+                painter_.DrawBadge(pill);
+                painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+16*scale_,r.right-16*scale_,r.top+48*scale_),L"",state);
+                if(lay.integration_bar.bottom<=lay.integration_bar.top) divider(r);
             }
-            label(r,l10n::Get(I::SettingsDefaultManager),vm.settings_default_manager_desc,L"\xEC50",0.0f,
-                r.bottom-r.top>70*scale_ ? 43.0f : 21.0f);
-            fluent::ControlState state{}; state.checked=vm.settings_default_manager==2; state.hovered=hovered;
-            painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+16*scale_,r.right-16*scale_,r.top+48*scale_),L"",state);
-            divider(r);
+            if(lay.integration_bar.bottom>lay.integration_bar.top) {
+                const bool failed=vm.settings_integration_state==3;
+                const auto message=IntegrationProblemMessage(vm);
+                fluent::InfoBarSpec bar{};
+                bar.bounds=lay.integration_bar;
+                bar.title=l10n::Get(failed ? I::IntegrationFailTitle : I::IntegrationDriftTitle);
+                bar.message=message;
+                bar.kind=failed ? fluent::InfoBarKind::Error : fluent::InfoBarKind::Warning;
+                bar.show_close=false;
+                painter_.DrawInfoBar(bar);
+                if(lay.integration_retry.bottom>lay.integration_retry.top)
+                    button(lay.integration_retry,l10n::Get(failed ? I::IntegrationRetry : I::IntegrationReapply),H::SettingsIntegration,5,true);
+                if(lay.integration_restore.bottom>lay.integration_restore.top)
+                    button(lay.integration_restore,l10n::Get(I::IntegrationRestore),H::SettingsIntegration,6);
+            }
+            {
+                const auto r=lay.integration_list_head;
+                painter_.DrawText(l10n::Get(I::IntegrationScope),D2D1::RectF(r.left+54*scale_,r.top+8*scale_,r.right-16*scale_,r.bottom),
+                    compositor_->SmallFormat(),theme.text_secondary);
+            }
+            auto item=[&](D2D1_RECT_F r,I title,I desc,const wchar_t* icon,bool on,int action) {
+                fluent::ControlState state{};
+                state.checked=on;state.hovered=IsHovered(vm,H::SettingsIntegration,action);
+                if(state.hovered) hover_fill(D2D1::RectF(r.left+40*scale_,r.top,r.right-6*scale_,r.bottom));
+                const float x=r.left+54*scale_, text_left=r.left+112*scale_;
+                painter_.DrawCheckBox(D2D1::RectF(x,r.top+11*scale_,x+20*scale_,r.top+31*scale_),L"",state);
+                DrawIconText(x+30*scale_,r.top+11*scale_,20*scale_,20*scale_,icon,L"",theme.text_secondary,master_on ? 0.85f : 0.6f);
+                painter_.DrawText(l10n::Get(title),D2D1::RectF(text_left,r.top+9*scale_,r.right-16*scale_,r.top+31*scale_),
+                    compositor_->TextFormat(),master_on ? theme.text : theme.text_secondary);
+                painter_.DrawWrappedCaption(l10n::Get(desc),D2D1::Point2F(text_left,r.top+31*scale_),
+                    (std::max)(40*scale_,r.right-16*scale_-text_left),theme.text_secondary);
+            };
+            item(lay.startup_row[2],I::IntegrationFolders,I::IntegrationFoldersDesc,L"\xE8B7",vm.settings_integration_folders,1);
+            item(lay.this_pc_row,I::SettingsThisPc,I::SettingsThisPcDesc,L"\xE7F4",vm.settings_integration_this_pc,3);
+            item(lay.win_e_row,I::SettingsWinE,I::SettingsWinEDesc,L"\xE765",vm.settings_integration_win_e,2);
+            item(lay.explorer_windows_row,I::IntegrationExperimental,I::IntegrationExperimentalDesc,L"\xE8A7",vm.settings_integration_experimental,4);
+            for(int i=0;i<4;++i) {
+                fluent::BadgeSpec chip{};
+                chip.bounds=lay.integration_chip[i];chip.text=l10n::Get(kIntegrationChips[i]);
+                chip.kind=i==0 ? fluent::BadgeKind::Warning : fluent::BadgeKind::Neutral;
+                painter_.DrawBadge(chip);
+            }
+            if(lay.integration_hint.bottom>lay.integration_hint.top) {
+                const auto r=lay.integration_hint;
+                divider(D2D1::RectF(r.left,r.top-1,r.right,r.top-1));
+                DrawIconText(r.left+54*scale_,r.top+5*scale_,16*scale_,16*scale_,L"\xE946",L"",theme.text_secondary,0.8f);
+                painter_.DrawWrappedCaption(IntegrationHint(vm),D2D1::Point2F(r.left+78*scale_,r.top+4*scale_),
+                    (std::max)(40*scale_,r.right-16*scale_-r.left-78*scale_),theme.text_secondary);
+            }
         }
         toggle(lay.startup_row[0],I::SettingsLaunch,I::SettingsLaunchDesc,L"\xE7E8",vm.settings_launch_on_startup,1);divider(lay.startup_row[0]);
         toggle(lay.start_in_tray_row,I::SettingsStartInTray,I::SettingsStartInTrayDesc,L"\xE921",vm.settings_start_in_tray,27);divider(lay.start_in_tray_row);
@@ -363,10 +421,6 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
             draw_card(lay.wallpaper_blur_card);slider(lay.wallpaper_blur_card,lay.wallpaper_blur_row,vm.wallpaper_blur,kWallpaperBlurMax,blur_ticks,blurs,H::SettingsWallpaperBlur,I::SettingsWallpaperBlur,I::SettingsWallpaperBlurDesc,L" px");
             const I sizes[]={I::SettingsTraySmall,I::SettingsTrayStandard,I::SettingsTrayLarge};const int icons[]={40,48,56};
             draw_card(lay.tray_icon_card);segmented(lay.tray_icon_card,lay.tray_icon_row,sizes,icons,vm.settings_tray_icon,H::SettingsTrayIcon,I::SettingsTrayIcon,I::SettingsTrayIconDesc);
-            draw_card(lay.startup_row[2]);toggle(lay.startup_row[2],I::SettingsOpenFolders,I::SettingsOpenFoldersDesc,L"\xE8B7",vm.settings_open_folders,3);
-            draw_card(lay.win_e_row);toggle(lay.win_e_row,I::SettingsWinE,I::SettingsWinEDesc,L"\xE765",vm.settings_win_e,20);
-            draw_card(lay.this_pc_row);toggle(lay.this_pc_row,I::SettingsThisPc,I::SettingsThisPcDesc,L"\xE7F4",vm.settings_this_pc,29);
-            draw_card(lay.explorer_windows_row);toggle(lay.explorer_windows_row,I::SettingsExplorerWindows,I::SettingsExplorerWindowsDesc,L"\xE8A7",vm.settings_explorer_windows,30);
             draw_card(lay.shell_tags_row);toggle(lay.shell_tags_row,I::SettingsShellTags,I::SettingsShellTagsDesc,L"\xE8EC",vm.settings_shell_tags,21);
             draw_card(lay.hidden_files_row);toggle(lay.hidden_files_row,I::SettingsShowHidden,I::SettingsShowHiddenDesc,L"\xE890",vm.settings_show_hidden_files,5);
             // Hidden + system entries: File Explorer keeps these behind a second option.

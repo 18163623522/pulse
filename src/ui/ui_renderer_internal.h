@@ -1720,7 +1720,12 @@ struct SettingsLayout {
     D2D1_RECT_F duplicate_options{};
     D2D1_RECT_F section[4]{}, group[3]{}, footer{};
     D2D1_RECT_F theme_row{}, theme_tile[3]{}, effect_choice{}, language_choice{};
-    D2D1_RECT_F performance_row{}, disclosure[3]{}, filename_status{};
+    D2D1_RECT_F performance_row{}, disclosure[4]{}, filename_status{};
+    D2D1_RECT_F integration_card{}, integration_status{}, integration_summary{}, integration_hint{};
+    D2D1_RECT_F integration_retry{}, integration_restore{};
+    D2D1_RECT_F integration_section{}, integration_badge{}, integration_bar{}, integration_list_head{};
+    D2D1_RECT_F integration_chip[4]{};
+    float integration_text_right = 0.0f;
     // General > Quick Look: supported formats card (disclosure[2]).
     D2D1_RECT_F preview_section{}, preview_group{}, preview_formats{};
     D2D1_RECT_F preview_codec_row[kPreviewCodecCount]{}, preview_codec_button[kPreviewCodecCount]{};

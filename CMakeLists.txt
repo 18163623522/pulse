@@ -228,8 +228,12 @@ add_dependencies(pulse_content_search_test pulse_index)
 
 add_executable(pulse_duplicate_scan_test
     src/bench/duplicate_scan_test.cpp
+    src/ops/duplicate_cleanup_guard.cpp
     src/app/duplicate_scan.cpp)
 target_link_libraries(pulse_duplicate_scan_test PRIVATE ole32)
+
+add_executable(pulse_drag_drop_test src/bench/drag_drop_test_main.cpp)
+target_link_libraries(pulse_drag_drop_test PRIVATE ole32 shell32 uuid user32)
 
 add_executable(pulse_saved_search_test
     src/bench/saved_search_test.cpp
@@ -427,6 +431,7 @@ target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mf
 
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp
+    src/ops/duplicate_cleanup_guard.cpp
     src/ops/ops_manager.cpp
     src/ops/file_lock_owner.cpp
     src/ops/clipboard.cpp
@@ -434,11 +439,14 @@ add_executable(pulse_ops_test
 target_link_libraries(pulse_ops_test PRIVATE ole32 shell32 uuid bcrypt pulse_localization)
 
 add_executable(pulse_rename_ops_test src/bench/rename_ops_test.cpp
+    src/app/batch_rename.cpp
+    src/ops/duplicate_cleanup_guard.cpp
     src/ops/ops_manager.cpp src/ops/file_lock_owner.cpp src/ipc/shell_client.cpp)
-target_link_libraries(pulse_rename_ops_test PRIVATE ole32 shell32 uuid bcrypt pulse_localization)
+target_link_libraries(pulse_rename_ops_test PRIVATE ole32 shell32 uuid bcrypt pulse_localization pulse_fs_watch)
 
 # Locked-item lookup (Restart Manager) + end-process-and-retry through OpsManager.
 add_executable(pulse_file_lock_test src/bench/file_lock_owner_test.cpp
+    src/ops/duplicate_cleanup_guard.cpp
     src/ops/file_lock_owner.cpp src/ops/ops_manager.cpp src/ipc/shell_client.cpp)
 target_link_libraries(pulse_file_lock_test PRIVATE ole32 shell32 uuid bcrypt rstrtmgr pulse_localization)
 
@@ -493,6 +501,11 @@ add_executable(pulse_preview_test src/bench/preview_test_main.cpp src/bench/prev
 target_link_libraries(pulse_preview_test PRIVATE ole32 gdi32 gdiplus shlwapi shell32 advapi32 uuid)
 add_dependencies(pulse_preview_test pulse_preview)
 
+add_executable(pulse_preview_regression_test src/bench/preview_regression_test.cpp
+    src/preview_host/doc_payload.cpp src/preview_host/archive_listing.cpp)
+target_link_libraries(pulse_preview_regression_test PRIVATE ole32 shell32 shlwapi)
+add_dependencies(pulse_preview_regression_test pulse_preview)
+
 add_executable(pulse_shell_icons_test src/bench/shell_icons_test.cpp src/ui/shell_icons.cpp)
 target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid)
 
@@ -500,6 +513,20 @@ target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid
 add_executable(pulse_packaged_ctx_test src/bench/packaged_ctx_test.cpp
     src/shell_host/packaged_ctx_handlers.cpp src/ipc/shell_client.cpp)
 target_link_libraries(pulse_packaged_ctx_test PRIVATE ole32 shell32 uuid shlwapi bcrypt pulse_localization)
+
+add_executable(pulse_ctx_handlers_test src/bench/ctx_handlers_test.cpp
+    src/shell_host/ctx_handlers.cpp src/shell_host/packaged_ctx_handlers.cpp)
+target_link_libraries(pulse_ctx_handlers_test PRIVATE ole32 shell32 uuid shlwapi)
+
+add_executable(pulse_integration src/integration_host/main.cpp src/app/shell_integration_registry.cpp)
+target_link_libraries(pulse_integration PRIVATE advapi32 shell32 shlwapi)
+
+add_executable(pulse_open_handoff_test src/bench/open_handoff_test.cpp src/app/single_instance_coordinator.cpp)
+target_link_libraries(pulse_open_handoff_test PRIVATE user32 ole32)
+
+add_executable(pulse_integration_registry_test src/bench/integration_registry_test.cpp
+    src/app/shell_integration_registry.cpp)
+target_link_libraries(pulse_integration_registry_test PRIVATE advapi32 shlwapi)
 
 add_executable(pulse_preview_handler_probe
     src/bench/preview_handler_probe.cpp
@@ -510,6 +537,24 @@ target_link_libraries(pulse_preview_handler_probe PRIVATE
     ole32 shell32 uuid shlwapi oleaut32 d2d1 gdi32 user32)
 
 add_executable(pulse_preview_handler_pan_test src/bench/preview_handler_pan_test.cpp)
+add_executable(pulse_directory_test src/bench/directory_regression_test.cpp)
+add_executable(pulse_network_agent_client_test src/bench/network_agent_client_test.cpp
+    src/index/network_agent_client.cpp)
+target_link_libraries(pulse_network_agent_client_test PRIVATE shell32)
+target_link_libraries(pulse_directory_test PRIVATE pulse_localization user32 shell32 shlwapi netapi32)
+add_executable(pulse_persistence_test src/bench/persistence_regression_test.cpp
+    src/app/app_prefs.cpp src/app/places.cpp src/app/session_tab_model.cpp
+    src/app/tab_group_model.cpp src/app/default_file_manager.cpp
+    src/app/shell_integration_registry.cpp src/app/startup_launch.cpp
+    src/app/folder_view_prefs.cpp src/app/folder_sort_prefs.cpp
+    src/ui/view_layout.cpp src/fs/fs_enum.cpp src/app/entry_group.cpp src/app/tag_ads_sync.cpp)
+target_link_libraries(pulse_persistence_test PRIVATE
+    user32 shell32 ole32 uuid advapi32 shlwapi netapi32 pulse_localization)
+add_executable(pulse_preview_handler_stale_test src/bench/preview_handler_stale_test.cpp
+    src/ui/preview_handler_host.cpp)
+target_compile_definitions(pulse_preview_handler_stale_test PRIVATE PULSE_PREVIEW_HANDLER_TESTING=1)
+target_link_libraries(pulse_preview_handler_stale_test PRIVATE
+    ole32 shell32 uuid shlwapi oleaut32 d2d1 gdi32 user32)
 target_link_libraries(pulse_preview_handler_pan_test PRIVATE gdi32 user32)
 
 add_executable(pulse_material_test
@@ -539,6 +584,7 @@ add_executable(pulse_app_controllers_test
     src/app/tray_controller.cpp
     src/app/app_prefs.cpp
     src/app/default_file_manager.cpp
+    src/app/shell_integration_registry.cpp
     src/app/shell_window_plan.cpp
     src/app/entry_group.cpp
     src/app/entry_sort.cpp
@@ -561,6 +607,9 @@ target_link_libraries(pulse_app_controllers_test PRIVATE
 # Filename search goes through Pulse.Index.exe (never Engine::Start in the UI).
 if(TARGET pulse AND TARGET pulse_shell)
     add_dependencies(pulse pulse_shell)
+endif()
+if(TARGET pulse AND TARGET pulse_integration)
+    add_dependencies(pulse pulse_integration)
 endif()
 if(TARGET pulse AND TARGET pulse_preview)
     add_dependencies(pulse pulse_preview)
