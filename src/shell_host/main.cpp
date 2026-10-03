@@ -584,6 +584,58 @@ bool ReadRaw(void* out, DWORD size) {
     return PipeRead(g.pipe, static_cast<uint8_t*>(out), size);
 }
 
+// Expected pipe peer, captured before the pipe is created. ui_pid is the pid
+// the UI passed as argv[1] and the one embedded in the pipe name, so a peer
+// reporting a different pid is not the process we were started by.
+struct ExpectedPeer {
+    DWORD pid = 0;
+    std::wstring executable;   // lower-case, empty when it could not be read
+};
+ExpectedPeer g_expected_peer;
+
+std::wstring LowerPath(std::wstring path) {
+    for (auto& c : path) c = static_cast<wchar_t>(std::towlower(c));
+    return path;
+}
+
+// Full path of a process image, or empty when it cannot be queried (a protected
+// or already-exiting process is not necessarily hostile, so callers must treat
+// "unknown" separately from "different").
+std::wstring ProcessImagePath(DWORD pid) {
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+    wchar_t buffer[MAX_PATH * 2]{};
+    DWORD size = ARRAYSIZE(buffer);
+    const BOOL ok = QueryFullProcessImageNameW(process, 0, buffer, &size);
+    CloseHandle(process);
+    return ok && size ? std::wstring(buffer, size) : std::wstring();
+}
+
+// True when the connected pipe peer is the UI process that spawned this host.
+bool ClientIsExpected() {
+    ULONG pid = 0;
+    if (!GetNamedPipeClientProcessId(g.pipe, &pid)) {
+        HostLog(L"Rejected pipe peer: cannot read client pid");
+        return false;
+    }
+    if (pid != g_expected_peer.pid) {
+        wchar_t buf[160];
+        swprintf_s(buf, L"Rejected pipe peer: pid %lu, expected %lu", pid, g_expected_peer.pid);
+        HostLog(buf);
+        return false;
+    }
+    if (g_expected_peer.executable.empty()) return true;   // could not read our own path
+    const std::wstring peer = LowerPath(ProcessImagePath(pid));
+    if (peer.empty()) return true;   // peer already exiting; pid already matched
+    if (peer != g_expected_peer.executable) {
+        wchar_t buf[160];
+        swprintf_s(buf, L"Rejected pipe peer: image '%ls' is not the UI", peer.c_str());
+        HostLog(buf);
+        return false;
+    }
+    return true;
+}
+
 DWORD WINAPI ReaderThread(LPVOID) {
     __try {
         return ReaderThreadImpl();
@@ -613,6 +665,15 @@ DWORD WINAPI ReaderThreadImpl() {
         if (!connected) {
             if (!g.running.load()) break;
             Sleep(200);
+            continue;
+        }
+        // The pipe DACL only proves "same user", which on a shared machine is
+        // every process that user runs. The protocol can delete arbitrary paths
+        // (REQ_REALDELETE), so confirm the peer is the UI process that spawned
+        // us: the pid passed on the command line, running the same executable.
+        if (!ClientIsExpected()) {
+            HostLog(L"Rejected pipe peer: not the spawning UI process");
+            DisconnectNamedPipe(g.pipe);
             continue;
         }
         // Frame loop.
@@ -1371,6 +1432,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         ui_pid = (DWORD)_wtoi(__wargv[1]);
         if (ui_pid == 0) ui_pid = GetCurrentProcessId();
     }
+    // Record who is allowed to drive this host. Querying the image of the
+    // process that passed the pid also covers standalone runs, where that
+    // process is whatever launched us (a test harness, for example).
+    g_expected_peer.pid = ui_pid;
+    g_expected_peer.executable = LowerPath(ProcessImagePath(ui_pid));
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(hr)) return 1;
