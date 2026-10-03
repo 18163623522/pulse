@@ -16,6 +16,7 @@
 #include "../ui/panel_metrics.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
+#include "../app/entry_sort.h"
 
 #include <shlwapi.h>
 #include <cstdio>
@@ -24,6 +25,8 @@
 #include <mutex>
 #include <string>
 #include <chrono>
+#include <algorithm>
+#include <vector>
 #include <thread>
 
 namespace pulse::app {
@@ -376,7 +379,112 @@ bool TestAddressBarCommands() {
 
 } // namespace
 
+// This PC: the view mode is remembered on its own and drives keep letter order.
+bool TestThisPc() {
+    using pulse::ui::SortColumn;
+    using pulse::ui::SortDirection;
+    using pulse::ui::ViewMode;
+    bool passed = true;
+    pulse::app::AppPrefs prefs;
+    prefs.persist = false;
+    passed &= Report("this pc: no saved view until one is chosen",
+        !prefs.folder_views.Find(L""));
+    const bool saved = prefs.folder_views.Set(L"", ViewMode::Tiles);
+    passed &= Report("this pc: tiles are kept apart from folders and virtual views",
+        saved && prefs.folder_views.Find(L"") == ViewMode::Tiles &&
+        !prefs.folder_views.Find(L"C:\\") && !prefs.folder_views.Find(L"pulse:recent") &&
+        !prefs.folder_views.Set(L"", ViewMode::Tiles));
+    prefs.folder_views.ApplyToAll(ViewMode::List);
+    passed &= Report("this pc: apply to all folders leaves This PC alone",
+        prefs.folder_views.Find(L"") == ViewMode::Tiles &&
+        prefs.folder_views.Default() == ViewMode::List);
+    pulse::app::AppPrefs reloaded;
+    reloaded.persist = false;
+    reloaded.FromJson(prefs.ToJson());
+    passed &= Report("this pc: view choice survives a restart",
+        reloaded.folder_views.Find(L"") == ViewMode::Tiles);
+    reloaded.FromJson(L"{\"folder_view_this_pc\":-1}");
+    passed &= Report("this pc: an unset choice stays unset", !reloaded.folder_views.Find(L""));
+
+    // Labels from the reporting machine; sorted as text they read C, G, F, D, E.
+    const wchar_t* labels[] = { L"Win11", L"新加卷", L"资料安装盘", L"项目盘", L"软件池" };
+    std::vector<pulse::fs::DirEntry> drives;
+    for (int i = 4; i >= 0; --i) {
+        const wchar_t letter = static_cast<wchar_t>(L'C' + i);
+        pulse::fs::DirEntry e;
+        e.name = std::wstring(labels[i]) + L" (" + letter + L":)";
+        e.full_path = std::wstring(L"\\\\?\\") + letter + L":\\";
+        e.is_dir = true;
+        e.attrs = FILE_ATTRIBUTE_DIRECTORY;
+        e.drive_type = DRIVE_FIXED;
+        drives.push_back(std::move(e));
+    }
+    drives[1].drive_type = DRIVE_REMOVABLE;  // F: is a different drive kind
+    const auto order = [](std::vector<pulse::fs::DirEntry> entries, SortColumn column,
+                          SortDirection direction) {
+        std::sort(entries.begin(), entries.end(), [&](const auto& a, const auto& b) {
+            return pulse::app::EntryLess(a, b, column, direction,
+                                         pulse::app::FolderSortMode::FoldersFirst);
+        });
+        std::wstring letters;
+        for (const auto& e : entries) letters += e.full_path[4];
+        return letters;
+    };
+    passed &= Report("this pc: name order follows drive letters, not volume labels",
+        order(drives, SortColumn::Name, SortDirection::Asc) == L"CDEFG");
+    passed &= Report("this pc: descending name order reverses the letters",
+        order(drives, SortColumn::Name, SortDirection::Desc) == L"GFEDC");
+    passed &= Report("this pc: equal sizes and dates fall back to letter order",
+        order(drives, SortColumn::Size, SortDirection::Asc) == L"CDEFG" &&
+        order(drives, SortColumn::Mtime, SortDirection::Asc) == L"CDEFG");
+    passed &= Report("this pc: type order groups drive kinds, letters within",
+        order(drives, SortColumn::Type, SortDirection::Asc) == L"FCDEG");
+    std::vector<pulse::fs::DirEntry> plain(2);
+    plain[0].name = L"Zeta (C:)";
+    plain[1].name = L"Alpha (D:)";
+    passed &= Report("this pc: ordinary entries still sort by name",
+        pulse::app::EntryLess(plain[1], plain[0], SortColumn::Name, SortDirection::Asc,
+                              pulse::app::FolderSortMode::FoldersFirst));
+    return passed;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring(argv[1]) == L"--this-pc") return TestThisPc() ? 0 : 1;
+    if (argc == 2 && std::wstring(argv[1]) == L"--context-menu-prefs") {
+        pulse::app::AppPrefs prefs;
+        prefs.persist = false;
+        pulse::app::ContextMenuPrefs context;
+        context.persist = false;
+        context.ResetToDefaults();
+        const auto category = pulse::ipc::CtxMenuCategory::Share;
+        const std::wstring send_key = pulse::ipc::CatalogKey(L"Send to", true);
+        const std::wstring other_key = pulse::ipc::CatalogKey(L"Other sharing action", false);
+        context.RecordSeen(send_key, L"Send to", true, category, true);
+        context.SetItemEnabled(other_key, false);
+        pulse::index::IndexClient index;
+        pulse::index::NetworkAgentClient network;
+        pulse::app::SettingsController settings;
+        settings.BindUi(prefs, context, index, network, {});
+        settings.ToggleUi(100);
+        bool passed = Report("enabling Send to enables Share without enabling disabled siblings",
+            context.share && context.ItemEnabled(send_key, category, true) &&
+            !context.ItemEnabled(other_key, category, true));
+        pulse::app::ContextMenuPrefs loaded;
+        loaded.persist = false;
+        loaded.FromJson(context.ToJson());
+        passed &= Report("linked context menu settings survive serialization",
+            loaded.share && loaded.ItemEnabled(send_key, category, true) &&
+            !loaded.ItemEnabled(other_key, category, true));
+        settings.ToggleUi(100);
+        passed &= Report("disabling Send to preserves the Share group",
+            context.share && !context.ItemEnabled(send_key, category, true));
+        context.RecordSeen(L"test-system", L"System action", false,
+            pulse::ipc::CtxMenuCategory::Rotate, true);
+        settings.ToggleUi(101);
+        passed &= Report("enabling a system item also enables its parent group",
+            context.GroupEnabled(pulse::ipc::CtxMenuGroup::System));
+        return passed ? 0 : 1;
+    }
     if (argc == 2 && std::wstring(argv[1]) == L"--layout-search-prefs") {
         pulse::app::AppPrefs prefs;
         prefs.persist = false;
@@ -1081,6 +1189,7 @@ int wmain(int argc, wchar_t** argv) {
     passed &= TestShellRegistryDebounce();
     passed &= TestDefaultFileManager();
     passed &= TestShellWindowPlan();
+    passed &= TestThisPc();
     passed &= Report("menu row height follows list density (28/34/40 -> 30/36/40, clamped)",
         pulse::app::MenuRowHeightDip(28) == 30 && pulse::app::MenuRowHeightDip(34) == 36 &&
         pulse::app::MenuRowHeightDip(40) == 40 && pulse::app::MenuRowHeightDip(24) == 28 &&

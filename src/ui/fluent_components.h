@@ -423,6 +423,8 @@ public:
     D2D1_RECT_F SidebarItemIconRect(const D2D1_RECT_F& bounds, bool status_dot) const;
     D2D1_RECT_F DriveSidebarItemIconRect(const D2D1_RECT_F& bounds) const;
     void DrawDriveSidebarItem(const DriveSidebarItemSpec& spec);
+    // Drive usage track (sidebar drives, This PC tiles); 90% used turns danger.
+    void DrawCapacityBar(const D2D1_RECT_F& track, float capacity, D2D1_COLOR_F value_color);
     void DrawPaneHeader(const PaneHeaderSpec& spec);
     void DrawColumnHeader(const ColumnHeaderSpec& spec);
     void DrawFileRowContent(const FileRowContentSpec& spec);

@@ -30,6 +30,10 @@ struct DirEntry {
     uint64_t link_target_size = 0;
     FILETIME link_target_mtime{};
     bool link_target_is_dir = false;
+    // "This PC" rows: capacity and bytes available to the user; 0 = unknown
+    // (no media). Read on the worker thread with the rest of the listing.
+    uint64_t drive_total = 0;
+    uint64_t drive_free = 0;
 };
 
 // pulse:tag: / pulse:search: / pulse:workspace: — not filesystem paths.

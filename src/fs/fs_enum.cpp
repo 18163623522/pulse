@@ -342,6 +342,12 @@ static void EnumerateThisPc(std::vector<DirEntry>& out) {
         e.attrs = FILE_ATTRIBUTE_DIRECTORY;
         // Local metadata only (no media access): the UI shows it as the type.
         e.drive_type = static_cast<uint8_t>(GetDriveTypeW(root));
+        // Same figures as the sidebar drive rows; the tile view draws them.
+        ULARGE_INTEGER free_bytes{}, total_bytes{};
+        if (GetDiskFreeSpaceExW(root, &free_bytes, &total_bytes, nullptr)) {
+            e.drive_total = total_bytes.QuadPart;
+            e.drive_free = free_bytes.QuadPart;
+        }
         out.push_back(std::move(e));
     }
 }

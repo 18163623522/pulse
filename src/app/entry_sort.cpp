@@ -36,6 +36,16 @@ int NameCompare(const std::wstring& a, const std::wstring& b) {
     return cmp;
 }
 
+// This PC rows read "Label (C:)"; like File Explorer they stay in drive-letter
+// order instead of following the volume labels.
+int ItemNameCompare(const fs::DirEntry& a, const fs::DirEntry& b) {
+    if (a.drive_type != 0 && b.drive_type != 0) {
+        const int cmp = _wcsicmp(a.full_path.c_str(), b.full_path.c_str());
+        if (cmp != 0) return cmp;
+    }
+    return NameCompare(a.name, b.name);
+}
+
 std::atomic<FolderSortMode> g_folder_sort_mode{FolderSortMode::FoldersFirst};
 
 } // namespace
@@ -71,33 +81,36 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b,
     int cmp = 0;
     switch (col) {
     case ui::SortColumn::Name:
-        cmp = NameCompare(a.name, b.name);
+        cmp = ItemNameCompare(a, b);
         break;
     case ui::SortColumn::Size:
         if (a.size < b.size) cmp = -1;
         else if (a.size > b.size) cmp = 1;
-        else cmp = NameCompare(a.name, b.name);
+        else cmp = ItemNameCompare(a, b);
         break;
     case ui::SortColumn::Mtime:
         cmp = CompareFileTime(&a.mtime, &b.mtime);
-        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        if (cmp == 0) cmp = ItemNameCompare(a, b);
         break;
     case ui::SortColumn::Created:
         cmp = CompareFileTime(&a.ctime, &b.ctime);
-        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        if (cmp == 0) cmp = ItemNameCompare(a, b);
         break;
     case ui::SortColumn::Accessed:
         cmp = CompareFileTime(&a.atime, &b.atime);
-        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        if (cmp == 0) cmp = ItemNameCompare(a, b);
         break;
     case ui::SortColumn::Type: {
-        cmp = ExtensionCompare(a.name, b.name);
-        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        // Drive rows have no extension; their type is the drive kind.
+        cmp = a.drive_type != 0 && b.drive_type != 0
+            ? static_cast<int>(a.drive_type) - static_cast<int>(b.drive_type)
+            : ExtensionCompare(a.name, b.name);
+        if (cmp == 0) cmp = ItemNameCompare(a, b);
         break;
     }
     case ui::SortColumn::Path:
         cmp = _wcsicmp(a.full_path.c_str(), b.full_path.c_str());
-        if (cmp == 0) cmp = NameCompare(a.name, b.name);
+        if (cmp == 0) cmp = ItemNameCompare(a, b);
         break;
     }
     if (dir == ui::SortDirection::Desc) cmp = -cmp;

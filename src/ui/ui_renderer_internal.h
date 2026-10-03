@@ -303,6 +303,17 @@ void ClearTextWidthCache() {
                 penetrated ? fs::StripLnkSuffix(source.name) : source.name, entry.is_dir);
         }
         if (source.drive_type != 0) entry.type_text = DriveTypeText(source.drive_type);
+        if (source.drive_type != 0 && source.drive_total > 0) {
+            const uint64_t free_bytes = std::min(source.drive_free, source.drive_total);
+            entry.drive_used = static_cast<float>(
+                static_cast<double>(source.drive_total - free_bytes) /
+                static_cast<double>(source.drive_total));
+            wchar_t space[128]{};
+            swprintf_s(space, pulse::l10n::Get(pulse::l10n::StringId::PickerDriveFreeFormat).c_str(),
+                       pulse::format::ByteSize(free_bytes).c_str(),
+                       pulse::format::ByteSize(source.drive_total).c_str());
+            entry.drive_space_text = space;
+        }
         entry.record_only = source.change_record_only;
         if (!source.change_type_text.empty()) entry.type_text = source.change_type_text;
         entry.starred = vm.tag_catalog && !entry.path.empty() &&

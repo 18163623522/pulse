@@ -2300,23 +2300,31 @@ void Painter::DrawDriveSidebarItem(const DriveSidebarItemSpec& spec) {
 
     const auto track = D2D1::RectF(text_left, content.bottom - Px(4.0f), content.right,
                                    content.bottom);
-    FillRoundedRect(track, Px(2.0f),
-                    dark_ ? Rgba(0xFFFFFF, 20) : Rgba(0x000000, 18));
-    const float value = Clamp01(spec.capacity);
-    if (value > 0.0f) {
-        auto value_rect = track;
-        value_rect.right = track.left + Width(track) * value;
-        D2D1_COLOR_F value_color = spec.bar_color.a > 0.0f ? spec.bar_color
-                                 : spec.icon_color.a > 0.0f ? spec.icon_color
-                                                            : theme_->accent;
-        if (value >= 0.90f) {
-            value_color = theme_->danger;
-        }
-        FillRoundedRect(value_rect, Px(2.0f), value_color);
-    }
+    DrawCapacityBar(track, spec.capacity,
+                    spec.bar_color.a > 0.0f ? spec.bar_color
+                    : spec.icon_color.a > 0.0f ? spec.icon_color
+                                               : theme_->accent);
     if (spec.state.keyboard_focus) {
         DrawFocusRing(spec.bounds, radius);
     }
+}
+
+void Painter::DrawCapacityBar(const D2D1_RECT_F& track, float capacity, D2D1_COLOR_F value_color) {
+    if (!theme_ || !dc_ || Width(track) <= 0.0f || Height(track) <= 0.0f) {
+        return;
+    }
+    const float radius = Height(track) * 0.5f;
+    FillRoundedRect(track, radius, dark_ ? Rgba(0xFFFFFF, 20) : Rgba(0x000000, 18));
+    const float value = Clamp01(capacity);
+    if (value <= 0.0f) {
+        return;
+    }
+    auto value_rect = track;
+    value_rect.right = track.left + Width(track) * value;
+    if (value >= 0.90f) {
+        value_color = theme_->danger;
+    }
+    FillRoundedRect(value_rect, radius, value_color);
 }
 
 void Painter::DrawPaneHeader(const PaneHeaderSpec& spec) {

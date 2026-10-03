@@ -92,6 +92,9 @@ struct ListEntryView {
     D2D1_COLOR_F tag_dots[3]{};
     int tag_dot_count = 0;
     std::wstring snippet;
+    // This PC tiles: used fraction (-1 = unknown) and "X free of Y".
+    float drive_used = -1.0f;
+    std::wstring drive_space_text;
 };
 
 struct RowPresentationCache {

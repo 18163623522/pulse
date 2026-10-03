@@ -692,7 +692,9 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             else if (app::Tab* t = ActiveTab(*s))
                 RememberPath(*s, t->current_path);
         } else {
-        std::wstring startPath = s->shot.active ? s->shot.path : L"C:\\";
+        // Shots accept the This PC arguments too (GUI checks of the drive view).
+        std::wstring startPath = !s->shot.active ? L"C:\\"
+            : app::IsThisPcArgument(s->shot.path) ? std::wstring() : s->shot.path;
         if (!s->shot.active && !s->session_path.empty()) startPath = s->session_path;
         else if (!s->shot.active && !s->open_path.empty())
             startPath = app::IsThisPcArgument(s->open_path) ? std::wstring()

@@ -2382,6 +2382,16 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                         break;
                     }
                 }
+            } else if (vm.view_mode == ViewMode::Tiles && e.drive_used >= 0.0f) {
+                // This PC tiles, as in File Explorer: usage bar, then free of total.
+                const float textW = std::max(0.0f, nameRc.right - nameRc.left);
+                const float barTop = nameRc.top + 27.0f * scale_;
+                const D2D1_RECT_F bar{ nameRc.left, barTop,
+                    nameRc.left + std::min(textW, 240.0f * scale_), barTop + 6.0f * scale_ };
+                painter_.DrawCapacityBar(bar, e.drive_used, theme.accent);
+                DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->SmallFormat(),
+                    brTextSecondary_.get(), e.drive_space_text,
+                    nameRc.left, bar.bottom + 2.0f * scale_, textW, 20.0f * scale_);
             } else if (vm.view_mode == ViewMode::Tiles || vm.view_mode == ViewMode::Content) {
                 std::wstring meta = !e.snippet.empty() ? e.snippet : e.type_text;
                 if (e.snippet.empty() && !e.size_text.empty())

@@ -2858,16 +2858,20 @@ void TestFolderViews() {
     Check(prefs.folder_views.Find(L"\\\\?\\UNC\\SERVER\\share\\图片\\") == ViewMode::Tiles,
           L"folder views: UNC aliases agree");
     Check(!prefs.folder_views.Set(L"pulse:settings", ViewMode::List) &&
-          !prefs.folder_views.Set(L"", ViewMode::List) &&
           !prefs.folder_views.Set(L"relative", ViewMode::List),
           L"folder views: virtual and nonabsolute paths are not persisted");
+    Check(prefs.folder_views.Set(L"", ViewMode::Tiles) &&
+          prefs.folder_views.Find(L"") == ViewMode::Tiles &&
+          !prefs.folder_views.Find(L"pulse:settings") && !prefs.folder_views.Find(L"relative"),
+          L"folder views: This PC keeps its own choice without leaking into virtual views");
     AppPrefs reloaded;
     reloaded.persist = false;
     reloaded.FromJson(prefs.ToJson());
     Check(reloaded.folder_views.Find(unc) == ViewMode::Tiles &&
           reloaded.folder_views.Find(long_path) == ViewMode::Content &&
-          reloaded.folder_views.Find(L"C:\\Pictures\\Work") == ViewMode::Details,
-          L"folder views: preferences round trip including UNC, Unicode and long paths");
+          reloaded.folder_views.Find(L"C:\\Pictures\\Work") == ViewMode::Details &&
+          reloaded.folder_views.Find(L"") == ViewMode::Tiles,
+          L"folder views: preferences round trip including This PC, UNC, Unicode and long paths");
     for (int i = 0; i < 8; ++i) {
         const auto mode = ui::ViewModeFromIndex(i);
         prefs.folder_views.Set(L"C:\\AllModes", mode);
@@ -2876,9 +2880,11 @@ void TestFolderViews() {
               L"folder views: every display mode survives reload");
     }
     reloaded.FromJson(L"{}");
-    Check(!reloaded.folder_views.Find(unc), L"folder views: old preferences load without stale choices");
+    Check(!reloaded.folder_views.Find(unc) && !reloaded.folder_views.Find(L""),
+          L"folder views: old preferences load without stale choices");
     prefs.ResetToDefaults();
-    Check(!prefs.folder_views.Find(long_path), L"folder views: reset clears saved choices");
+    Check(!prefs.folder_views.Find(long_path) && !prefs.folder_views.Find(L""),
+          L"folder views: reset clears saved choices");
 
     auto state = std::make_unique<AppState>();
     state->places.persist = false;
@@ -2927,6 +2933,29 @@ void TestFolderViews() {
         StartLoadingPath(*state, *tab, parent);
         StartLoadingPath(*state, *tab, parent + L"\\legacy");
         Check(tab->view_mode == ViewMode::Tiles, L"folder views: returning to migrated legacy folder preserves its mode");
+        // This PC: tiles chosen there survive a drive visit, going back and a reload.
+        tab->NavigateTo(L"");
+        StartLoadingPath(*state, *tab, L"");
+        Check(tab->view_mode == ViewMode::Details, L"folder views: This PC starts in the default mode");
+        SetViewMode(*state, ViewMode::Tiles);
+        tab->NavigateTo(parent);
+        StartLoadingPath(*state, *tab, parent);
+        Check(tab->view_mode == ViewMode::LargeIcons,
+              L"folder views: a folder opened from This PC keeps its own mode");
+        StartLoadingPath(*state, *tab, tab->GoBack());
+        Check(tab->current_path.empty() && tab->view_mode == ViewMode::Tiles,
+              L"folder views: going back to This PC keeps tiles");
+        Tab opened_at_this_pc;
+        opened_at_this_pc.NavigateTo(L"");
+        const bool reopen_adds_nothing = !opened_at_this_pc.CanGoBack();
+        opened_at_this_pc.NavigateTo(parent);
+        Check(reopen_adds_nothing && opened_at_this_pc.CanGoBack() &&
+              opened_at_this_pc.GoBack().empty(),
+              L"folder views: a tab opened at This PC can go back to it from a drive");
+        state->appPrefs.FromJson(state->appPrefs.ToJson());
+        StartLoadingPath(*state, *tab, parent);
+        StartLoadingPath(*state, *tab, L"");
+        Check(tab->view_mode == ViewMode::Tiles, L"folder views: This PC mode survives a reload");
         state->shot.active = true;
         tab->view_mode = ViewMode::Content;
         StartLoadingPath(*state, *tab, parent);

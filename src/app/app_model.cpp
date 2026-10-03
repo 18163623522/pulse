@@ -73,7 +73,9 @@ void RestoreHistoryOrigin(Tab& tab, const std::optional<std::wstring>& origin) {
 
 void Tab::NavigateTo(const std::wstring& path) {
     ++view_generation;
-    if (!current_path.empty()) {
+    // This PC is the empty path, yet still a place to come back to; only
+    // reopening This PC from This PC adds no history entry.
+    if (!current_path.empty() || !path.empty()) {
         AlignHistoryOrigins(back_stack, back_search_origins);
         back_stack.push(current_path);
         back_search_origins.push(CurrentSearchOrigin(*this));
