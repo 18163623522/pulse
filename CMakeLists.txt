@@ -533,6 +533,9 @@ target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid
 add_executable(pulse_packaged_ctx_test src/bench/packaged_ctx_test.cpp
     src/shell_host/packaged_ctx_handlers.cpp src/ipc/shell_client.cpp)
 target_link_libraries(pulse_packaged_ctx_test PRIVATE ole32 shell32 uuid shlwapi bcrypt pulse_localization)
+# A context-menu handler that never returns: pulse_shell recycles itself (#65).
+add_executable(pulse_shell_recycle_test src/bench/shell_recycle_test.cpp src/ipc/shell_client.cpp)
+target_link_libraries(pulse_shell_recycle_test PRIVATE ole32 shell32 uuid shlwapi bcrypt pulse_localization)
 
 add_executable(pulse_ctx_handlers_test src/bench/ctx_handlers_test.cpp
     src/shell_host/ctx_handlers.cpp src/shell_host/packaged_ctx_handlers.cpp)
@@ -642,6 +645,7 @@ if(TARGET pulse_ops_test AND TARGET pulse_shell)
     add_dependencies(pulse_rename_ops_test pulse_shell)
     add_dependencies(pulse_file_lock_test pulse_shell)
     add_dependencies(pulse_packaged_ctx_test pulse_shell)
+    add_dependencies(pulse_shell_recycle_test pulse_shell)
 endif()
 
 # Headless modal lifecycle checks: no screenshots and no foreground activation.
