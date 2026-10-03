@@ -153,27 +153,30 @@ D2D1_RECT_F MainRenderer::TitleBarRect(float w) const {
 }
 
 namespace {
-// Width of a toolbar drop-down (icon + label + chevron) sized to its label, so
-// the chevron sits the same 4 DIP after the text on Sort and Group. Layout is
-// queried many times per frame (paint, hit tests), hence the small cache.
-float ToolbarDropDownWidth(const fluent::Painter& painter, IDWriteTextFormat* format,
-                           l10n::StringId id, const wchar_t* glyph, float scale, float fallback_dip) {
+// Width of a toolbar command (icon + label [+ chevron]) sized to its label, so
+// Sort, Filter and Group keep even spacing and each chevron sits 4 DIP after its
+// text. Layout is queried many times per frame (paint, hit tests): small cache.
+float ToolbarCommandWidth(const fluent::Painter& painter, IDWriteTextFormat* format,
+                          l10n::StringId id, const wchar_t* glyph, bool drop_down,
+                          float scale, float fallback_dip) {
     struct Entry { int id = -1; float scale = 0.0f, font = 0.0f; const void* format = nullptr;
                    std::wstring text; float width = 0.0f; };
-    thread_local Entry cache[2];
+    thread_local Entry cache[3];
     const std::wstring text(l10n::Get(id));
     const float font = format ? format->GetFontSize() : 0.0f;
     for (const Entry& e : cache)
         if (e.id == static_cast<int>(id) && e.scale == scale && e.font == font &&
             e.format == format && e.text == text)
             return e.width;
-    const float bare = painter.MeasureButtonWidth(L"", glyph, true);
-    const float full = painter.MeasureButtonWidth(text, glyph, true);
+    const float bare = painter.MeasureButtonWidth(L"", glyph, drop_down);
+    const float full = painter.MeasureButtonWidth(text, glyph, drop_down);
     // No text measurement available (no device yet): keep the fixed width.
     const float width = format && full > bare ? full : fallback_dip * scale;
-    // One slot per button: the first id seen keeps slot 0.
-    Entry& slot = cache[0].id < 0 || cache[0].id == static_cast<int>(id) ? cache[0] : cache[1];
-    slot = {static_cast<int>(id), scale, font, format, text, width};
+    // One slot per button: reuse its slot, else the first free one.
+    Entry* slot = &cache[2];
+    for (Entry& e : cache)
+        if (e.id == static_cast<int>(id) || e.id < 0) { slot = &e; break; }
+    *slot = {static_cast<int>(id), scale, font, format, text, width};
     return width;
 }
 } // namespace
@@ -183,22 +186,26 @@ float MainRenderer::ToolbarGroupWidth(float w) const {
     // Narrow windows: icon only, like Sort and Filter.
     if (w - EffectiveSidebarWidth(w) < 700.0f * scale_) return 32.0f * scale_;
     if (toolbar_group_ > 0) return 212.0f * scale_;
-    return ToolbarDropDownWidth(painter_, compositor_ ? compositor_->TextFormat() : nullptr,
-                                l10n::StringId::ToolbarGroup, L"\xF168", scale_, 108.0f);
+    return ToolbarCommandWidth(painter_, compositor_ ? compositor_->TextFormat() : nullptr,
+                               l10n::StringId::ToolbarGroup, L"\xF168", true, scale_, 108.0f);
 }
 
 ToolbarLayout MainRenderer::ToolbarLayoutAt(float w, float create_width, float filter_expand) const {
     const float left = EffectiveSidebarWidth(w);
     const float group_width = ToolbarGroupWidth(w);
-    const float sort_width = ToolbarDropDownWidth(painter_, compositor_ ? compositor_->TextFormat() : nullptr,
-                                                  l10n::StringId::ToolbarSort, L"\xE8CB", scale_, 88.0f);
+    IDWriteTextFormat* format = compositor_ ? compositor_->TextFormat() : nullptr;
+    const float sort_width = ToolbarCommandWidth(painter_, format, l10n::StringId::ToolbarSort,
+                                                 L"\xE8CB", true, scale_, 88.0f);
+    const float filter_width = ToolbarCommandWidth(painter_, format, l10n::StringId::ToolbarFilter,
+                                                   kIconFilter, false, scale_, 88.0f);
     if (!vertical_tabs_)
         return MakeToolbarLayout(w, scale_, title_bar_height_, margin_, create_width, left, filter_expand,
-                                 search_min_dip_, group_width, sort_width);
+                                 search_min_dip_, group_width, sort_width, filter_width);
     // Command row directly under the title bar; address row centered in it,
     // stopping short of the settings button.
     ToolbarLayout out = MakeToolbarLayout(w, scale_, title_bar_height_ - 46.0f * scale_, margin_,
-                                          create_width, left, filter_expand, 0.0f, group_width, sort_width);
+                                          create_width, left, filter_expand, 0.0f, group_width, sort_width,
+                                          filter_width);
     const TitleChrome chrome = MakeTitleChrome(w, scale_, title_bar_height_);
     const float row_top = (title_bar_height_ - 36.0f * scale_) * 0.5f - 4.0f * scale_;
     const ToolbarLayout row = MakeToolbarLayout(chrome.settings_left - 4.0f * scale_, scale_, row_top,

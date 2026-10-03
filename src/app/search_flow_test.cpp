@@ -692,6 +692,14 @@ int RunToolbarLayoutTest(AppState& s, const wchar_t* output) {
                     const float diff = sort_w > group_w ? sort_w - group_w : group_w - sort_w;
                     check(region(row.group) == ui::HitTestResult::ToolbarGroup && (!cjk || diff < 1.0f),
                         "group drop-down matches sort: chevron right after the label");
+                    // Filter has no chevron: same label length = 20 DIP (chevron + gap) narrower,
+                    // unless the 64 DIP floor (kept above icon-only) applies.
+                    const float filter_w = row.filter.right - row.filter.left;
+                    const float chevron = sort_w - filter_w;
+                    const bool at_floor = filter_w <= 64.0f*scale + 0.5f;
+                    check(region(row.filter) == ui::HitTestResult::FilterBox && filter_w >= 60*scale &&
+                          (!cjk || at_floor || (chevron > 19.0f*scale && chevron < 21.0f*scale)),
+                        "filter fits its label like sort and group");
                 }
             }
         }
