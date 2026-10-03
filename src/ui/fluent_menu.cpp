@@ -1625,7 +1625,32 @@ void FluentMenu::RequestFilterRefresh() {
 
 bool FluentMenu::ReplaceItems(std::vector<FluentMenuItem> items) {
     if (!open_ || animating_out_ || filter_fn_ || !compositor_ || items.empty()) return false;
-    if (!model_.PatchCommands(items)) return false;
+    if (model_.PatchCommands(items)) return true;
+    // The rows changed shape: a context menu opened before the shell host
+    // answered (no cached layout for this type yet) only had Pulse's own rows,
+    // and the Explorer section (New, archivers, ...) arrives afterwards. Rebuild
+    // in place so those rows show up in this menu instead of the next one
+    // (#73). Shell rows are appended after the built-in ones, so the rows under
+    // the cursor keep their place. A visible flyout would be yanked away by the
+    // relayout, so that case keeps the current rows.
+    if (dropdown_ || sub_parent_row_ >= 0) return false;
+    std::wstring hover_text;
+    if (const FluentMenuItem* it = model_.At(hover_row_)) hover_text = it->text;
+    model_.SetItems(std::move(items));
+    model_.Layout(compositor_->DwriteFactory(), scale_, 0.0f);
+    hover_row_ = -1;
+    if (!hover_text.empty()) {
+        for (int i = 0; i < model_.Count(); ++i) {
+            const FluentMenuItem* it = model_.At(i);
+            if (it && it->enabled && it->text == hover_text) { hover_row_ = i; break; }
+        }
+    }
+    hover_swatch_ = -1;
+    sub_pending_row_ = -1;
+    UpdateTooltip(-1);
+    LayoutWindow(popup_pt_);
+    // The modal loop presents every frame (and owns the open fade).
+    Render();
     return true;
 }
 
