@@ -2330,16 +2330,33 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         }
     }
 
+    // Replacements that could not be put back, appended to the result text so
+    // the kept ".pulse-backup-" copy can be recovered by hand.
+    std::wstring rollback_note;
     if (failure.empty() && !cancelled) {
         for (const auto& backup : replacement_backups) {
             std::error_code ignored;
             fsys::remove_all(fsys::path(backup.backup), ignored);
         }
     } else {
+        // The new destination is removed only so the backup can take its name
+        // back. Both steps used to ignore their result, so a destination held
+        // open by a scanner, or a backup that could not be renamed, left the
+        // original stranded under its temporary name with nothing reported.
         for (auto it = replacement_backups.rbegin(); it != replacement_backups.rend(); ++it) {
-            std::error_code ignored;
-            fsys::remove_all(fsys::path(it->original), ignored);
-            MoveFileExW(it->backup.c_str(), it->original.c_str(), MOVEFILE_WRITE_THROUGH);
+            std::error_code removed;
+            fsys::remove_all(fsys::path(it->original), removed);
+            DWORD error = removed ? static_cast<DWORD>(removed.value()) : ERROR_SUCCESS;
+            if (error == ERROR_SUCCESS &&
+                !MoveFileExW(it->backup.c_str(), it->original.c_str(), MOVEFILE_WRITE_THROUGH))
+                error = GetLastError();
+            if (error != ERROR_SUCCESS) {
+                rollback_note += l10n::Pick(L"\uFF1B\u65E0\u6CD5\u8FD8\u539F ",
+                                            L"; could not restore ") + it->original +
+                    l10n::Pick(L"\uFF0C\u539F\u6587\u4EF6\u4FDD\u7559\u5728 ",
+                               L", original kept at ") + it->backup + L" | " +
+                    Win32Message(error);
+            }
         }
         for (size_t i = completed_destinations.size(); i-- > 0;) {
             const bool restored = std::any_of(replacement_backups.begin(),
@@ -2401,11 +2418,11 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         st.lock_owners = lock_report.owners;
         if (transfer_cancelled) {
             st.phase = OpPhase::Failed;
-            st.last_error = l10n::Pick(L"已取消", L"Canceled");
+            st.last_error = l10n::Pick(L"已取消", L"Canceled") + rollback_note;
             st.summary = std::wstring(OpVerb(req.type)) + l10n::Pick(L"已取消", L" canceled");
         } else if (!failure.empty()) {
             st.phase = OpPhase::Failed;
-            st.last_error = failure;
+            st.last_error = failure + rollback_note;
             st.summary = std::wstring(OpVerb(req.type)) + l10n::Pick(L"失败", L" failed");
         } else {
             st.phase = OpPhase::Completed;
