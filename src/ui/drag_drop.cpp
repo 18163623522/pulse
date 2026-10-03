@@ -101,7 +101,8 @@ std::wstring VolumeRoot(const std::wstring& path) {
 }
 
 DWORD ComputeDropEffect(DWORD key_state, const std::wstring& source_sample,
-                        const std::wstring& dest_dir, DWORD allowed) {
+                        const std::wstring& dest_dir, DWORD allowed,
+                        DWORD preferred_effect) {
     const bool ctrl = (key_state & MK_CONTROL) != 0;
     const bool shift = (key_state & MK_SHIFT) != 0;
     DWORD want;
@@ -112,9 +113,19 @@ DWORD ComputeDropEffect(DWORD key_state, const std::wstring& source_sample,
     } else if (ctrl && shift) {
         want = DROPEFFECT_LINK;
     } else {
-        std::wstring sv = VolumeRoot(source_sample);
-        std::wstring dv = VolumeRoot(dest_dir);
-        want = (!sv.empty() && sv == dv) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+        // No modifier: a source that names exactly one of copy/move gets it.
+        // Browser download lists, Electron-style staged drags and archive
+        // tools offer COPY|MOVE but ask for COPY; moving those deletes the
+        // user's original. COPY|MOVE itself means "either is fine" (Pulse's
+        // own drags publish it), so it keeps Explorer's same-volume default.
+        const DWORD preferred = preferred_effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE);
+        if (preferred == DROPEFFECT_COPY || preferred == DROPEFFECT_MOVE) {
+            want = preferred;
+        } else {
+            std::wstring sv = VolumeRoot(source_sample);
+            std::wstring dv = VolumeRoot(dest_dir);
+            want = (!sv.empty() && sv == dv) ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+        }
     }
     if (want & allowed) return want;
     // Fall back to whatever the source allows.
@@ -564,12 +575,14 @@ HRESULT WindowDropTarget::DragEnter(IDataObject* obj, DWORD key_state, POINTL pt
                                     DWORD* effect) {
     if (!effect) return E_POINTER;
     sources_.clear();
+    preferred_ = 0;
     if (!ExtractHDropPaths(obj, sources_)) {
         *effect = DROPEFFECT_NONE;
         return S_OK;
     }
+    preferred_ = PreferredDropEffect(obj);
     const DWORD allowed = *effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
-    *effect = allowed && cb_.drag_over ? cb_.drag_over(sources_, ClientPoint(pt), key_state, allowed) & allowed
+    *effect = allowed && cb_.drag_over ? cb_.drag_over(sources_, ClientPoint(pt), key_state, allowed, preferred_) & allowed
                             : DROPEFFECT_NONE;
     return S_OK;
 }
@@ -581,13 +594,14 @@ HRESULT WindowDropTarget::DragOver(DWORD key_state, POINTL pt, DWORD* effect) {
         return S_OK;
     }
     const DWORD allowed = *effect & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK);
-    *effect = allowed && cb_.drag_over ? cb_.drag_over(sources_, ClientPoint(pt), key_state, allowed) & allowed
+    *effect = allowed && cb_.drag_over ? cb_.drag_over(sources_, ClientPoint(pt), key_state, allowed, preferred_) & allowed
                             : DROPEFFECT_NONE;
     return S_OK;
 }
 
 HRESULT WindowDropTarget::DragLeave() {
     sources_.clear();
+    preferred_ = 0;
     if (cb_.drag_leave) cb_.drag_leave();
     return S_OK;
 }
@@ -601,7 +615,10 @@ HRESULT WindowDropTarget::Drop(IDataObject* obj, DWORD key_state, POINTL pt, DWO
         DragLeave();
         return S_OK;
     }
-    DWORD performed = cb_.drop ? cb_.drop(sources, ClientPoint(pt), key_state, allowed) & allowed
+    // Read the preference from the dropped object itself rather than the
+    // DragEnter cache: Drop is the call that decides whether originals move.
+    const DWORD preferred = PreferredDropEffect(obj);
+    DWORD performed = cb_.drop ? cb_.drop(sources, ClientPoint(pt), key_state, allowed, preferred) & allowed
                                : DROPEFFECT_NONE;
     *effect = performed;
     // Tell the source what we did (Explorer uses this for move semantics).

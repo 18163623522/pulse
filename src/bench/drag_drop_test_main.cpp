@@ -30,6 +30,60 @@ std::string ReadBytes(const std::filesystem::path& path) {
 }
 }
 
+// Pulse's own data object with a different Preferred DropEffect, the way
+// browser download lists, staged Electron drags and archive tools publish one.
+class PreferringDataObject final : public IDataObject {
+public:
+    PreferringDataObject(IDataObject* inner, DWORD preferred)
+        : inner_(inner), preferred_(preferred) { inner_->AddRef(); }
+    ~PreferringDataObject() { inner_->Release(); }
+    IFACEMETHODIMP QueryInterface(REFIID riid, void** out) override {
+        if (!out) return E_POINTER;
+        if (riid == IID_IUnknown || riid == IID_IDataObject) {
+            *out = static_cast<IDataObject*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    IFACEMETHODIMP_(ULONG) AddRef() override { return ++ref_; }
+    IFACEMETHODIMP_(ULONG) Release() override {
+        const ULONG left = --ref_;
+        if (!left) delete this;
+        return left;
+    }
+    IFACEMETHODIMP GetData(FORMATETC* fmt, STGMEDIUM* out) override {
+        if (fmt && out && fmt->cfFormat ==
+                (CLIPFORMAT)RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT)) {
+            HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+            if (!h) return E_OUTOFMEMORY;
+            *static_cast<DWORD*>(GlobalLock(h)) = preferred_;
+            GlobalUnlock(h);
+            out->tymed = TYMED_HGLOBAL;
+            out->hGlobal = h;
+            out->pUnkForRelease = nullptr;
+            return S_OK;
+        }
+        return inner_->GetData(fmt, out);
+    }
+    IFACEMETHODIMP GetDataHere(FORMATETC* f, STGMEDIUM* m) override { return inner_->GetDataHere(f, m); }
+    IFACEMETHODIMP QueryGetData(FORMATETC* f) override { return inner_->QueryGetData(f); }
+    IFACEMETHODIMP GetCanonicalFormatEtc(FORMATETC* a, FORMATETC* b) override {
+        return inner_->GetCanonicalFormatEtc(a, b);
+    }
+    IFACEMETHODIMP SetData(FORMATETC* f, STGMEDIUM* m, BOOL r) override { return inner_->SetData(f, m, r); }
+    IFACEMETHODIMP EnumFormatEtc(DWORD d, IEnumFORMATETC** e) override { return inner_->EnumFormatEtc(d, e); }
+    IFACEMETHODIMP DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return OLE_E_ADVISENOTSUPPORTED; }
+    IFACEMETHODIMP DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+    IFACEMETHODIMP EnumDAdvise(IEnumSTATDATA**) override { return OLE_E_ADVISENOTSUPPORTED; }
+
+private:
+    ULONG ref_ = 1;
+    IDataObject* inner_;
+    DWORD preferred_;
+};
+
 HRESULT WINAPI AuditNativeDrag(IDataObject* data, IDropSource*, DWORD allowed, DWORD* effect) {
     ++native_calls;
     pulse::ui::ExtractHDropPaths(data, native_paths);
@@ -47,18 +101,25 @@ int wmain() {
                 auto* data = FileDataObject::Create({ L"C:\\fixture\\source.txt" });
                 unsigned over_calls = 0, drop_calls = 0;
                 DWORD observed = 0;
+                bool preference_seen = true;
                 DropTargetCallbacks callbacks;
+                // Pulse's own drags publish COPY|MOVE, which must keep the
+                // same-volume move: the expectations below are unchanged.
                 const auto compute = [&](const std::vector<std::wstring>& paths, POINT,
-                                         DWORD state, DWORD mask) {
+                                         DWORD state, DWORD mask, DWORD preferred) {
                     observed = mask;
+                    preference_seen = preference_seen &&
+                        preferred == (DROPEFFECT_COPY | DROPEFFECT_MOVE);
                     return ComputeDropEffect(state, paths.front(),
-                        cross_volume ? L"D:\\target" : L"C:\\target", mask);
+                        cross_volume ? L"D:\\target" : L"C:\\target", mask, preferred);
                 };
-                callbacks.drag_over = [&](const auto& paths, POINT point, DWORD state, DWORD mask) {
-                    ++over_calls; return compute(paths, point, state, mask);
+                callbacks.drag_over = [&](const auto& paths, POINT point, DWORD state, DWORD mask,
+                                          DWORD preferred) {
+                    ++over_calls; return compute(paths, point, state, mask, preferred);
                 };
-                callbacks.drop = [&](const auto& paths, POINT point, DWORD state, DWORD mask) {
-                    ++drop_calls; return compute(paths, point, state, mask);
+                callbacks.drop = [&](const auto& paths, POINT point, DWORD state, DWORD mask,
+                                     DWORD preferred) {
+                    ++drop_calls; return compute(paths, point, state, mask, preferred);
                 };
                 auto* target = new WindowDropTarget(nullptr, std::move(callbacks));
                 DWORD expected = allowed;
@@ -75,7 +136,7 @@ int wmain() {
                 effect = allowed;
                 target->Drop(data, keys, POINTL{}, &effect);
                 const bool callbacks_correct = allowed
-                    ? observed == allowed && over_calls == 2 && drop_calls == 1
+                    ? observed == allowed && over_calls == 2 && drop_calls == 1 && preference_seen
                     : over_calls == 0 && drop_calls == 0;
                 Check(entered && hovered && effect == expected &&
                       data->PerformedEffect() == expected && callbacks_correct,
@@ -89,7 +150,7 @@ int wmain() {
         auto* data = FileDataObject::Create({L"C:\\fixture\\source.txt"});
         DWORD observed = 0;
         DropTargetCallbacks callbacks;
-        callbacks.drop = [&](const auto&, POINT, DWORD, DWORD mask) {
+        callbacks.drop = [&](const auto&, POINT, DWORD, DWORD mask, DWORD) {
             observed = mask; return DROPEFFECT_MOVE;
         };
         auto* target = new WindowDropTarget(nullptr, std::move(callbacks));
@@ -105,13 +166,52 @@ int wmain() {
         auto* data = FileDataObject::Create({L"C:\\fixture\\source.txt"});
         unsigned drop_calls = 0, leave_calls = 0;
         DropTargetCallbacks callbacks;
-        callbacks.drop = [&](const auto&, POINT, DWORD, DWORD) { ++drop_calls; return DROPEFFECT_COPY; };
+        callbacks.drop = [&](const auto&, POINT, DWORD, DWORD, DWORD) { ++drop_calls; return DROPEFFECT_COPY; };
         callbacks.drag_leave = [&] { ++leave_calls; };
         auto* target = new WindowDropTarget(nullptr, std::move(callbacks));
         DWORD effect = DROPEFFECT_COPY;
         target->Drop(nullptr, 0, POINTL{}, &effect);
         Check(effect == DROPEFFECT_NONE && drop_calls == 0 && leave_calls == 1,
               "invalid data cannot submit a drop and clears feedback");
+        target->Release();
+        data->Release();
+    }
+    // A source's exact preference reaches the callbacks and wins with no
+    // modifier; COPY|MOVE and no preference keep the same-volume move, and
+    // Ctrl/Shift still override.
+    struct PreferenceCase { DWORD preferred; DWORD keys; DWORD expected; const char* label; };
+    const PreferenceCase preference_cases[] = {
+        { DROPEFFECT_COPY, 0, DROPEFFECT_COPY, "source asking for copy is copied on one volume" },
+        { DROPEFFECT_MOVE, 0, DROPEFFECT_MOVE, "source asking for move is moved" },
+        { DROPEFFECT_COPY | DROPEFFECT_MOVE, 0, DROPEFFECT_MOVE,
+          "COPY|MOVE preference keeps the same-volume move" },
+        { 0, 0, DROPEFFECT_MOVE, "no preference keeps the same-volume move" },
+        { DROPEFFECT_COPY | DROPEFFECT_LINK, 0, DROPEFFECT_COPY, "COPY|LINK preference is a copy" },
+        { DROPEFFECT_COPY, MK_SHIFT, DROPEFFECT_MOVE, "Shift overrides a copy preference" },
+        { DROPEFFECT_MOVE, MK_CONTROL, DROPEFFECT_COPY, "Ctrl overrides a move preference" },
+    };
+    for (const auto& c : preference_cases) {
+        auto* inner = FileDataObject::Create({ L"C:\\fixture\\source.txt" });
+        auto* data = new PreferringDataObject(inner, c.preferred);
+        inner->Release();
+        DWORD over_preferred = 0xFFFF, drop_preferred = 0xFFFF;
+        DropTargetCallbacks callbacks;
+        callbacks.drag_over = [&](const auto& paths, POINT, DWORD state, DWORD mask, DWORD preferred) {
+            over_preferred = preferred;
+            return ComputeDropEffect(state, paths.front(), L"C:\\target", mask, preferred);
+        };
+        callbacks.drop = [&](const auto& paths, POINT, DWORD state, DWORD mask, DWORD preferred) {
+            drop_preferred = preferred;
+            return ComputeDropEffect(state, paths.front(), L"C:\\target", mask, preferred);
+        };
+        auto* target = new WindowDropTarget(nullptr, std::move(callbacks));
+        DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+        target->DragEnter(data, c.keys, POINTL{}, &effect);
+        const bool shown = effect == c.expected;
+        effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+        target->Drop(data, c.keys, POINTL{}, &effect);
+        Check(shown && effect == c.expected && over_preferred == c.preferred &&
+              drop_preferred == c.preferred, c.label);
         target->Release();
         data->Release();
     }

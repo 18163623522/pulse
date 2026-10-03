@@ -11,6 +11,7 @@
 #include "../common/localization.h"
 #include "../common/current_user_security.h"
 #include <windows.h>
+#include <oleidl.h>
 #include <winioctl.h>
 #include <chrono>
 #include <cstdio>
@@ -962,6 +963,13 @@ int wmain(int argc, wchar_t** argv) {
         }
         Check(copy_round_trips, L"clipboard CF_HDROP + drop-effect round-trip (20x)");
         Check(cut_round_trips, L"clipboard cut effect round-trip (20x)");
+        // Only an exact MOVE is a cut: COPY|MOVE means "either is fine" and
+        // must paste as a copy, or a plain copy deletes the user's originals.
+        Check(ops::PreferredEffectIsCut(DROPEFFECT_MOVE), L"clipboard: exact MOVE is a cut");
+        Check(!ops::PreferredEffectIsCut(DROPEFFECT_COPY | DROPEFFECT_MOVE),
+              L"clipboard: COPY|MOVE pastes as a copy");
+        Check(!ops::PreferredEffectIsCut(DROPEFFECT_COPY), L"clipboard: COPY is not a cut");
+        Check(!ops::PreferredEffectIsCut(0), L"clipboard: no effect is not a cut");
     }
 
     // --- 12. CopyFile2 bytes, pause/resume, cancel and atomic replacement ----
