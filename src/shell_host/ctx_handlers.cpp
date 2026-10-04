@@ -426,12 +426,24 @@ HRESULT QueryOneHandler(const CtxHandlerDesc& handler, const CtxBind& bind,
         // Windows. The default Shell menu supplies the services that populate
         // and invoke its destinations. Keep the CLSID-provided localized title
         // to isolate that submenu without hardcoding any display language.
+        // Prefer the placeholder flyout. Some Windows builds add the
+        // placeholder as a plain row instead; it used to slip through as an
+        // inert "Send to" that did nothing when clicked (#77).
+        int plain_row = -1;
         for (int i = 0; i < GetMenuItemCount(slot.hmenu); ++i) {
             if (GetSubMenu(slot.hmenu, i)) {
                 slot.send_to_title = MenuItemText(slot.hmenu, static_cast<UINT>(i));
                 break;
             }
+            MENUITEMINFOW row{ sizeof(row) };
+            row.fMask = MIIM_FTYPE;
+            if (plain_row < 0 && GetMenuItemInfoW(slot.hmenu, i, TRUE, &row) &&
+                !(row.fType & MFT_SEPARATOR) &&
+                !MenuItemText(slot.hmenu, static_cast<UINT>(i)).empty())
+                plain_row = i;
         }
+        if (slot.send_to_title.empty() && plain_row >= 0)
+            slot.send_to_title = MenuItemText(slot.hmenu, static_cast<UINT>(plain_row));
         if (!slot.send_to_title.empty()) {
             IShellItemArray* selection = nullptr;
             IContextMenu* native = nullptr;
@@ -489,7 +501,10 @@ void CollectHandlerItems(const CtxHandlerSlot& slot, bool background,
         }
         const bool enabled = !(mii.fState & (MFS_DISABLED | MFS_GRAYED));
         const std::wstring title = MenuItemText(slot.hmenu, static_cast<UINT>(i));
-        if (!slot.send_to_title.empty() && title != slot.send_to_title) continue;
+        if (!slot.send_to_title.empty() && title != slot.send_to_title &&
+            !(mii.hSubMenu &&
+              pulse::ipc::ToLowerVerb(CtxVerbOf(slot.menu, mii.wID, slot.id_first)) == L"sendto"))
+            continue;
         if (mii.hSubMenu) {
             const std::wstring parent_verb = slot.send_to_title.empty()
                 ? CtxVerbOf(slot.menu, mii.wID, slot.id_first) : L"sendto";
@@ -497,18 +512,23 @@ void CollectHandlerItems(const CtxHandlerSlot& slot, bool background,
                 IsDroppedContextSubmenu(parent_verb)) continue;
             const std::wstring& parent_text = title;
             if (parent_text.empty()) continue;
+            // Send to fills itself on WM_INITMENUPOPUP and sits near the end of
+            // the default menu, so slower flyouts above it could use up the
+            // shared budget and leave it empty (#77). It gets its own.
+            const bool send_to = !slot.send_to_title.empty() ||
+                                 pulse::ipc::ToLowerVerb(parent_verb) == L"sendto";
             std::vector<CtxItemOut> kids;
             CollectSubmenuLeaves(slot.menu, slot.menu2, slot.menu3, mii.hSubMenu,
                                  static_cast<UINT>(i), background, slot.id_first, enabled, 0,
-                                 slot.send_to_title.empty() ? deadline : GetTickCount64() + kNestedFlyoutBudgetMs,
+                                 send_to ? GetTickCount64() + kNestedFlyoutBudgetMs : deadline,
                                  kids);
             if (kids.empty()) {
                 if (!KeepFlyoutParentWithoutLeaves(mii.wID, slot.id_first, slot.id_last))
                     continue;
                 CtxItemOut item;
                 item.id = mii.wID;
-                // An empty SendTo flyout is not an invokable destination.
-                item.enabled = enabled && slot.send_to_title.empty();
+                // An empty Send to flyout is not an invokable destination.
+                item.enabled = enabled && !send_to;
                 item.verb = parent_verb;
                 item.text = parent_text;
                 push(std::move(item));
@@ -533,7 +553,8 @@ void CollectHandlerItems(const CtxHandlerSlot& slot, bool background,
         if (IsBuiltinContextVerb(verb, background)) continue;
         CtxItemOut item;
         item.id = mii.wID;
-        item.enabled = enabled;
+        // A Send to row without its flyout cannot send anywhere (#77).
+        item.enabled = enabled && slot.send_to_title.empty();
         item.verb = verb;
         item.text = MenuItemText(slot.hmenu, static_cast<UINT>(i));
         push(std::move(item));
