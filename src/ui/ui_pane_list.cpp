@@ -1263,16 +1263,18 @@ void MainRenderer::DrawSinglePane(const WindowViewModel& vm, const PaneViewModel
             bar.message = pane.banner_message;
             bar.kind = static_cast<fluent::InfoBarKind>(std::clamp(pane.banner_kind, 0, 3));
             bar.show_close = false;
-            if (pane.is_content_search) {
+            if (pane.is_content_search || pane.network_live_action) {
                 const auto action_bounds = bar.bounds;
                 const float action_width = std::min(144.0f * scale_, (action_bounds.right - action_bounds.left) * 0.4f);
                 bar.trailing_width = action_width / scale_;
                 painter_.DrawInfoBar(bar);
                 fluent::ButtonSpec action;
                 action.bounds = D2D1::RectF(action_bounds.right - action_width, action_bounds.top, action_bounds.right, action_bounds.bottom);
-                action.text = l10n::Get(l10n::StringId::ContentManageShort);
+                action.text = l10n::Get(pane.is_content_search ? l10n::StringId::ContentManageShort
+                                                               : l10n::StringId::NetworkLiveAdd);
                 action.kind = fluent::ButtonKind::Transparent;
-                action.state.hovered = IsHovered(vm, HitTestResult::ContentIndexManage);
+                action.state.hovered = IsHovered(vm, pane.is_content_search
+                    ? HitTestResult::ContentIndexManage : HitTestResult::NetworkIndexAdd);
                 painter_.DrawButton(action);
             } else if (pane.compare_active) {
                 D2D1_RECT_F diffRc{}, exitRc{};

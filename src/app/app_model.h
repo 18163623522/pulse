@@ -75,6 +75,8 @@ struct Tab {
     std::wstring virtual_title; // tag/search views; empty for real folders
     std::wstring banner_title;
     std::wstring banner_message;
+    std::wstring network_live_root;        // #74: banner offers adding this share to the network index
+    std::wstring network_live_added_root;  // #74: share added from the banner, crawl pending
     bool net_readonly = false;
     uint64_t cache_unix = 0;
     int recent_filter = 0; // RecentFilter; transient per tab.

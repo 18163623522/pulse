@@ -2021,6 +2021,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             hit.region != ui::HitTestResult::AddressSearchContent &&
             hit.region != ui::HitTestResult::AddressSearchOptions &&
             hit.region != ui::HitTestResult::ContentIndexManage &&
+            hit.region != ui::HitTestResult::NetworkIndexAdd &&
             hit.region != ui::HitTestResult::AddressSearchClear &&
             hit.region != ui::HitTestResult::AddressSearchClose) {
             HideAddressEditor(*s, false);
@@ -2646,6 +2647,9 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             ShowSearchOptions(*s);
         } else if (hit.region == ui::HitTestResult::ContentIndexManage) {
             ShowSearchOptions(*s, true);
+        } else if (hit.region == ui::HitTestResult::NetworkIndexAdd) {
+            app::Pane* pane = PaneAtSlot(*s, hit.index);
+            if (app::Tab* tab = pane ? pane->ActiveTab() : nullptr) AddLiveNetworkRoot(*s, *tab);
         } else if (hit.region == ui::HitTestResult::SettingsContentIndex) {
             ShowSearchOptions(*s);
         } else if (hit.region == ui::HitTestResult::AddressSearchClear) {

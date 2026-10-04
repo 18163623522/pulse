@@ -1498,6 +1498,8 @@ void FillPaneViewModel(ui::PaneViewModel& out, const Pane& pane, const PlacesCat
         ParsePulsePath(tab->current_path, nullptr, &rest);
         out.search_query = rest;
         out.is_content_search = SplitSearchQueryText(rest).content.present();
+        out.network_live_action = !out.is_content_search && !tab->network_live_root.empty() &&
+                                  !tab->banner_message.empty();
         // The breadcrumb shows where the search started, then one search segment.
         out.has_search_origin = true;
         if (tab->search_origin_valid) {

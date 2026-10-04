@@ -1680,6 +1680,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_NETWORK_LIVE_SEARCH: {
+        auto* live = reinterpret_cast<std::shared_ptr<LiveNetworkSearch>*>(lParam);
+        if (s && live) AcceptLiveNetworkProgress(*s, *live);
+        delete live;
+        return 0;
+    }
+
     case WM_UPDATE_RESULT:
         if (s) CompleteUpdateCheck(*s);
         return 0;

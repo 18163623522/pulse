@@ -1543,4 +1543,12 @@ BEGIN
     IDS_INTEGRATION_DRIFT_DESC "可能被系統更新或其他軟體改了回去。"
     IDS_INTEGRATION_REAPPLY "重新套用"
     IDS_NETWORK_SEARCH_SNAPSHOT "網路搜尋為快照；按 F5 重新整理。"
+    IDS_NETWORK_LIVE_TITLE "此網路位置未加入索引"
+    IDS_NETWORK_LIVE_RUNNING "正在即時搜尋此位置，結果會陸續出現…"
+    IDS_NETWORK_LIVE_DONE "結果來自即時搜尋。加入網路索引後，這裡的搜尋會更快。"
+    IDS_NETWORK_LIVE_DONE_DRIVE "結果來自即時搜尋。"
+    IDS_NETWORK_LIVE_ADD "加入網路索引"
+    IDS_NETWORK_LIVE_ADDED "已加入網路索引"
+    IDS_NETWORK_LIVE_ADDED_MSG "正在建立索引；完成前，這裡的搜尋仍會即時進行。"
+    IDS_NETWORK_LIVE_ADD_FAILED "無法加入網路索引"
 END

@@ -10,8 +10,8 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_NETWORK_SEARCH_SNAPSHOT;
-static_assert(static_cast<UINT>(StringId::NetworkSearchSnapshot) <= kLastString);
+constexpr UINT kLastString = IDS_NETWORK_LIVE_ADD_FAILED;
+static_assert(static_cast<UINT>(StringId::NetworkLiveAddFailed) <= kLastString);
 static_assert(static_cast<UINT>(StringId::IntegrationReapply) <= kLastString);
 static_assert(static_cast<UINT>(StringId::UpdateDescManual) <= kLastString);
 static_assert(static_cast<UINT>(StringId::Downloads) <= kLastString);

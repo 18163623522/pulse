@@ -205,6 +205,7 @@ struct PaneViewModel {
     bool is_search = false;   // search results add a display-only 路径 column
     bool is_query_search = false;
     bool is_content_search = false;
+    bool network_live_action = false;  // #74: banner offers "Add to network index"
     std::wstring search_query;
     // Query search breadcrumb: origin segments followed by one search segment.
     bool has_search_origin = false;
@@ -774,6 +775,7 @@ struct HitTestResult {
         AddressSearchContent,
         AddressSearchOptions,
         ContentIndexManage,
+        NetworkIndexAdd,
         SettingsContentIndex,
         SettingsFind, SettingsDisclosure, SettingsTheme, SettingsDropdown,
         SettingsContentAction,

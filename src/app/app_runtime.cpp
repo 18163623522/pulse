@@ -2339,6 +2339,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::AddressSearchOptions: return text(I::SearchOptions);
     case R::ContentIndexManage:
     case R::SettingsContentIndex: return text(I::ContentIndexManage);
+    case R::NetworkIndexAdd: return text(I::NetworkLiveAdd);
     case R::AddressSearchClear: return text(I::Clear);
     case R::AddressSearchClose: return text(I::Back);
     case R::TabClose: return text(I::TooltipCloseTab);

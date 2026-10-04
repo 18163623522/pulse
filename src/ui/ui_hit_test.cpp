@@ -910,11 +910,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
             paneRc = PaneBodyBounds(paneVm, paneRect);
         }
         const float banner = PaneBannerHeight(paneVm, paneRc.right - paneRc.left, scale_, compositor_);
-        if (paneVm.is_content_search && banner > 0) {
+        if ((paneVm.is_content_search || paneVm.network_live_action) && banner > 0) {
             const float action_width = std::min(144.0f * scale_, (paneRc.right - paneRc.left - 16 * scale_) * 0.4f);
             if (x >= paneRc.right - 8 * scale_ - action_width && x < paneRc.right - 8 * scale_ &&
                 y >= paneRc.top + pane_header_height_ && y < paneRc.top + pane_header_height_ + banner - 4 * scale_) {
-                out.region = HitTestResult::ContentIndexManage;
+                out.region = paneVm.is_content_search ? HitTestResult::ContentIndexManage
+                                                      : HitTestResult::NetworkIndexAdd;
+                out.index = paneIndex;
                 return out;
             }
         }

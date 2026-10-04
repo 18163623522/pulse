@@ -19,6 +19,7 @@
 #include <deque>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include "content_results_ui.h"
 #include "app_worker.h"
 #include "places.h"
@@ -96,6 +97,7 @@ constexpr UINT WM_CHANGE_TRACKING = WM_APP + 63;
 constexpr UINT WM_FRAME_PUMP = WM_APP + 67;  // app::FramePump: one display frame of motion
 constexpr UINT WM_SHELL_SELECT = WM_APP + 68;  // app::ShellSelectRequest* (shell_window_sync.h)
 constexpr UINT WM_EXPLORER_TAKEOVER = WM_APP + 69;  // app::ExplorerTakeoverRequest* (shell_window_sync.h)
+constexpr UINT WM_NETWORK_LIVE_SEARCH = WM_APP + 71;  // shared_ptr<LiveNetworkSearch>* (#74 live walk progressed)
 constexpr UINT WM_SHELL_VERB_SEED = WM_APP + 70;  // ShellVerbSeed* (machine verb cache read off the UI thread)
 constexpr UINT kTimerUi = 1;
 
@@ -149,6 +151,17 @@ struct TrayCompareJob {
 struct TrayTextProbe {
     std::wstring a, b;
     std::atomic<int> state{0}; // 0 running, 1 both text, 2 binary / unreadable
+};
+
+// #74: live walk of an unindexed network search scope. Reused for later pages
+// and re-sorts of the same query; F5 or a finished file operation drops it.
+struct LiveNetworkSearch {
+    std::wstring key;
+    std::wstring folder;
+    std::mutex mutex;
+    index::LiveNetworkMatches matches;  // guarded by mutex
+    std::atomic<bool> cancel{false};
+    std::atomic<uint32_t> latest_id{0};  // newest request answered from this walk
 };
 
 struct AppState {
@@ -261,8 +274,10 @@ struct AppState {
         index::SearchResult network;
         bool local_ready = false;
         bool network_ready = false;
+        std::wstring live_network_root;  // #74: scope walked live instead of the network index
     };
     std::unordered_map<uint32_t, PendingIndexSearch> pendingIndexSearches;
+    std::shared_ptr<LiveNetworkSearch> liveNetworkSearch;
     std::vector<index::Hit> paletteHits;
     size_t paletteTotal = 0;
     std::wstring paletteQuery;

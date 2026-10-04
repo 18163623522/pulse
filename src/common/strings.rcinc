@@ -3005,6 +3005,14 @@ BEGIN
     IDS_INTEGRATION_DRIFT_DESC "可能被系统更新或其他软件改了回去。"
     IDS_INTEGRATION_REAPPLY "重新应用"
     IDS_NETWORK_SEARCH_SNAPSHOT "网络搜索为快照；按 F5 刷新。"
+    IDS_NETWORK_LIVE_TITLE "此网络位置未加入索引"
+    IDS_NETWORK_LIVE_RUNNING "正在实时搜索此位置，结果会陆续出现…"
+    IDS_NETWORK_LIVE_DONE "结果来自实时搜索。加入网络索引后，这里的搜索会更快。"
+    IDS_NETWORK_LIVE_DONE_DRIVE "结果来自实时搜索。"
+    IDS_NETWORK_LIVE_ADD "加入网络索引"
+    IDS_NETWORK_LIVE_ADDED "已加入网络索引"
+    IDS_NETWORK_LIVE_ADDED_MSG "正在建立索引；完成前，这里的搜索仍会实时进行。"
+    IDS_NETWORK_LIVE_ADD_FAILED "无法加入网络索引"
 END
 
 LANGUAGE 0x09, 0x01
@@ -3041,6 +3049,14 @@ BEGIN
     IDS_INTEGRATION_DRIFT_DESC "A Windows update or another app may have changed it back."
     IDS_INTEGRATION_REAPPLY "Apply again"
     IDS_NETWORK_SEARCH_SNAPSHOT "Network results are a snapshot; press F5 to refresh."
+    IDS_NETWORK_LIVE_TITLE "This network location isn't indexed"
+    IDS_NETWORK_LIVE_RUNNING "Searching this location live; results keep coming in…"
+    IDS_NETWORK_LIVE_DONE "Results come from a live search. Add it to the network index to search here faster."
+    IDS_NETWORK_LIVE_DONE_DRIVE "Results come from a live search."
+    IDS_NETWORK_LIVE_ADD "Add to network index"
+    IDS_NETWORK_LIVE_ADDED "Added to the network index"
+    IDS_NETWORK_LIVE_ADDED_MSG "Indexing has started; until it finishes, searches here stay live."
+    IDS_NETWORK_LIVE_ADD_FAILED "Couldn't add to the network index"
 END
 
 // Traditional Chinese (Taiwan), generated from the Simplified blocks above.
