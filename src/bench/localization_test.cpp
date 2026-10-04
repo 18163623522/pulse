@@ -162,7 +162,7 @@ int main() {
                      Get(StringId::TooltipCloseTab) == L"Close tab" &&
                      Get(StringId::OpenTerminalHere) == L"Open terminal here" &&
                      Get(StringId::SettingsAboutDiagnostics) == L"About & diagnostics" &&
-                     Get(StringId::DownloadUpdate) == L"Download and install");
+                     Get(StringId::DownloadUpdate) == L"Update and restart");
     passed &= Report("en-US recycle and batch rename",
                      Get(StringId::RecycleBin) == L"Recycle Bin" &&
                      Get(StringId::BatchRename) == L"Batch rename" &&

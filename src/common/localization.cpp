@@ -10,7 +10,8 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_SIDEBAR_SHOW_HIDDEN;
+constexpr UINT kLastString = IDS_UPDATE_WAITING_OPERATIONS;
+static_assert(static_cast<UINT>(StringId::UpdateWaitingOperations) <= kLastString);
 static_assert(static_cast<UINT>(StringId::SidebarShowHidden) <= kLastString);
 static_assert(static_cast<UINT>(StringId::ApplyGroupNoneMessage) <= kLastString);
 static_assert(static_cast<UINT>(StringId::ExitPulse) <= kLastString);

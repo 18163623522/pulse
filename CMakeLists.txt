@@ -262,6 +262,8 @@ add_executable(pulse_update_installer_test
 target_include_directories(pulse_update_installer_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(pulse_update_installer_test PRIVATE bcrypt shell32 user32 winhttp)
 
+add_executable(pulse_update_session_test src/bench/update_session_test.cpp src/app/startup_location.cpp)
+
 # ---- Stage 0 visual/perf sample: D2D virtual list (GUI) ----
 add_executable(pulse_d2d_list WIN32 src/bench/d2d_list.cpp)
 target_link_libraries(pulse_d2d_list PRIVATE d3d11 d2d1 dwrite dxgi dcomp dwmapi shcore)

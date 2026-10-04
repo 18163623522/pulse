@@ -57,6 +57,14 @@ DWORD UpdateInstallErrorFromExitCode(DWORD exit_code) {
     return ERROR_INSTALL_FAILURE;
 }
 
+std::wstring UpdateInstallParameters(std::wstring_view executable) {
+    const auto slash = executable.find_last_of(L"\\/");
+    if (slash == std::wstring_view::npos || slash == 0 ||
+        executable.find_first_of(L"\"\r\n") != std::wstring_view::npos) return {};
+    return L"/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /PULSEUPDATE=1 /LOG /DIR=\"" +
+        std::wstring(executable.substr(0, slash)) + L"\"";
+}
+
 struct UpdateInstaller::State {
     std::atomic<bool> cancelled{false};
     std::atomic<bool> downloading{true};
@@ -148,7 +156,7 @@ UpdateProgress UpdateInstaller::Progress() const {
 }
 
 bool UpdateInstaller::Start(const UpdateResult& update, HWND notify, UINT message) {
-    if (downloading() || installing() || !notify || !message || update.error != UpdateError::None ||
+    if (Progress().active() || !notify || !message || update.error != UpdateError::None ||
         !update.update_available || !update.download_page.starts_with(L"https://") ||
         update.installer_sha256.size() != 64) return false;
     Stop();
@@ -186,6 +194,12 @@ bool UpdateInstaller::TakeResult(DWORD& error) {
 bool UpdateInstaller::Launch(HWND owner, DWORD& error) {
     error = ERROR_INVALID_STATE;
     if (!state_ || state_->downloading || state_->installing || state_->error || state_->guard.value == INVALID_HANDLE_VALUE) return false;
+    std::wstring executable(32768, L'\0');
+    const DWORD size = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (!size || size >= executable.size()) { error = ERROR_BAD_PATHNAME; return false; }
+    executable.resize(size);
+    const std::wstring parameters = UpdateInstallParameters(executable);
+    if (parameters.empty()) { error = ERROR_BAD_PATHNAME; return false; }
     state_->SetPhase(UpdatePhase::Launching);
     SHELLEXECUTEINFOW execute{sizeof(execute)};
     execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
@@ -194,8 +208,8 @@ bool UpdateInstaller::Launch(HWND owner, DWORD& error) {
     // token for post-install launch. Explicit runas makes Pulse elevated too.
     execute.lpVerb = L"open";
     execute.lpFile = state_->file.c_str();
-    execute.lpParameters = L"/SP- /NORESTART /LOG";
-    execute.nShow = SW_SHOWNORMAL;
+    execute.lpParameters = parameters.c_str();
+    execute.nShow = SW_HIDE;
     if (!ShellExecuteExW(&execute)) {
         error = GetLastError();
         state_->SetPhase(UpdatePhase::Idle);
@@ -233,6 +247,11 @@ bool UpdateInstaller::Launch(HWND owner, DWORD& error) {
     } else state_->SetPhase(UpdatePhase::Idle);
     error = ERROR_SUCCESS;
     return true;
+}
+
+void UpdateInstaller::WaitForOperations() {
+    if (state_ && !state_->downloading && !state_->installing && !state_->error &&
+        state_->guard.value != INVALID_HANDLE_VALUE) state_->SetPhase(UpdatePhase::WaitingOperations);
 }
 
 bool UpdateInstaller::TakeInstallResult(DWORD& error) {

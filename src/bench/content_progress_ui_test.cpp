@@ -117,6 +117,8 @@ int main(int argc, char** argv) {
         s.renderer.SetCompositor(nullptr); s.compositor.Shutdown(); DestroyWindow(s.hwnd); s.hwnd=nullptr;
         CoUninitialize(); return failures ? 1:0;
     }
+    const bool update_only = argc > 1 && std::string_view(argv[1]) == "--update-only";
+    if (!update_only) {
     const auto output=std::filesystem::absolute(L"../bench_data/content-progress-ui");
     std::filesystem::create_directories(output);
     auto capture=[&](const wchar_t* label, bool hovered=false) {
@@ -205,6 +207,7 @@ int main(int argc, char** argv) {
     start(); update(400,20000,true,0,true);
     check(!BuildVm(s,false).status.query_active && !tab->content_count_final && tab->banner_title==l10n::Get(l10n::StringId::ResultLimitTitle),
         "truncated query remains incomplete and hides progress");
+    }
     // Update integration: use the production BuildVm adapter and renderer, never a network/installer.
     tab->search_content_active = false;
     tab->pending_generation = 0;
@@ -216,9 +219,11 @@ int main(int argc, char** argv) {
     s.update_result.version = L"1.0.34"; // Fixture only; application version is unchanged.
     const auto update_output = std::filesystem::absolute(L"../bench_data/update-status-progress-ui");
     std::filesystem::create_directories(update_output);
-    for (const auto language : {L"zh-CN", L"en-US"}) {
+    for (const auto language : {L"zh-CN", L"zh-TW", L"en-US"}) {
         l10n::SetLanguage(language);
-        for (const auto phase : {L"connecting", L"downloading", L"downloading-unknown", L"verifying", L"launching", L"installing"}) {
+        for (const auto phase : {L"connecting", L"downloading", L"downloading-unknown", L"verifying", L"waiting", L"launching", L"installing"}) {
+            if (update_only && std::wstring_view(phase) != L"waiting" &&
+                std::wstring_view(phase) != L"launching" && std::wstring_view(phase) != L"installing") continue;
             s.shot.update_state = phase;
             for (const bool settings : {false, true}) {
                 tab->current_path = settings ? app::MakeSettingsPath(L"about") : L"C:\\Fixture";
@@ -230,6 +235,9 @@ int main(int argc, char** argv) {
                     const auto rect = D2D1::RectF(0, 0, width * scale, 720 * scale);
                     s.compositor.Resize(static_cast<UINT>(rect.right), static_cast<UINT>(rect.bottom));
                     auto update_vm = BuildVm(s, false);
+                    if (settings) update_vm.settings_scroll = (std::max)(0.0f,
+                        s.renderer.SettingsDestinationOffset(update_vm,
+                            static_cast<int>(l10n::StringId::SettingsAutoUpdate), rect.right, rect.bottom) - 180.0f * scale);
                     check(update_vm.settings_open == settings, "fixture exercises the intended normal or Settings tab");
                     check(update_vm.status.task_is_update && !update_vm.status.task_text.empty(),
                         "update snapshot reaches global status bar in both tab types and languages");

@@ -161,6 +161,7 @@ app::UpdateProgress UpdateProgressForView(const AppState& s) {
         if (phase == L"downloading") return {UpdatePhase::Downloading, 3 * 1024 * 1024, 8 * 1024 * 1024};
         if (phase == L"downloading-unknown") return {UpdatePhase::Downloading, 3 * 1024 * 1024, 0};
         if (phase == L"verifying") return {UpdatePhase::Verifying};
+        if (phase == L"waiting") return {UpdatePhase::WaitingOperations};
         if (phase == L"launching") return {UpdatePhase::Launching};
         if (phase == L"installing") return {UpdatePhase::Installing};
         return {};
@@ -480,7 +481,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 s.shot.update_available;
             vm.settings_update_auto = s.appPrefs.auto_check_updates;
             vm.settings_update_checking = s.update_checker.checking();
-            vm.settings_update_downloading = s.update_installer.downloading();
+            vm.settings_update_downloading = s.update_installer.Progress().active() &&
+                !s.update_installer.installing();
             vm.settings_update_installing = s.update_installer.installing();
             DWORD update_install_error = s.update_install_error;
             if (s.shot.active) {

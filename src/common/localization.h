@@ -553,6 +553,7 @@ enum class StringId : UINT {
     UpdateDownloadProgress = IDS_UPDATE_DOWNLOAD_PROGRESS,
     UpdateDownloadUnknown = IDS_UPDATE_DOWNLOAD_UNKNOWN,
     UpdateVerifying = IDS_UPDATE_VERIFYING,
+    UpdateWaitingOperations = IDS_UPDATE_WAITING_OPERATIONS,
     UpdateLaunching = IDS_UPDATE_LAUNCHING,
     UpdateInstallingStatus = IDS_UPDATE_INSTALLING_STATUS,
     DateWeekdays = IDS_DATE_WEEKDAYS,

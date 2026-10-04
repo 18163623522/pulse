@@ -171,12 +171,12 @@ Name: "{autodesktop}\Pulse"; Filename: "{app}\pulse.exe"; WorkingDir: "{app}"; T
 [Registry]
 ; Same key the in-app preference manages (src/app/app_prefs.cpp).
 ; Note: with an elevated install this lands in the installing user's hive.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Pulse"; ValueData: """{app}\pulse.exe"""; Tasks: startup; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Pulse"; ValueData: """{app}\pulse.exe"""; Tasks: startup; Flags: uninsdeletevalue; Check: not IsPulseUpdate
 
 [Run]
 ; Index configuration runs in CurStepChanged so helper failures are not ignored.
 Filename: "{app}\pulse.exe"; Parameters: "--seed-shell-verbs"; StatusMsg: "{cm:StatusSeedVerbs}"; Flags: runhidden waituntilterminated
-Filename: "{app}\pulse.exe"; Description: "{cm:LaunchProgram,Pulse}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\pulse.exe"; Description: "{cm:LaunchProgram,Pulse}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsPulseUpdate
 
 [UninstallRun]
 
@@ -197,6 +197,7 @@ var
   UpgradeWinECommand: String;
   UpgradeThisPcCommand: String;
   PulseCloseError: String;
+  PulseUpdateFailed: Boolean;
 
 
 
@@ -769,6 +770,11 @@ const
   PulseCloseFailed = 1;
   PulseCloseBusy = 2;
 
+function IsPulseUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:PULSEUPDATE|0}') = '1';
+end;
+
 function RegisterPulseShutdownMessage(const Name: String): LongWord;
   external 'RegisterWindowMessageW@user32.dll stdcall';
 { Inno Setup 6 executes Pascal Script in its 32-bit Setup.e32 engine even
@@ -950,7 +956,15 @@ begin
         Result := PulseCloseBusy;
         Exit;
       end;
-      if (Reply <> 1) and not EndLegacyPulse(Window, ProcessId) then Exit;
+      if Reply = 3 then Exit;   { session persistence failed; do not replace files }
+      if Reply <> 1 then
+      begin
+        { Legacy versions cannot prove that file operations are idle. The
+          interactive installer keeps its compatibility path, but unattended
+          updates must never terminate an unacknowledged UI process. }
+        if IsPulseUpdate then Exit;
+        if not EndLegacyPulse(Window, ProcessId) then Exit;
+      end;
       Window := 0;   { the window list changed; scan it again }
     end;
   end;
@@ -973,9 +987,21 @@ begin
     if not Exec(ExpandConstant('{cmd}'),
       '/D /C ""' + ExpandConstant('{sys}\tasklist.exe') +
       '" /FI "IMAGENAME eq pulse.exe" /FO CSV /NH > "' + OutputPath + '" 2>&1"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then Exit;
-    if ResultCode <> 0 then Exit;
-    if not LoadStringFromFile(OutputPath, Output) then Exit;
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      Log('Could not query remaining Pulse processes: ' + IntToStr(ResultCode));
+      Exit;
+    end;
+    if ResultCode <> 0 then
+    begin
+      Log('Remaining Pulse process query failed: ' + IntToStr(ResultCode));
+      Exit;
+    end;
+    if not LoadStringFromFile(OutputPath, Output) then
+    begin
+      Log('Could not read remaining Pulse process query');
+      Exit;
+    end;
     DeleteFile(OutputPath);
     Ids := ParsePulseProcessIds(String(Output));
     Pending := False;
@@ -986,7 +1012,7 @@ begin
       Delete(Ids, 1, P);
       if not PulsePathInDirectories(PulseProcessPath(StrToIntDef(Id, 0)), Dirs) then Continue;
       Pending := True;
-      if I = 41 then
+      if (I = 41) and not IsPulseUpdate then
       begin
         Log('Ending leftover Pulse process ' + Id);
         EndPulseProcess(StrToIntDef(Id, 0));
@@ -1044,16 +1070,26 @@ var
 begin
   Dirs := PulseInstallDirectories;
   Log('Closing Pulse running from: ' + Dirs);
-  repeat
+  while True do
+  begin
     State := ClosePulseInstances(Dirs, 10);
     Result := State = PulseCloseDone;
     if State = PulseCloseBusy then
       PulseCloseError := CustomMessage('PulseUpdateBusy')
     else
       PulseCloseError := CustomMessage('PulseUpdateCloseFailed');
-  until Result or (State <> PulseCloseBusy) or
-    (SuppressibleMsgBox(CustomMessage('PulseUpdateWaitBusy'), mbInformation,
-       MB_RETRYCANCEL, IDCANCEL) <> IDRETRY);
+    if IsPulseUpdate then
+    begin
+      if State <> PulseCloseBusy then Exit;
+      { Operations may take hours. Keep requesting an orderly exit without
+        a Retry dialog or a timeout that kills an active operation. }
+      Sleep(1000);
+      Continue;
+    end;
+    if Result or (State <> PulseCloseBusy) then Exit;
+    if SuppressibleMsgBox(CustomMessage('PulseUpdateWaitBusy'), mbInformation,
+      MB_RETRYCANCEL, IDCANCEL) <> IDRETRY then Exit;
+  end;
 end;
 
 procedure StopPulseHosts;
@@ -1111,7 +1147,20 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PreviousUninstallError: String;
+  PreviousRoot: Integer;
 begin
+  if IsPulseUpdate then
+  begin
+    { An unattended update can only replace the registered machine install
+      in place; never silently migrate a portable/per-user/different copy. }
+    if not UpgradesInPlace or not PreviousPulseRoot(PreviousRoot) or
+      ((PreviousRoot <> HKLM64) and (PreviousRoot <> HKLM32)) then
+    begin
+      Result := 'Pulse update requires the existing installation directory and scope.';
+      Log(Result);
+      Exit;
+    end;
+  end;
   { Ask every UI process to finish safely before touching hosts or installed
     files. Stopping only the service leaves the network agent running. }
   if not ClosePulseForUpdate then
@@ -1151,6 +1200,19 @@ var
   Code: Integer;
   IndexExe, Path: String;
 begin
+  if (CurStep = ssDone) and IsPulseUpdate and not PulseUpdateFailed then
+  begin
+    { Setup must be started normally so its unelevated bootstrap process
+      retains the original user token through the UAC elevation. }
+    if not ExecAsOriginalUser(ExpandConstant('{app}\pulse.exe'),
+      '--restore-update-session', ExpandConstant('{app}'), SW_SHOWNORMAL,
+      ewNoWait, Code) then
+    begin
+      PulseUpdateFailed := True;
+      Log('Could not restart Pulse as the original user: ' + IntToStr(Code));
+    end;
+    Exit;
+  end;
   if CurStep <> ssPostInstall then Exit;
   RestoreUpgradePrefs;
   IndexExe := ExpandConstant('{app}\Pulse.Index.exe');
@@ -1161,7 +1223,10 @@ begin
     if InPlaceUpgrade and PulseIndexServiceExists then
       if not Exec(IndexExe, '--uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code) or
         (Code <> 0) then
+      begin
+        PulseUpdateFailed := True;
         Log('Index service removal failed: ' + IntToStr(Code));
+      end;
     Exit;
   end;
   Path := RemoveBackslashUnlessRoot(GetIndexPath(''));
@@ -1169,6 +1234,7 @@ begin
   Code := -1;
   if not Exec(IndexExe, '--set-index-path "' + Path + '"', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
+    PulseUpdateFailed := True;
     Log('Index location configuration failed: ' + IntToStr(Code));
     SuppressibleMsgBox(FmtMessage(CustomMessage('IndexPathFailed'), [IntToStr(Code)]),
       mbError, MB_OK, IDOK);
@@ -1180,8 +1246,16 @@ begin
   Code := -1;
   if not Exec(IndexExe, '--install', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
   begin
+    PulseUpdateFailed := True;
+    Log('Index service setup failed: ' + IntToStr(Code));
     SuppressibleMsgBox(FmtMessage(CustomMessage('IndexServiceFailed'), [IntToStr(Code)]),
       mbError, MB_OK, IDOK);
     Exit;
   end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := 0;
+  if IsPulseUpdate and PulseUpdateFailed then Result := 1;
 end;

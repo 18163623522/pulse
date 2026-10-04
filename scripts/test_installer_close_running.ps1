@@ -13,6 +13,8 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $source = Get-Content -LiteralPath (Join-Path $repo 'installer/PulseSetup.iss') -Raw -Encoding UTF8
 $out = Join-Path $repo 'build/installer-close-test'
+$out = [IO.Path]::GetFullPath($out)
+if (!$out.StartsWith([IO.Path]::GetFullPath((Join-Path $repo 'build')) + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Harness output must stay inside build.' }
 if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
 New-Item -ItemType Directory -Force -Path "$out\app", "$out\other" | Out-Null
 
@@ -59,6 +61,7 @@ static class FakePulse {
             if (DateTime.UtcNow < busyUntil) { Note("busy"); return (IntPtr)2; }
             Note("accepted"); DestroyWindow(h); return (IntPtr)1;
         }
+        if (m == update && mode == "savefailed") { Note("savefailed"); return (IntPtr)3; }
         if (m == 0x11) { Note("queryendsession " + l); return (IntPtr)1; }
         if (m == 0x16) { Note("endsession " + w); return IntPtr.Zero; }
         if (m == 0x02) { PostQuitMessage(0); return IntPtr.Zero; }
@@ -99,9 +102,14 @@ Uninstallable=no
 CreateAppDir=no
 OutputBaseFilename=installer-close-harness
 Compression=none
+[CustomMessages]
+PulseUpdateBusy=busy
+PulseUpdateCloseFailed=failed
+PulseUpdateWaitBusy=retry
 [Code]
 var
   Report: String;
+  PulseCloseError: String;
 function GetTickCount: DWORD;
   external 'GetTickCount@kernel32.dll stdcall';
 procedure Check(Condition: Boolean; const LabelText: String);
@@ -109,7 +117,11 @@ begin
   if Condition then Report := Report + '[PASS] ' + LabelText + #13#10
   else Report := Report + '[FAIL] ' + LabelText + #13#10;
 end;
-'@ + "`r`n" + $block + "`r`n" + @'
+function PulseInstallDirectories: String;
+begin
+  Result := ExpandConstant('{param:dir}');
+end;
+'@ + "`r`n" + $block + "`r`n" + [regex]::Match($source, '(?s)function ClosePulseForUpdate: Boolean;.*?\r?\nend;').Value + "`r`n" + @'
 function InitializeSetup: Boolean;
 var
   Started: DWORD;
@@ -128,7 +140,11 @@ begin
   end else
   begin
     Started := GetTickCount;
-    State := ClosePulseInstances(ExpandConstant('{param:dir}'), StrToInt(ExpandConstant('{param:busy}')));
+    if ExpandConstant('{param:case}') = 'autoupdate' then
+    begin
+      if ClosePulseForUpdate then State := PulseCloseDone else State := PulseCloseFailed;
+    end else
+      State := ClosePulseInstances(ExpandConstant('{param:dir}'), StrToInt(ExpandConstant('{param:busy}')));
     Report := Report + 'state=' + IntToStr(State) + #13#10 + 'ms=' + IntToStr(GetTickCount - Started) + #13#10;
   end;
   SaveStringToFile(ExpandConstant('{param:report}'), Report, False);
@@ -142,9 +158,10 @@ Set-Content -LiteralPath $iss -Value $harness -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'Pascal harness compilation failed.' }
 $setup = Join-Path $out 'installer-close-harness.exe'
 
-function Run-Harness([string]$case, [int]$busy) {
+function Run-Harness([string]$case, [int]$busy, [bool]$update = $false) {
     $report = "$out\report-$case.txt"
-    $argv = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/case=$case", "/dir=$out\app", "/busy=$busy", "/report=$report"
+    $argv = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$out\setup-$case.log", "/case=$case", "/dir=$out\app", "/busy=$busy", "/report=$report"
+    if ($update) { $argv += '/PULSEUPDATE=1' }
     $p = Start-Process -FilePath $setup -ArgumentList $argv -WindowStyle Hidden -Wait -PassThru
     if (!(Test-Path -LiteralPath $report)) { throw "Harness $case produced no report (exit $($p.ExitCode))." }
     $text = Get-Content -LiteralPath $report -Raw
@@ -153,7 +170,7 @@ function Run-Harness([string]$case, [int]$busy) {
     return [pscustomobject]@{ Text = $text; State = $state; Ms = $ms }
 }
 function Start-Fake([string]$dir, [string]$mode, [string]$log, [double]$busy = 0) {
-    $p = Start-Process -FilePath "$out\$dir\pulse.exe" -ArgumentList $mode, $log, $busy -PassThru
+    $p = Start-Process -FilePath "$out\$dir\pulse.exe" -ArgumentList $mode, $log, $busy -WindowStyle Hidden -PassThru
     for ($i = 0; $i -lt 50 -and !((Test-Path $log) -and ((Get-Content $log -Raw) -match 'ready')); $i++) { Start-Sleep -Milliseconds 100 }
     return $p
 }
@@ -185,13 +202,29 @@ try {
     Check ($log -match 'busy' -and $log -match 'accepted' -and $log -match 'exit' -and $log -notmatch 'session') 'it closed itself through the handshake'
     Check ($busy.WaitForExit(3000)) 'its process is gone'
 
+    # --- Unattended mode waits beyond the old ten-second Retry boundary ----------
+    $autoupdate = Start-Fake 'app' 'modern' "$out\autoupdate.log" 12
+    $r = Run-Harness 'autoupdate' 0 $true
+    Check ($r.State -eq 0 -and $r.Ms -ge 10000) "unattended update automatically waits beyond Retry boundary (state $($r.State), $($r.Ms) ms)"
+    Check ($autoupdate.WaitForExit(3000) -and (Log-Of "$out\autoupdate.log") -match 'accepted') 'unattended update closes through accepted handshake'
+
+    $legacyUpdate = Start-Fake 'app' 'legacy' "$out\legacy-update.log"
+    $r = Run-Harness 'legacy-update' 0 $true
+    Check ($r.State -eq 1 -and !$legacyUpdate.HasExited -and (Log-Of "$out\legacy-update.log") -notmatch 'session') 'unattended update refuses to force-close an unsupported legacy process'
+    $legacyUpdate.Kill(); $legacyUpdate.WaitForExit()
+
+    $savefailed = Start-Fake 'app' 'savefailed' "$out\savefailed.log"
+    $r = Run-Harness 'savefailed' 0 $true
+    Check ($r.State -eq 1 -and !$savefailed.HasExited -and (Log-Of "$out\savefailed.log") -notmatch 'session') 'session-save failure aborts without killing Pulse'
+    $savefailed.Kill(); $savefailed.WaitForExit()
+
     # --- Still busy when the wait runs out ---------------------------------------
     $stuck = Start-Fake 'app' 'modern' "$out\stuck.log" 600
     $r = Run-Harness 'stuck' 2
     Check ($r.State -eq 2) "work in progress is never interrupted (state $($r.State), $($r.Ms) ms)"
     Check (!$stuck.HasExited -and (Log-Of "$out\stuck.log") -notmatch 'session') 'the busy Pulse keeps running'
 } finally {
-    foreach ($p in @($legacy, $other, $busy, $stuck)) { if ($p -and !$p.HasExited) { $p.Kill() } }
+    foreach ($p in @($legacy, $other, $busy, $stuck, $autoupdate, $legacyUpdate, $savefailed)) { if ($p -and !$p.HasExited) { $p.Kill(); $p.WaitForExit() } }
 }
 
 if ($failures) { throw "Close-running regression failed ($failures)." }

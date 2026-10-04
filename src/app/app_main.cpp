@@ -30,6 +30,7 @@
 #include "app_worker.h"
 #include "snapshot_patch.h"
 #include "session.h"
+#include "session_save.h"
 #include "context_menu.h"
 #include "context_menu_controller.h"
 #include "shell_verbs.h"
@@ -293,16 +294,21 @@ static app::SessionSnapshot CaptureWindowSession(AppState& s, HWND hwnd) {
 
 // Writes session.json and app.json when they differ from the last write (or always
 // when forced). Both writes are atomic, so a kill mid-save keeps the old file.
-static void SaveWindowSession(AppState& s, HWND hwnd, bool force) {
-    if (!SessionWritable(s)) return;
+static bool SaveWindowSession(AppState& s, HWND hwnd, bool force) {
+    if (!SessionWritable(s)) return false;
     auto json = app::SessionToJson(CaptureWindowSession(s, hwnd));
-    if (force || json != s.sessionSavedJson) {
-        if (app::WriteSessionJson(json)) s.sessionSavedJson = std::move(json);
-    }
+    const bool session_saved = app::SaveChangedSession(
+        json, s.sessionSavedJson, force, app::WriteSessionJson);
     auto prefs = s.appPrefs.ToJson();
-    if (force || prefs != s.prefsSavedJson) {
-        if (s.appPrefs.Save()) s.prefsSavedJson = std::move(prefs);
-    }
+    const bool prefs_saved = app::SaveChangedSession(
+        prefs, s.prefsSavedJson, force,
+        [&s](const std::wstring&) { return s.appPrefs.Save(); });
+    return session_saved && prefs_saved;
+}
+
+bool pulse::PrepareSessionForUpdate(AppState& s) {
+    s.updateSessionPrepared = SaveWindowSession(s, s.hwnd, false);
+    return s.updateSessionPrepared;
 }
 
 // Checked from the UI timer; skipped while a mouse drag (splitter, sidebar,
@@ -349,7 +355,7 @@ static void NoteUiActivity(HWND hwnd, bool visible) {
 LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* s = GetAppState(hwnd);
     if (s && msg != 0 && msg == app::UpdateShutdownMessage())
-        return CloseForUpdate(*s) ? app::kUpdateShutdownAccepted : app::kUpdateShutdownBusy;
+        return CloseForUpdate(*s);
     if (s && IsUiActivityMessage(msg)) NoteUiActivity(hwnd, IsWindowVisible(hwnd) && !IsIconic(hwnd));
     if (s && s->notification_toast.HandleMessage(hwnd, msg, wParam, lParam)) return 0;
     if (s && GroupWheelMessage(*s, hwnd, msg, wParam, lParam)) return 0;
@@ -683,7 +689,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         // "Open the default location" drops only the saved tabs; the rest of the
         // session (sidebar, details pane, window state) still applies.
         const bool open_default_location =
-            !s->shot.active && !app::RestoresLastTabs(s->appPrefs);
+            !s->shot.active && !app::RestoresLastTabs(s->appPrefs, s->restoreUpdateSession);
         if (open_default_location) {
             s->session_layout_tabs.clear();
             s->session_tab_groups.clear();
@@ -1897,10 +1903,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             if (!s->shot.active && !s->menushot && !s->isolatedTest) {
                 // A hidden tag-only launch must not overwrite the real
                 // window/tab session (SessionWritable); tags and places still save below.
-                SaveWindowSession(*s, hwnd, true);
+                if (!s->updateSessionPrepared) SaveWindowSession(*s, hwnd, true);
                 s->places.Save();
                 s->ctxMenuPrefs.Save();
-                s->appPrefs.Save();
+                if (!s->updateSessionPrepared) s->appPrefs.Save();
             }
 
             s->tray_controller.Detach();
@@ -2257,6 +2263,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             state.shot.update_state = __wargv[++i];
         } else if (wcscmp(__wargv[i], L"--shot-high-contrast") == 0) {
             state.shot_high_contrast = true;
+        } else if (wcscmp(__wargv[i], L"--restore-update-session") == 0) {
+            state.restoreUpdateSession = true;
         } else if (wcscmp(__wargv[i], L"--dark") == 0) {
             state.shot.force_dark = true;
             state.themeOverride = ui::ThemeMode::Dark;

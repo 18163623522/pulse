@@ -405,6 +405,8 @@ int wmain(int argc, wchar_t** argv) {
             Check(app::RequestUpdateShutdown(queued, false, [&] { closed = true; return true; }) ==
                       app::kUpdateShutdownBusy && !closed,
                   L"update handshake rejects queued operations before status becomes active");
+            Check(!app::RequestUpdateLaunch(queued, false, [&] { closed = true; }) && !closed,
+                  L"verified installer waits for queued work without launching or failing the download");
         }
         {
             ops::OpsManager idle;
@@ -506,12 +508,15 @@ int wmain(int argc, wchar_t** argv) {
         const auto deadline = GetTickCount64() + 10000;
         while (GetTickCount64() < deadline && g_ops.Status().phase != ops::OpPhase::Paused) Sleep(1);
         Check(g_ops.Status().phase == ops::OpPhase::Paused, L"hold an actual transfer active for update handshake");
+        unsigned launches = 0;
+        Check(!app::RequestUpdateLaunch(g_ops, false, [&] { ++launches; }) && launches == 0,
+              L"paused transfer keeps verified update waiting without an installer prompt");
         bool closed = false;
         Check(app::RequestUpdateShutdown(g_ops, false, [&] { closed = true; return true; }) ==
                   app::kUpdateShutdownBusy && !closed,
               L"busy update handshake never closes a running transfer");
-        g_ops.CancelCurrent();
-        Check(WaitOpDone(previous), L"cancel isolated transfer normally");
+        g_ops.ResumeCurrent();
+        Check(WaitOpDone(previous), L"waiting update allows isolated transfer to finish normally");
         bool accepted = false;
         const auto idle_deadline = GetTickCount64() + 3000;
         while (!accepted && GetTickCount64() < idle_deadline) {
@@ -520,6 +525,10 @@ int wmain(int argc, wchar_t** argv) {
             if (!accepted) Sleep(1);
         }
         Check(accepted, L"update retry succeeds after the active transfer has finished");
+        g_ops.CancelUpdatePreparation();
+        Check(app::RequestUpdateLaunch(g_ops, false, [&] { ++launches; }) && launches == 1,
+              L"next update tick launches automatically after the transfer completes");
+        Check(g_ops.TryPrepareForUpdate(), L"launch gate releases admission for the final installer shutdown handshake");
         g_ops.CancelUpdatePreparation();
         g_ops.Stop();
         wprintf(L"\n== update shutdown tests: %d passed, %d failed ==\n", g_pass, g_fail);

@@ -37,13 +37,13 @@ New-Item -ItemType Directory -Path $build -Force | Out-Null
 # Release verification is scoped to the changes being shipped. pulse already
 # depends on all three packaged hosts; standalone tests need explicit targets.
 $testNames = @('pulse_rename_ops_test', 'pulse_child_edit_test', 'pulse_localization_test',
-    'pulse_update_test', 'pulse_update_installer_test', 'pulse_app_controllers_test',
+    'pulse_update_test', 'pulse_update_installer_test', 'pulse_update_session_test', 'pulse_app_controllers_test',
     'pulse_change_tracking_polling_test', 'pulse_change_tracking_test',
     'pulse_change_tracking_memory_test', 'pulse_change_feed_memory_test', 'pulse_usn_packet_queue_test',
     'pulse_content_progress_ui_test', 'pulse_operation_presentation_test', 'pulse_column_strip_test',
     'pulse_file_lock_test', 'pulse_dialogs_test')
 $testTargets = (@('pulse', 'pulse_index_engine_test', 'pulse_index_host_stress',
-    'pulse_preview_test', 'pulse_preview_handler_probe', 'pulse_playback_controls_test') + $testNames) -join ' '
+    'pulse_preview_test', 'pulse_preview_handler_probe', 'pulse_playback_controls_test', 'pulse_ops_test') + $testNames) -join ' '
 $batch = Join-Path $build 'compile-release.bat'
 @"
 @echo off
@@ -63,6 +63,8 @@ foreach ($testName in $testNames) {
     & (Join-Path $build "$testName.exe")
     if ($LASTEXITCODE -ne 0) { throw "$testName failed" }
 }
+& (Join-Path $build 'pulse_ops_test.exe') --update-shutdown
+if ($LASTEXITCODE -ne 0) { throw 'Update shutdown and automatic wait regression failed' }
 & (Join-Path $build 'pulse_playback_controls_test.exe') --timeline-only
 if ($LASTEXITCODE -ne 0) { throw 'Playback timeline regression failed' }
 & (Join-Path $build 'pulse_preview_test.exe') --vector-only

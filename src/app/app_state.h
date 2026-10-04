@@ -291,6 +291,8 @@ struct AppState {
     HWND advancedCountHwnd = nullptr;
     // Session autosave: last written JSON, so unchanged state is never rewritten.
     std::wstring sessionSavedJson;
+    bool updateSessionPrepared = false;
+    bool restoreUpdateSession = false;
     std::wstring prefsSavedJson;
     ULONGLONG sessionAutosaveCheck = 0;
     uint32_t nextIndexReq = 1;
