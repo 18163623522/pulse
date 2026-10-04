@@ -154,11 +154,15 @@ function(pulse_add_version_resource target description internal_name original_fi
     target_sources(${target} PRIVATE "${CMAKE_BINARY_DIR}/generated/${target}_version.rc")
 endfunction()
 
+add_library(pulse_runtime_log STATIC src/common/runtime_log.cpp)
+target_include_directories(pulse_runtime_log PUBLIC "${CMAKE_BINARY_DIR}/generated")
+target_link_libraries(pulse_runtime_log PUBLIC psapi)
+
 add_library(pulse_crash_reporter STATIC
     src/common/crash_reporter.cpp
     src/common/diagnostics_exporter.cpp)
 target_include_directories(pulse_crash_reporter PUBLIC "${CMAKE_BINARY_DIR}/generated")
-target_link_libraries(pulse_crash_reporter PUBLIC dbghelp shell32 pulse_localization)
+target_link_libraries(pulse_crash_reporter PUBLIC dbghelp shell32 pulse_localization pulse_runtime_log)
 
 add_library(pulse_text STATIC src/common/text_decode.cpp)
 
@@ -853,3 +857,43 @@ if(PULSE_BUILD_PROGRESS_UI_TESTS)
         endif()
     endforeach()
 endif()
+
+# Focused cross-volume WAL replay regression, sharing the engine fixture dependencies.
+get_target_property(delta_replay_sources pulse_index_engine_test SOURCES)
+list(REMOVE_ITEM delta_replay_sources src/bench/index_engine_test.cpp)
+get_target_property(delta_replay_libraries pulse_index_engine_test LINK_LIBRARIES)
+add_executable(pulse_index_delta_replay_test src/bench/index_delta_replay_test.cpp ${delta_replay_sources})
+target_link_libraries(pulse_index_delta_replay_test PRIVATE ${delta_replay_libraries})
+foreach(delta_replay_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_OPTIONS)
+    get_target_property(delta_replay_value pulse_index_engine_test ${delta_replay_property})
+    if(delta_replay_value)
+        set_property(TARGET pulse_index_delta_replay_test PROPERTY ${delta_replay_property} "${delta_replay_value}")
+    endif()
+endforeach()
+
+add_executable(pulse_runtime_log_test src/bench/runtime_log_test.cpp)
+target_link_libraries(pulse_runtime_log_test PRIVATE pulse_crash_reporter)
+add_executable(pulse_diagnostics_export_test src/bench/diagnostics_export_test.cpp)
+target_link_libraries(pulse_diagnostics_export_test PRIVATE pulse_crash_reporter)
+# Standalone fixtures compile these instrumented modules directly.
+get_property(runtime_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(runtime_target IN LISTS runtime_targets)
+    get_target_property(runtime_sources ${runtime_target} SOURCES)
+    if("${runtime_sources}" MATCHES "ops_manager\\.cpp" AND NOT "${runtime_sources}" MATCHES "shell_command\\.cpp")
+        target_sources(${runtime_target} PRIVATE src/ops/shell_command.cpp)
+    endif()
+    if("${runtime_sources}" MATCHES "(index_engine|index_delta|filename_timing|update_checker|update_installer|app_worker|ops_manager)\\.cpp")
+        target_link_libraries(${runtime_target} PRIVATE pulse_runtime_log)
+    endif()
+endforeach()
+
+add_executable(pulse_shell_command_test src/bench/shell_command_test.cpp src/ops/shell_command.cpp)
+target_link_libraries(pulse_shell_command_test PRIVATE shell32 user32)
+add_executable(pulse_reparse_entry_test src/bench/reparse_entry_test.cpp)
+target_link_libraries(pulse_reparse_entry_test PRIVATE pulse_localization user32 shell32 shlwapi netapi32)
+
+add_executable(pulse_link_destination_test src/bench/link_destination_test.cpp src/app/link_resolve.cpp src/fs/fs_enum.cpp
+    src/app/snapshot_patch.cpp src/app/entry_order_hold.cpp src/app/entry_group.cpp src/app/entry_sort.cpp)
+target_link_libraries(pulse_link_destination_test PRIVATE pulse_localization shell32 shlwapi netapi32 ole32 uuid)
+add_executable(pulse_link_pill_test src/bench/link_pill_test.cpp)
+target_link_libraries(pulse_link_pill_test PRIVATE user32)

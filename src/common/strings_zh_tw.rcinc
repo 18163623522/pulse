@@ -1571,4 +1571,10 @@ BEGIN
     IDS_SIDEBAR_HIDE_CLOUD "在側邊欄中隱藏 OneDrive"
     IDS_SIDEBAR_CLOUD_HIDDEN_HINT "已從側邊欄隱藏。在任一區段標題或側邊欄底部空白處按右鍵，即可重新顯示。"
     IDS_SIDEBAR_SHOW_HIDDEN "顯示已隱藏的區段"
+    IDS_SETTINGS_UI_FONT_SIZE "介面字型大小"
+    IDS_SETTINGS_UI_FONT_SIZE_DESC "調整清單、側邊欄、選單和設定中的文字大小，列高隨之加大；立即生效"
+    IDS_UI_FONT_SMALL "小"
+    IDS_UI_FONT_DEFAULT "標準"
+    IDS_UI_FONT_LARGE "大"
+    IDS_UI_FONT_LARGER "特大"
 END

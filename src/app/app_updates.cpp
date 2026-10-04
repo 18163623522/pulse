@@ -5,6 +5,7 @@
 #include "app_runtime.h"
 #include "pulse_version.h"
 #include "../common/localization.h"
+#include "../common/runtime_log.h"
 #include <cstdio>
 
 namespace pulse {
@@ -45,13 +46,26 @@ void CheckForUpdates(AppState& state) {
 
 LRESULT CloseForUpdate(AppState& state) {
     const HWND window = state.hwnd;
+    const auto operation_id = diagnostics::runtime::NextId();
+    const auto started = GetTickCount64();
+    diagnostics::runtime::Event("update_shutdown_request", {{"operation", operation_id}});
     bool save_failed = false;
     const LRESULT result = app::RequestUpdateShutdown(state.ops, state.settings.migration_pending(), [&] {
-        if (!PrepareSessionForUpdate(state)) { save_failed = true; return false; }
+        diagnostics::runtime::Event("update_session_save_start", {{"operation", operation_id}});
+        const bool saved = PrepareSessionForUpdate(state);
+        diagnostics::runtime::Event("update_session_save_end", {{"operation", operation_id},
+            {"ok", saved}, {"elapsed_ms", GetTickCount64() - started}});
+        if (!saved) { save_failed = true; return false; }
+        diagnostics::runtime::Event("update_shutdown_destroy", {{"operation", operation_id}});
         if (DestroyWindow(window)) return true;
+        const DWORD error = GetLastError();
+        diagnostics::runtime::Event("update_shutdown_destroy_failed", {{"operation", operation_id}, {"code", error}});
         state.updateSessionPrepared = false;
         return false;
     });
+    diagnostics::runtime::Event("update_shutdown_result", {{"operation", operation_id},
+        {"result", static_cast<uint64_t>(save_failed ? app::kUpdateShutdownSaveFailed : result)},
+        {"elapsed_ms", GetTickCount64() - started}});
     return save_failed ? app::kUpdateShutdownSaveFailed : result;
 }
 

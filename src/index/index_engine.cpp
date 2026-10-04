@@ -1,6 +1,8 @@
 #include "filename_pinyin.h"
 // index_engine.cpp — mmap v6 base + heap delta (优化.md).
 #include "index_engine.h"
+#include "index_hierarchy.h"
+#include "../common/runtime_log.h"
 #include "search_trace.h"
 #include "index_parent_chain.h"
 #include "index_name_pool.h"
@@ -944,16 +946,22 @@ void Engine::UpdateVolumeVisibilityLocked(const std::vector<VolumeInfo>& active,
         });
         if (!on && state.root_idx >= 0) inactive.push_back(state.root_idx);
     }
+    bool changed = false;
     if (only_hide) {
-        for (int32_t root : inactive)
+        for (int32_t root : inactive) {
             if (std::find(inactive_volume_roots_.begin(), inactive_volume_roots_.end(), root) ==
-                inactive_volume_roots_.end()) inactive_volume_roots_.push_back(root);
+                inactive_volume_roots_.end()) {
+                inactive_volume_roots_.push_back(root);
+                changed = true;
+            }
+        }
     } else {
+        changed = inactive_volume_roots_ != inactive;
         inactive_volume_roots_ = std::move(inactive);
     }
     // Visibility is checked at query time; it does not change file lengths or
-    // parent links. Keep the size aggregates across routine topology polling.
-    ++filter_epoch_;
+    // parent links. Preserve query caches and size aggregates on unchanged wakes.
+    if (changed) ++filter_epoch_;
 }
 
 void Engine::CollectMatchesLocked(const CompiledQuery& cq, int32_t prefix_node,
@@ -1523,6 +1531,13 @@ bool Engine::WriteIndexFile(const std::wstring& path, const Store& s,
         TraceSearch("filename_write_limit_failed", ERROR_FILE_TOO_LARGE, path);
         return false;
     }
+    if (!ValidateIndexHierarchy(static_cast<int32_t>(s.nodes.size()),
+            [&](int32_t i) { return s.nodes[static_cast<size_t>(i)]; })) {
+        SetLastError(ERROR_INVALID_DATA);
+        TraceSearch("filename_write_hierarchy_failed", ERROR_INVALID_DATA, path);
+        diagnostics::runtime::Event("index_write_invalid_hierarchy", {{"nodes", s.nodes.size()}, {"error", ERROR_INVALID_DATA}});
+        return false;
+    }
     std::wstring tmp = path + L".tmp";
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1808,6 +1823,7 @@ void Engine::WriteVolumeShards(const Store& aggregate, const std::vector<VolStat
 bool Engine::MapIndexFile(const std::wstring& path, std::unique_ptr<MappedFile>& out) const {
     auto fail = [&](const char* stage, DWORD error) {
         TraceSearch(stage, error, path);
+        diagnostics::runtime::Event(stage, {{"error", error}});
         return false;
     };
     auto m = std::make_unique<MappedFile>();
@@ -1874,6 +1890,14 @@ bool Engine::MapIndexFile(const std::wstring& path, std::unique_ptr<MappedFile>&
     m->vols = m->hdr->vol_count
         ? reinterpret_cast<const DiskVol*>(m->view + m->hdr->vols_off) : nullptr;
     m->nvol = m->hdr->vol_count;
+    HierarchyIssue hierarchy_issue;
+    if (!ValidateIndexHierarchy(static_cast<int32_t>(m->n),
+            [&](int32_t i) { return m->nodes[i]; }, &hierarchy_issue)) {
+        diagnostics::runtime::Event("index_hierarchy_rejected", {{"reason", static_cast<uint64_t>(hierarchy_issue.error)},
+            {"node", static_cast<uint32_t>(hierarchy_issue.node)}, {"parent", static_cast<uint32_t>(hierarchy_issue.parent)},
+            {"nodes", m->n}, {"cache_version", m->hdr->ver}});
+        return fail("filename_map_hierarchy_failed", ERROR_INVALID_DATA);
+    }
     m->frns = m->hdr->frn_count
         ? reinterpret_cast<const DiskFrn*>(m->view + m->hdr->frn_off) : nullptr;
     m->nfrn = static_cast<uint32_t>(m->hdr->frn_count);
@@ -2271,8 +2295,12 @@ void Engine::OpenDeltasLocked() {
     if (vols_.empty()) {
         auto log = std::make_unique<DeltaLog>();
         const std::wstring path = DeltaFilePath(0);
-        if (!path.empty() && log->Open(path, built_unix_))
-            delta_logs_[0] = std::move(log);
+        if (path.empty()) return;
+        if (!log->Open(path, built_unix_)) {
+            DeleteFileW(path.c_str());
+            if (!log->Open(path, built_unix_)) return;
+        }
+        delta_logs_[0] = std::move(log);
         return;
     }
     for (const auto& v : vols_) {
@@ -2294,10 +2322,85 @@ void Engine::OpenDeltasLocked() {
     }
 }
 
-void Engine::ReplayDeltasLocked() {
+bool Engine::ReplayDeltasLocked() {
+    struct Addition {
+        std::wstring volume, name;
+        int32_t idx, parent;
+        uint8_t flags;
+        uint32_t mtime;
+        uint64_t size, frn;
+    };
+    std::vector<std::pair<std::wstring, std::wstring>> logs;
+    if (vols_.empty()) logs.emplace_back(L"", DeltaFilePath(0));
+    else for (const auto& volume : vols_) {
+        auto path = DeltaFilePathForVolume(volume.volume_id);
+        if (path.empty()) path = DeltaFilePath(volume.letter);
+        logs.emplace_back(volume.volume_id, std::move(path));
+    }
+    std::vector<Addition> additions;
+    bool valid = true;
+    int32_t greatest_reference = -1;
+    // IDs are global, while WALs are per volume. Validate every log before
+    // changing the snapshot, then restore additions in their original ID order.
+    // Version 1 omitted these IDs and cannot safely reconstruct interleaving.
+    for (const auto& [volume, path] : logs) {
+        if (!DeltaLog::Replay(path, built_unix_,
+            [&](DeltaOp op, int32_t idx, int32_t parent, uint8_t flags, uint8_t which,
+                uint32_t mtime, uint64_t size, std::wstring_view name, uint64_t frn,
+                uint64_t, int64_t) {
+                if (op == DeltaOp::Add) {
+                    valid &= idx >= LiveCount() && parent >= 0 && parent < idx;
+                    additions.push_back({volume, std::wstring(name), idx, parent, flags, mtime, size, frn});
+                } else if (op == DeltaOp::Patch || op == DeltaOp::Tomb) {
+                    valid &= idx >= 0;
+                    greatest_reference = (std::max)(greatest_reference, idx);
+                    if (op == DeltaOp::Patch && (which & static_cast<uint8_t>(PatchBits::Meta))) {
+                        valid &= parent >= -1;
+                        greatest_reference = (std::max)(greatest_reference, parent);
+                    }
+                }
+            })) return false;
+    }
+    if (!valid || static_cast<size_t>(LiveCount()) > kIndexCap + 64 ||
+        additions.size() > kIndexCap + 64 - static_cast<size_t>(LiveCount())) return false;
+    std::sort(additions.begin(), additions.end(), [](const Addition& a, const Addition& b) { return a.idx < b.idx; });
+    const int32_t original_count = LiveCount();
+    for (size_t i = 0; i < additions.size(); ++i)
+        if (additions[i].idx != original_count + static_cast<int32_t>(i)) return false;
+    if (greatest_reference >= original_count + static_cast<int32_t>(additions.size())) return false;
+    for (const auto& add : additions) {
+        VolState* volume = nullptr;
+        for (auto& state : vols_) if (NormalizeVolumeId(state.volume_id) == NormalizeVolumeId(add.volume)) {
+            volume = &state; break;
+        }
+        AddNodeLocked(live_, add.parent, add.name, add.flags, add.frn, add.size, UnixToFt(add.mtime), true, volume);
+    }
+    std::unordered_map<int32_t, size_t> owners;
+    for (size_t i = 0; i < vols_.size(); ++i) owners.emplace(vols_[i].root_idx, i);
+    for (const auto& add : additions) {
+        for (size_t i = 0; i < vols_.size(); ++i)
+            if (NormalizeVolumeId(vols_[i].volume_id) == NormalizeVolumeId(add.volume)) owners.emplace(add.idx, i);
+    }
+    auto owner_of = [&](int32_t idx) {
+        std::vector<int32_t> ancestors;
+        ParentChainGuard chain(LiveCount());
+        while (chain.Visit(idx)) {
+            const auto found = owners.find(idx);
+            if (found != owners.end()) {
+                const auto owner = found->second;
+                for (int32_t ancestor : ancestors) owners.emplace(ancestor, owner);
+                return owner;
+            }
+            ancestors.push_back(idx);
+            idx = NodeAt(idx).parent;
+        }
+        return SIZE_MAX;
+    };
+    if (!vols_.empty()) for (const auto& add : additions)
+        if (owner_of(add.idx) == SIZE_MAX || owner_of(add.parent) != owner_of(add.idx)) return false;
     auto apply = [&](const std::wstring& vid, DeltaOp op, int32_t idx, int32_t parent,
                      uint8_t flags, uint8_t which, uint32_t mtime, uint64_t size,
-                     std::wstring_view name, uint64_t frn, uint64_t journal_id,
+                     std::wstring_view name, uint64_t, uint64_t journal_id,
                      int64_t next_usn) {
         // Match by stable volume id: a letter reused across sessions must not
         // pull another volume's records into this one.
@@ -2307,6 +2410,16 @@ void Engine::ReplayDeltasLocked() {
                 vol = &v;
                 break;
             }
+        if (!valid) return;
+        if (!vols_.empty() && (op == DeltaOp::Patch || op == DeltaOp::Tomb)) {
+            const auto owner = vol ? static_cast<size_t>(vol - vols_.data()) : SIZE_MAX;
+            if (owner == SIZE_MAX || owner_of(idx) != owner ||
+                (op == DeltaOp::Patch && (which & static_cast<uint8_t>(PatchBits::Meta)) &&
+                 (parent < 0 ? idx != vol->root_idx : owner_of(parent) != owner))) {
+                valid = false;
+                return;
+            }
+        }
         if (op == DeltaOp::UsnCkpt) {
             if (vol) {
                 vol->journal_id = journal_id;
@@ -2322,9 +2435,6 @@ void Engine::ReplayDeltasLocked() {
             return;
         }
         if (op == DeltaOp::Add) {
-            if (static_cast<size_t>(LiveCount()) >= kIndexCap + 64) return;
-            if (!name.data() && !name.empty()) return;
-            AddNodeLocked(live_, parent, name, flags, frn, size, UnixToFt(mtime), true, vol);
             return;
         }
         if (op == DeltaOp::Patch && idx >= 0) {
@@ -2351,32 +2461,26 @@ void Engine::ReplayDeltasLocked() {
             }
         }
     };
-    if (vols_.empty()) {
-        DeltaLog::Replay(DeltaFilePath(0), built_unix_,
-            [&](DeltaOp op, int32_t idx, int32_t parent, uint8_t flags, uint8_t which,
-                uint32_t mtime, uint64_t size, std::wstring_view name, uint64_t frn,
-                uint64_t journal_id, int64_t next_usn) {
-                apply(L"", op, idx, parent, flags, which, mtime, size, name, frn,
-                      journal_id, next_usn);
-            });
-        return;
-    }
-    for (const auto& v : vols_) {
-        std::wstring path = DeltaFilePathForVolume(v.volume_id);
-        if (path.empty()) path = DeltaFilePath(v.letter);
+    for (const auto& [volume, path] : logs) {
         if (!DeltaLog::Replay(path, built_unix_,
                 [&](DeltaOp op, int32_t idx, int32_t parent, uint8_t flags, uint8_t which,
                     uint32_t mtime, uint64_t size, std::wstring_view name, uint64_t frn,
                     uint64_t journal_id, int64_t next_usn) {
-                    apply(v.volume_id, op, idx, parent, flags, which, mtime, size, name, frn,
+                    apply(volume, op, idx, parent, flags, which, mtime, size, name, frn,
                           journal_id, next_usn);
-                })) {
-            DeleteFileW(path.c_str());
+                }) || !valid) {
+            return false;
         }
     }
+    if (!ValidateIndexHierarchy(LiveCount(), [this](int32_t id) {
+            auto node = NodeAt(id);
+            if (IsTomb(id)) node.flags |= kFlagDeleted;
+            return node;
+        })) return false;
     RebuildChildMapLocked();
     indexed_.store(static_cast<size_t>(LiveCount()) > deleted_ ? LiveCount() - deleted_ : 0);
     InvalidateFilterLocked();
+    return true;
 }
 
 bool Engine::CompactNamePoolLocked(ULONGLONG now) {
@@ -2515,6 +2619,7 @@ void Engine::MergeBase(bool force, const char* reason) {
 }
 
 bool Engine::TryLoadCache() {
+    const auto load_started = GetTickCount64();
     const std::wstring path = CachePath();
     if (path.empty()) return false;
     std::unique_ptr<MappedFile> mapped;
@@ -2540,10 +2645,21 @@ bool Engine::TryLoadCache() {
     }
     std::unique_lock<std::shared_mutex> lock(mutex_);
     AdoptMappedLocked(std::move(mapped));
-    ReplayDeltasLocked();
+    if (!ReplayDeltasLocked()) {
+        diagnostics::runtime::Event("index_replay_rejected", {{"nodes", static_cast<uint64_t>(LiveCount())},
+            {"elapsed_ms", GetTickCount64() - load_started}, {"rebuild_required", 1}});
+        // A rejected/partial replay must not be exposed while Worker rebuilds.
+        AdoptMappedLocked(nullptr);
+        ready_ = false;
+        folder_size_gap_ = true;
+        SetStatus(L"索引增量记录不兼容或已损坏，正在重建…");
+        return false;
+    }
     OpenDeltasLocked();
     SetStatus(L"已加载 " + std::to_wstring(indexed_.load()) + L" 项");
     ready_ = true;
+    diagnostics::runtime::Event("index_cache_loaded", {{"nodes", indexed_.load()},
+        {"volumes", vols_.size()}, {"elapsed_ms", GetTickCount64() - load_started}});
     return true;
 }
 
@@ -2814,7 +2930,7 @@ Engine::UsnApply Engine::ApplyUsnLocked(VolState& v, const USN_RECORD_V2* rec) {
     InvalidateFilterLocked();
     if (delta) {
         const Attr a = AttrAt(idx);
-        delta->QueueAdd(parent, flags, a.mtime, a.size, name, frn);
+        delta->QueueAdd(idx, parent, flags, a.mtime, a.size, name, frn);
     }
     track(ChangeKind::Created, idx);
     return UsnApply::Structure;
@@ -3306,6 +3422,11 @@ void Engine::WalkTree(int32_t parent, const std::wstring& dir, int depth) {
 }
 
 void Engine::FullRebuild(const char* reason) {
+    const auto operation = diagnostics::runtime::NextId();
+    const auto started = GetTickCount64();
+    const uint64_t reason_code = !strcmp(reason, "cold_start") ? 1 : !strcmp(reason, "startup_stale") ? 2 :
+        !strcmp(reason, "snapshot_upgrade") ? 3 : 0;
+    diagnostics::runtime::Event("index_rebuild_begin", {{"operation", operation}, {"reason", reason_code}, {"nodes", indexed_.load()}});
     const auto timing = FilenameTiming::Begin();
     DWORD build_error = ERROR_SUCCESS;
     const auto configured_volumes = ConfiguredVolumes();
@@ -3412,6 +3533,9 @@ void Engine::FullRebuild(const char* reason) {
     }
     filename_timing_.End(FilenameStage::Rebuild, timing, indexed_.load(),
         running_ ? build_error : ERROR_OPERATION_ABORTED, reason);
+    diagnostics::runtime::Event("index_rebuild_end", {{"operation", operation}, {"nodes", indexed_.load()},
+        {"elapsed_ms", GetTickCount64() - started}, {"error", running_ ? build_error : ERROR_OPERATION_ABORTED},
+        {"used_mft", used_mft ? 1ull : 0ull}});
     filename_timing_.Flush();
 }
 

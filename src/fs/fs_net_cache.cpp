@@ -53,7 +53,7 @@ bool SaveNetSnapshot(const std::wstring& path, const SnapshotPtr& snapshot) {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f.write("PNCH", 4);
-    uint32_t ver = 1;
+    uint32_t ver = 2;
     uint64_t ts = NowUnix();
     uint32_t count = static_cast<uint32_t>(snapshot->size());
     f.write(reinterpret_cast<const char*>(&ver), 4);
@@ -65,6 +65,7 @@ bool SaveNetSnapshot(const std::wstring& path, const SnapshotPtr& snapshot) {
         uint32_t nlen = static_cast<uint32_t>(e.name.size());
         f.write(reinterpret_cast<const char*>(&flags), 1);
         f.write(reinterpret_cast<const char*>(&e.attrs), 4);
+        f.write(reinterpret_cast<const char*>(&e.reparse_tag), 4);
         f.write(reinterpret_cast<const char*>(&e.size), 8);
         f.write(reinterpret_cast<const char*>(&mtime), 8);
         f.write(reinterpret_cast<const char*>(&nlen), 4);
@@ -90,15 +91,16 @@ SnapshotPtr LoadNetSnapshot(const std::wstring& path, uint64_t* unix_sec) {
     f.read(reinterpret_cast<char*>(&ver), 4);
     f.read(reinterpret_cast<char*>(&ts), 8);
     f.read(reinterpret_cast<char*>(&count), 4);
-    if (ver != 1 || count > 500000) return nullptr;
+    if ((ver != 1 && ver != 2) || count > 500000) return nullptr;
     auto entries = std::make_shared<std::vector<DirEntry>>();
     entries->reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         uint8_t flags = 0;
-        uint32_t attrs = 0, nlen = 0;
+        uint32_t attrs = 0, nlen = 0, reparse_tag = 0;
         uint64_t size = 0, mtime = 0;
         f.read(reinterpret_cast<char*>(&flags), 1);
         f.read(reinterpret_cast<char*>(&attrs), 4);
+        if (ver >= 2) f.read(reinterpret_cast<char*>(&reparse_tag), 4);
         f.read(reinterpret_cast<char*>(&size), 8);
         f.read(reinterpret_cast<char*>(&mtime), 8);
         f.read(reinterpret_cast<char*>(&nlen), 4);
@@ -106,7 +108,9 @@ SnapshotPtr LoadNetSnapshot(const std::wstring& path, uint64_t* unix_sec) {
         DirEntry e;
         e.name.assign(nlen, L'\0');
         f.read(reinterpret_cast<char*>(e.name.data()), nlen * sizeof(wchar_t));
+        if (!f) return nullptr;
         e.attrs = attrs;
+        e.reparse_tag = reparse_tag;
         e.size = size;
         e.mtime.dwLowDateTime = static_cast<DWORD>(mtime);
         e.mtime.dwHighDateTime = static_cast<DWORD>(mtime >> 32);

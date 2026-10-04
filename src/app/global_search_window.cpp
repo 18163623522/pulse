@@ -336,8 +336,11 @@ struct GlobalSearchWindow::Impl {
     }
     void Label(const std::wstring& text, D2D1_RECT_F rect, float size, UINT32 color, bool bold = false, const wchar_t* face = L"Segoe UI", bool highlight = false, DWRITE_TEXT_ALIGNMENT alignment = DWRITE_TEXT_ALIGNMENT_LEADING) {
         ComPtr<IDWriteTextFormat> format;
+        // Glyph icons keep their slots; text follows Settings > Interface font size.
+        const bool icon_face = std::wstring_view(face).find(L"Icons") != std::wstring_view::npos;
+        const float text_size = icon_face ? size : size * ui::typography::UiFontScale();
         if (FAILED(write_factory->CreateTextFormat(face, nullptr, bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, l10n::LocaleName(), &format))) return;
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, text_size, l10n::LocaleName(), &format))) return;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(alignment);
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -384,7 +387,8 @@ struct GlobalSearchWindow::Impl {
         ComPtr<IDWriteTextLayout> layout;
         DWRITE_TEXT_METRICS metrics{};
         if (SUCCEEDED(write_factory->CreateTextFormat(L"Segoe UI", nullptr, bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, l10n::LocaleName(), &format)) &&
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * ui::typography::UiFontScale(),
+            l10n::LocaleName(), &format)) &&
             SUCCEEDED(write_factory->CreateTextLayout(text.data(), static_cast<UINT32>(text.size()), format.Get(), 2000, 40, &layout)))
             layout->GetMetrics(&metrics);
         return std::ceil(metrics.widthIncludingTrailingWhitespace);

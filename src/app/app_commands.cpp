@@ -80,7 +80,8 @@ bool EnsureMenu(AppState& s) {
         }
     }
     s.menu->SetTheme(s.darkMode, s.accentColor);
-    s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(s.appPrefs.row_height)));
+    s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(
+        app::EffectiveRowHeightDip(s.appPrefs.row_height, s.appPrefs.ui_font_scale))));
     return true;
 }
 
@@ -2340,6 +2341,21 @@ void SyncQuickPreview(AppState& s) {
 
 void EnsureEditVisuals(AppState& s);
 
+// The hosted edits use a GDI font sized from the typography settings.
+static void RefreshEditFonts(AppState& s) {
+    if (s.editFont) {
+        DeleteObject(s.editFont);
+        s.editFont = nullptr;
+    }
+    EnsureEditVisuals(s);
+    if (s.hwndAddressEdit)
+        SendMessageW(s.hwndAddressEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
+    if (s.hwndRenameEdit)
+        SendMessageW(s.hwndRenameEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
+    if (s.hwndTagRenameEdit)
+        SendMessageW(s.hwndTagRenameEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
+}
+
 void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
     if (app::HasEffect(effects, app::SettingsEffect::FileVisibility)) {
         ForEachPane(s, [&](app::Pane& pane) {
@@ -2357,10 +2373,20 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
         s.renderer.InvalidateWallpaper();
         ApplyAppWindowChrome(s);
     }
-    if (app::HasEffect(effects, app::SettingsEffect::RowHeight)) {
-        s.renderer.SetRowHeightDip(static_cast<float>(s.appPrefs.row_height));
+    if (app::HasEffect(effects, app::SettingsEffect::UiFontSize)) {
+        ui::typography::SetUiFontScale(s.appPrefs.ui_font_scale);
+        // Formats and cached widths carry the previous size.
+        ui::typography::InvalidateCaches();
+        s.compositor.RecreateTextFormats(s.scale);
+        s.renderer.InvalidateTypography();
+        RefreshEditFonts(s);
+    }
+    if (app::HasEffect(effects, app::SettingsEffect::RowHeight) ||
+        app::HasEffect(effects, app::SettingsEffect::UiFontSize)) {
+        const int row_height = app::EffectiveRowHeightDip(s.appPrefs.row_height, s.appPrefs.ui_font_scale);
+        s.renderer.SetRowHeightDip(static_cast<float>(row_height));
         if (s.menu)
-            s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(s.appPrefs.row_height)));
+            s.menu->SetRowHeightDip(static_cast<float>(app::MenuRowHeightDip(row_height)));
     }
     if (app::HasEffect(effects, app::SettingsEffect::ListStyle)) {
         s.renderer.SetListStyle(s.appPrefs.list_smart_date, s.appPrefs.list_zebra_rows,
@@ -2400,17 +2426,7 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
         ui::typography::InvalidateCaches();
         s.compositor.RecreateTextFormats(s.scale);
         s.renderer.InvalidateTypography();
-        if (s.editFont) {
-            DeleteObject(s.editFont);
-            s.editFont = nullptr;
-        }
-        EnsureEditVisuals(s);
-        if (s.hwndAddressEdit)
-            SendMessageW(s.hwndAddressEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
-        if (s.hwndRenameEdit)
-            SendMessageW(s.hwndRenameEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
-        if (s.hwndTagRenameEdit)
-            SendMessageW(s.hwndTagRenameEdit, WM_SETFONT, reinterpret_cast<WPARAM>(s.editFont), TRUE);
+        RefreshEditFonts(s);
         if (s.pane) {
             ForEachPane(s, [&](app::Pane& pane) {
                 if (IsSettingsTab(pane.ActiveTab()))

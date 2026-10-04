@@ -473,6 +473,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 L"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         }
         RefreshSidebarModel(*s);
+        ui::typography::SetUiFontScale(s->appPrefs.ui_font_scale);
         ui::typography::InvalidateCaches();
         s->compositor.RecreateTextFormats(s->scale);
         if (s->safeMode) {
@@ -482,7 +483,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             SeedShellVerbCache(*s);
             StartShellRegistryWatch(hwnd);
         }
-        s->renderer.SetRowHeightDip(static_cast<float>(s->appPrefs.row_height));
+        s->renderer.SetRowHeightDip(static_cast<float>(
+            app::EffectiveRowHeightDip(s->appPrefs.row_height, s->appPrefs.ui_font_scale)));
         s->renderer.SetListStyle(s->appPrefs.list_smart_date, s->appPrefs.list_zebra_rows,
                                  s->appPrefs.list_size_bar, s->appPrefs.list_tag_name_color,
                                  s->appPrefs.list_selection_outline);
@@ -529,7 +531,7 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             ShellExecuteW(hwnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         };
         settings_callbacks.open_diagnostics = [hwnd] {
-            const std::wstring path = app::GetPulseDataDir() + L"\\Diagnostics\\Crashes";
+            const std::wstring path = app::GetPulseDataDir() + L"\\Diagnostics";
             CreateDirectoryW((app::GetPulseDataDir() + L"\\Diagnostics").c_str(), nullptr);
             CreateDirectoryW(path.c_str(), nullptr);
             ShellExecuteW(hwnd, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -574,13 +576,16 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             }
 
             const std::wstring service_dir = destination + L"\\IndexService";
-            if (!CreateDirectoryW(service_dir.c_str(), nullptr) ||
-                !index::IndexClient::ExportDiagnosticsElevated(service_dir))
-                return false;
+            const bool service_exported = CreateDirectoryW(service_dir.c_str(), nullptr) &&
+                index::IndexClient::ExportDiagnosticsElevated(service_dir);
             const std::wstring user_dir = destination + L"\\User";
             if (!CreateDirectoryW(user_dir.c_str(), nullptr)) return false;
             options.destination = user_dir;
-            return diagnostics::Export(options, &error);
+            const bool user_exported = diagnostics::Export(options, &error);
+            if (!service_exported && error.empty()) error = l10n::Pick(
+                L"用户日志已导出，但索引服务诊断未完整导出。请检查 IndexService 目录中的清单，或重新导出并允许管理员授权。",
+                L"User logs were exported, but index service diagnostics are incomplete. Check the manifest in IndexService, or export again and allow administrator access.");
+            return user_exported && service_exported;
         };
         s->settings.BindUi(s->appPrefs, s->ctxMenuPrefs, s->index,
                            s->networkIndex, std::move(settings_callbacks));
@@ -2049,6 +2054,37 @@ static void ApplyShotTrayAction(AppState& state) {
     }
 }
 
+static void StageLinkPillShot(AppState& state) {
+    wchar_t mode[24]{}, index[16]{};
+    if (!state.isolatedTest || !GetEnvironmentVariableW(L"PULSE_TEST_LINK_PILL_SHOT", mode, ARRAYSIZE(mode)) ||
+        !state.pane || !state.pane->ActiveTab()) return;
+    // Apply preference-derived visibility before staging selection: the first
+    // view-model fill may clear selection when those preferences change.
+    BuildVm(state);
+    auto* tab = state.pane->ActiveTab();
+    if (!tab->snapshot || tab->snapshot->empty()) return;
+    GetEnvironmentVariableW(L"PULSE_TEST_LINK_PILL_INDEX", index, ARRAYSIZE(index));
+    const int row = std::clamp(_wtoi(index), 0, static_cast<int>(tab->snapshot->size()) - 1);
+    tab->ClearSelection();
+    state.hoverRow = -1;
+    state.hoverPaneIndex = -1;
+    if (wcscmp(mode, L"selected") == 0) tab->SelectOnly(row);
+    if (wcscmp(mode, L"hover") == 0 || wcscmp(mode, L"closed") == 0) {
+        state.hoverRow = row;
+        state.hoverPaneIndex = 0;
+    }
+    Render(state);
+    Sleep(250);
+    Render(state);
+    if (wcscmp(mode, L"closed") == 0) {
+        state.hoverRow = -1;
+        state.hoverPaneIndex = -1;
+        Render(state);
+        Sleep(250);
+        Render(state);
+    }
+}
+
 int ShotModeMain(AppState& state, HWND hwnd) {
     bool ok = false;
     __try {
@@ -2074,6 +2110,7 @@ int ShotModeMain(AppState& state, HWND hwnd) {
             Sleep(40);
         }
         ApplyShotTrayAction(state); // separate frame: __try forbids unwinding objects
+        StageLinkPillShot(state);
         if (state.shot_tooltip) {
             // After the pump: a mouse move during startup would clear this.
             state.hoverRegion = static_cast<int>(ui::HitTestResult::SidebarItem);

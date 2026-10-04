@@ -271,6 +271,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         return r;
                     }
                 }
+                for (int i = 0; i < 4; ++i) {
+                    if (ContainsPt(lay.ui_font_size_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsUiFontSize;
+                        r.index = i;
+                        return r;
+                    }
+                }
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.folder_sort_row[i], x, y)) {
                         r.region = HitTestResult::SettingsFolderSort;

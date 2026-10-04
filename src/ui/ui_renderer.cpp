@@ -26,6 +26,7 @@ MainRenderer::MainRenderer() = default;
 
 void MainRenderer::SetCompositor(Compositor* comp) {
     paneHeaderStroke_.reset();
+    link_arrow_geometry_.reset();
     tray_shadows_.clear();
     ClearTextWidthCache();
     sized_icon_formats_.clear();

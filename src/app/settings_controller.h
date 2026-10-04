@@ -31,6 +31,7 @@ enum class SettingsEffect : uint32_t {
     ListStyle = 1u << 10,
     FolderSort = 1u << 11,
     TextRendering = 1u << 12,
+    UiFontSize = 1u << 13,
 };
 
 constexpr SettingsEffect operator|(SettingsEffect left, SettingsEffect right) noexcept {
@@ -147,6 +148,7 @@ public:
     // 0 picks the default location's folder, 1 resets it to This PC.
     void HomeFolder(int action);
     void TextRendering(int index);
+    void UiFontSize(int index);   // 0 small 90%, 1 default 100%, 2 large 112%, 3 larger 125%
     void TrayIconSize(int index);
     // Settings sliders: 0 interface transparency (0..90), 1 wallpaper blur (0..40).
     // Values apply live while dragging; EndSlider saves once.

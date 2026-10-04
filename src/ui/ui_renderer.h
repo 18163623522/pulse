@@ -15,6 +15,7 @@
 #include "name_highlight.h"
 #include "preview_handler_host.h"
 #include "ui_motion.h"
+#include "link_pill.h"
 #include "ui_view_morph.h"
 #include "group_wheel.h"
 #include "details_column_set.h"
@@ -69,6 +70,8 @@ struct TabGroupView {
 };
 
 struct ListEntryView {
+    bool is_link = false;
+    std::wstring link_destination;
     std::wstring name;
     std::wstring size_text;
     std::wstring date_text;
@@ -83,6 +86,7 @@ struct ListEntryView {
     uint64_t accessed_value = 0;
     bool is_dir = false;
     bool is_reparse = false;
+    fs::LinkKind link_kind = fs::LinkKind::None;
     bool cloud_recall = false;
     bool record_only = false;
     bool cut = false;
@@ -425,11 +429,13 @@ struct TrayDeckView {
 
 // Right-side details panel for the current selection (ui.md §7.2 视图簇).
 struct DetailsPanelView {
+    bool is_link = false;
     bool has_selection = false;
     int multi_count = 0;            // >1 => multi-selection summary mode
     std::wstring name, path, type_text;
     std::wstring subtitle_text;     // under-name line: type · size short form
     bool is_dir = false;
+    fs::LinkKind link_kind = fs::LinkKind::None;
     DWORD attrs = 0;
     uint64_t modified_value = 0;    // thumbnail cache key parts
     uint64_t size_value = 0;
@@ -675,6 +681,7 @@ struct WindowViewModel {
     bool settings_confirm_delete = false;
     std::wstring settings_home_folder; // default location; empty = This PC
     int settings_text_render = 0; // 0 auto, 1 sharp, 2 smooth
+    int settings_ui_font_scale = 100; // interface font size: 90 / 100 / 112 / 125
     bool settings_open_folders = false;
     bool settings_win_e = false;
     bool settings_this_pc = false;
@@ -858,6 +865,7 @@ struct HitTestResult {
         SettingsBlankClick,
         SettingsHomeFolder,
         SettingsTextRender,
+        SettingsUiFontSize,
         SettingsTrayIcon,
         SettingsLanguage,
         SettingsIndexVolume,
@@ -1074,6 +1082,7 @@ public:
         for (const auto& m : list_hover_motion_) active = active || m.Active(motion_now);
         for (const auto& m : list_shift_) active = active || m.Active(motion_now);
         for (const auto& m : view_morph_) active = active || m.Active(motion_now);
+        for (const auto& m : link_pill_motion_) active = active || m.Active(motion_now);
         // Loading placeholders shimmer (and must appear on time) while any
         // pane is still enumerating.
         active = active || list_loading_active_;
@@ -1360,6 +1369,9 @@ private:
     void DrawSidebarPeek(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawFileIcon(float x, float y, float size, const Theme& theme);
     void DrawEntryIcon(const ListEntryView& entry, float x, float y, float size, const Theme& theme);
+    void DrawLinkOverlay(float x, float y, float size, const Theme& theme, float opacity = 1.0f,
+                         const std::wstring& label = {}, float expansion = 0.0f,
+                         float right_limit = 0.0f, const D2D1_RECT_F* artwork = nullptr);
     // One item's icon mid view-switch (ui_view_morph.h): thumbnail and shell
     // icon cross-fade while the rect travels. dx/dy: the row transform.
     void DrawMorphIcon(const ListEntryView& entry, const PaneViewModel& vm,
@@ -1437,6 +1449,7 @@ private:
     motion::RectMotion settings_nav_pill_;
     motion::RectMotion settings_nav_hover_;
     std::array<motion::RectMotion, 8> list_hover_motion_{};
+    std::array<LinkPillMotion, 8> link_pill_motion_{};
     std::array<motion::ListShiftMotion, 8> list_shift_{};
     std::array<motion::ViewMorphMotion, 8> view_morph_{};
     std::array<uint64_t, 8> list_loading_since_{};
@@ -1501,6 +1514,7 @@ private:
     mutable ComPtr<ID2D1SolidColorBrush> brIconFile_;
     mutable ComPtr<ID2D1StrokeStyle> dashStroke_;
     ComPtr<ID2D1StrokeStyle> paneHeaderStroke_;
+    ComPtr<ID2D1PathGeometry> link_arrow_geometry_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsBg_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsText_;
 

@@ -349,6 +349,12 @@ void SettingsController::TextRendering(int index) {
         SaveAndApply(SettingsEffect::TextRendering);
 }
 
+void SettingsController::UiFontSize(int index) {
+    static constexpr int values[] = {90, 100, 112, 125};
+    if (prefs_ && SelectValue(index, values, prefs_->ui_font_scale))
+        SaveAndApply(SettingsEffect::UiFontSize);
+}
+
 void SettingsController::TrayIconSize(int index) {
     static constexpr int values[] = {40, 48, 56};
     if (prefs_ && SelectValue(index, values, prefs_->tray_icon_size))

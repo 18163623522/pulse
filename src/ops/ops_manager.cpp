@@ -1,6 +1,8 @@
 // ops_manager.cpp — See ops_manager.h for the contract.
 #include "ops_manager.h"
+#include "../common/runtime_log.h"
 #include "operation_presentation.h"
+#include "shell_command.h"
 #include "../ipc/shell_client.h"
 #include "../common/json_utils.h"
 #include "../common/localization.h"
@@ -1390,20 +1392,18 @@ void OpsManager::OpenThread() {
         if (!dialog_owner || !IsWindow(dialog_owner)) dialog_owner = GetForegroundWindow();
 
         if (_wcsicmp(item.open_verb.c_str(), L"__cmdline") == 0) {
-            std::wstring cmd = item.open_file;
-            if (!cmd.empty()) {
-                std::vector<wchar_t> buf(cmd.begin(), cmd.end());
-                buf.push_back(0);
-                STARTUPINFOW si{ sizeof(si) };
-                PROCESS_INFORMATION pi{};
-                si.dwFlags = STARTF_USESHOWWINDOW;
-                si.wShowWindow = SW_SHOWNORMAL;
-                const wchar_t* dir = item.open_path.empty() ? nullptr : item.open_path.c_str();
-                if (CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, dir,
-                                   &si, &pi)) {
-                    CloseHandle(pi.hThread);
-                    CloseHandle(pi.hProcess);
-                }
+            const auto started = GetTickCount64();
+            const auto result = LaunchShellCommand(item.open_file, item.open_path, dialog_owner);
+            diagnostics::runtime::Event("shell_command_result", {{"task", item.seq},
+                {"create_error", result.create_error}, {"error", result.error},
+                {"elevation_requested", result.elevation_requested}, {"elapsed_ms", GetTickCount64() - started}});
+            if (result.error && result.error != ERROR_CANCELLED) {
+                wchar_t detail[512]{};
+                FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr,
+                    result.error, 0, detail, ARRAYSIZE(detail), nullptr);
+                const auto message = std::wstring(l10n::Pick(L"无法启动此菜单命令。", L"Could not launch this menu command.")) +
+                    L"\n" + detail + L" (" + std::to_wstring(result.error) + L")";
+                MessageBoxW(dialog_owner, message.c_str(), L"Pulse", MB_OK | MB_ICONERROR);
             }
             continue;
         }
@@ -1596,6 +1596,10 @@ void OpsManager::WorkerThread() {
 
         const bool run = (!item.req.lock_retry && item.req.close_first.empty()) ||
                          PrepareLockRetry(item.req, item.seq);
+        const auto diagnostic_started = GetTickCount64();
+        diagnostics::runtime::Event("file_operation_begin", {{"task", item.seq},
+            {"type", static_cast<uint64_t>(item.req.type)}, {"sources", item.req.sources.size()},
+            {"undo", item.req.is_undo}, {"run", run}});
         if (!run) {
             // PrepareLockRetry already published the outcome.
         } else if (item.req.type == OpType::Copy || item.req.type == OpType::Move) {
@@ -1603,6 +1607,11 @@ void OpsManager::WorkerThread() {
         } else {
             RunShellOp(item.req, item.seq);
         }
+        const auto diagnostic_status = Status();
+        diagnostics::runtime::Event("file_operation_end", {{"task", item.seq},
+            {"phase", static_cast<uint64_t>(diagnostic_status.phase)}, {"items", diagnostic_status.completed_items},
+            {"bytes", diagnostic_status.transferred_bytes}, {"has_error", !diagnostic_status.last_error.empty()},
+            {"elapsed_ms", GetTickCount64() - diagnostic_started}});
         {
             std::lock_guard<std::mutex> lock(mutex_);
             active_item_.reset();
@@ -2444,6 +2453,9 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         pending_conflict_.reset();
     }
     const bool transfer_cancelled = cancelled || transfer_cancel_.load();
+    diagnostics::runtime::Event("file_transfer_result", {{"task", task_id},
+        {"hresult", static_cast<uint32_t>(failure_hr)}, {"has_error", !failure.empty()},
+        {"cancelled", transfer_cancelled}, {"completed_sources", completed_sources.size()}});
     const LockReport lock_report = !transfer_cancelled && !failure.empty()
         ? ProbeLock(req, task_id, failure_hr, failure) : LockReport{};
     SetStatus([&](OpStatus& st) {
@@ -2721,6 +2733,8 @@ void OpsManager::RunShellOp(const OpRequest& req, uint64_t task_id) {
     bool cancelled = false;
     std::wstring error;
     if (!WaitShellDone(id, hr, cancelled, error)) return;
+    diagnostics::runtime::Event("file_operation_shell_result", {{"task", task_id},
+        {"request", id}, {"hresult", hr}, {"cancelled", cancelled}});
 
     const bool ok = SUCCEEDED((HRESULT)hr) && !cancelled;
     if (ok) PushUndo(req);

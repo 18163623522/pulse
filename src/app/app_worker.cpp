@@ -7,6 +7,7 @@
 #include "../fs/fs_enum.h"
 #include "../fs/fs_recycle.h"
 #include "../fs/fs_net_cache.h"
+#include "../common/runtime_log.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -72,6 +73,7 @@ uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
     std::queue<WorkItem> filtered;
     while (!queue_.empty()) {
         if (queue_.front().request_key != key) filtered.push(std::move(queue_.front()));
+        else diagnostics::runtime::Event("navigation_superseded", {{"generation", queue_.front().generation}});
         queue_.pop();
     }
     queue_ = std::move(filtered);
@@ -79,6 +81,7 @@ uint64_t WorkerPool::Refresh(const std::wstring& path, ui::SortColumn col,
     work.group_by = group_by;
     work.folder_sizes = std::move(folder_sizes);
     queue_.push(std::move(work));
+    diagnostics::runtime::Event("navigation_request", {{"generation", gen}, {"load_paths", 0}});
     cv_.notify_one();
     return gen;
 }
@@ -96,6 +99,7 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
     std::queue<WorkItem> filtered;
     while (!queue_.empty()) {
         if (queue_.front().request_key != key) filtered.push(std::move(queue_.front()));
+        else diagnostics::runtime::Event("navigation_superseded", {{"generation", queue_.front().generation}});
         queue_.pop();
     }
     queue_ = std::move(filtered);
@@ -106,6 +110,7 @@ uint64_t WorkerPool::LoadPaths(const std::wstring& view_path,
     item.paths = std::move(paths);
     item.display_times = std::move(display_times);
     queue_.push(std::move(item));
+    diagnostics::runtime::Event("navigation_request", {{"generation", gen}, {"load_paths", 1}});
     cv_.notify_one();
     return gen;
 }
@@ -164,6 +169,7 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
                 entry.attrs = data.dwFileAttributes;
                 entry.is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                 entry.is_reparse = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                entry.reparse_tag = entry.is_reparse ? fs::ReadReparseTag(leaf) : 0;
                 entry.cloud_recall =
                     (data.dwFileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
                 entry.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) |
@@ -208,7 +214,7 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
         }
     }
 
-    // Resolve .lnk targets (Recent folder, desktop shortcuts) before display.
+    // Read link destinations on this worker before display (including .lnk targets).
     if (!fs::IsRecycleViewPath(item.path)) {
         ResolveLinksInPlace(item.path, *entries, [&] {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -298,7 +304,13 @@ void WorkerPool::WorkerThread() {
             cv_.notify_all();
             continue;
         }
+        const auto started = GetTickCount64();
+        diagnostics::runtime::Event("navigation_start", {{"generation", item.generation}, {"load_paths", item.load_paths}});
         WorkResult res = Process(item);
+        diagnostics::runtime::Event("navigation_end", {{"generation", item.generation},
+            {"cancelled", res.cancelled}, {"error", res.error},
+            {"entries", res.snapshot ? res.snapshot->size() : 0},
+            {"has_snapshot", res.snapshot != nullptr}, {"elapsed_ms", GetTickCount64() - started}});
         if (!res.cancelled && callback_) {
             const std::wstring cache_path = res.path;
             fs::SnapshotPtr cache_snapshot = res.snapshot;

@@ -76,6 +76,7 @@ void AppPrefs::ResetToDefaults() {
     start_in_tray = false;
     home_folder.clear();
     text_render = 0;
+    ui_font_scale = 100;
     folder_views.Clear();
     folder_sorts.Clear();
     folder_groups.Clear();
@@ -178,6 +179,8 @@ std::wstring AppPrefs::ToJson() const {
     out += L"\"";
     out += L",\n  \"text_render\":";
     out += std::to_wstring(text_render >= 0 && text_render <= 2 ? text_render : 0);
+    out += L",\n  \"ui_font_scale\":";
+    out += std::to_wstring(NormalizeUiFontScale(ui_font_scale));
     out += L",\n  \"show_hidden_files\":";
     out += show_hidden_files ? L"true" : L"false";
     out += L",\n  \"show_protected_os_files\":";
@@ -314,6 +317,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     home_folder = pulse::json::ExtractString(json, L"home_folder");
     text_render = pulse::json::ExtractInt(json, L"text_render", 0);
     if (text_render < 0 || text_render > 2) text_render = 0;
+    ui_font_scale = NormalizeUiFontScale(pulse::json::ExtractInt(json, L"ui_font_scale", 100));
     search_pinyin = pulse::json::ExtractBool(json, L"search_pinyin", true);
     global_search_enabled = pulse::json::ExtractBool(json, L"global_search_enabled", false);
     const int modifiers = pulse::json::ExtractInt(json, L"global_search_modifiers", 1);
@@ -522,6 +526,15 @@ bool AppPrefs::ApplyWinE(bool on) {
 }
 int MenuRowHeightDip(int list_row_height) noexcept {
     return std::clamp(list_row_height + 2, 28, 40);
+}
+int NormalizeUiFontScale(int percent) noexcept {
+    return percent == 90 || percent == 112 || percent == 125 ? percent : 100;
+}
+int EffectiveRowHeightDip(int list_row_height, int ui_font_scale) noexcept {
+    const int scale = NormalizeUiFontScale(ui_font_scale);
+    // 28 DIPs is the compact row that still fits 100% text; grow it with the font.
+    const int minimum = scale > 100 ? (28 * scale + 99) / 100 : 0;
+    return std::max(list_row_height, minimum);
 }
 
 bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept {

@@ -1,6 +1,7 @@
 #include "group_wheel.h"
 #include "FluentTokens.h"
 #include "command_icons.h"
+#include "typography.h"
 #include "ui_motion.h"
 
 #include <algorithm>
@@ -273,13 +274,15 @@ void GroupWheel::ReleaseFormats() {
 }
 
 void GroupWheel::EnsureFormats(IDWriteFactory* dwrite, IDWriteTextFormat* base) {
-    if (f_name_ && std::abs(format_scale_ - scale_) < 0.001f) return;
+    // Text follows Settings > Interface font size; the cache key carries it too.
+    const float text_scale = scale_ * typography::UiFontScale();
+    if (f_name_ && std::abs(format_scale_ - text_scale) < 0.001f) return;
     GwRelease(f_name_);
     GwRelease(f_small_);
     GwRelease(f_head_);
     GwRelease(f_kbd_);
     GwRelease(f_seg_);
-    format_scale_ = scale_;
+    format_scale_ = text_scale;
     wchar_t family[128] = L"Segoe UI";
     wchar_t locale[LOCALE_NAME_MAX_LENGTH] = L"zh-cn";
     if (base) {
@@ -288,7 +291,7 @@ void GroupWheel::EnsureFormats(IDWriteFactory* dwrite, IDWriteTextFormat* base) 
     }
     auto make = [&](const wchar_t* fam, float size, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** out) {
         if (FAILED(dwrite->CreateTextFormat(fam, nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-                                            DWRITE_FONT_STRETCH_NORMAL, size * scale_, locale, out)) || !*out)
+                                            DWRITE_FONT_STRETCH_NORMAL, size * text_scale, locale, out)) || !*out)
             return;
         (*out)->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         (*out)->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);

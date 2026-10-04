@@ -6,6 +6,7 @@
 #include "update_status.h"
 #include "about_info.h"
 #include "../ui/lumatext_renderer.h"
+#include "../ui/link_type_text.h"
 #include "../ui/fluent_menu.h"
 #include "../ui/preview_format_catalog.h"
 #include "../ui/drag_drop.h"
@@ -1795,6 +1796,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_confirm_delete = s.appPrefs.confirm_recycle_delete;
     vm.settings_home_folder = s.appPrefs.home_folder;
     vm.settings_text_render = s.appPrefs.text_render;
+    vm.settings_ui_font_scale = s.appPrefs.ui_font_scale;
     vm.sidebar_scroll = s.sidebarScroll;
     vm.sidebar_scrollbar_opacity = s.sidebarScrollbarFade.Opacity();
     vm.sidebar_scrollbar_expand = s.sidebarScrollbarFade.Expand();
@@ -2129,6 +2131,8 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             dv.name = e.name;
             dv.is_dir = penetrated ? e.link_target_is_dir : e.is_dir;
             dv.attrs = e.attrs;
+            dv.link_kind = fs::ClassifyLink(e.attrs, e.reparse_tag);
+            dv.is_link = dv.link_kind != fs::LinkKind::None || (!e.is_dir && ui::IsShortcutName(e.name));
             if (penetrated && e.link_target_is_dir) dv.attrs |= FILE_ATTRIBUTE_DIRECTORY;
             dv.size_value = penetrated ? e.link_target_size : e.size;
             const FILETIME& shown_mtime = penetrated ? e.link_target_mtime : e.mtime;
@@ -2199,9 +2203,10 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             }
             dv.location_text = TrayDisplayPath(fs::ParentPath(dv.path));
             dv.attributes_text = DetailsAttributeText(dv.attrs);
-            dv.type_text = s.detailsTypeName;
+            dv.type_text = dv.link_kind != fs::LinkKind::None
+                ? ui::LinkTypeText(dv.link_kind) : s.detailsTypeName;
             if (!dv.is_dir) {
-                dv.subtitle_text = s.detailsTypeName;
+                dv.subtitle_text = dv.type_text;
                 if (!dv.subtitle_text.empty()) dv.subtitle_text += L" · ";
                 dv.subtitle_text += pulse::format::ByteSize(dv.size_value, true);
                 dv.size_text = pulse::format::ByteSize(dv.size_value, true) + L" (" +
@@ -2395,6 +2400,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::SettingsHomeFolder:
         return text(s.hoverControlIndex == 1 ? I::ThisPc : I::SettingsHomeFolderPick);
     case R::SettingsTextRender: return text(I::SettingsTextRender);
+    case R::SettingsUiFontSize: return text(I::SettingsUiFontSize);
     case R::SettingsTrayIcon: return text(I::SettingsTrayIcon);
     case R::SettingsWallpaperLook: return text(I::SettingsWallpaperLook);
     case R::SettingsWallpaperBlur: return text(I::SettingsWallpaperBlur);

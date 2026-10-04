@@ -172,6 +172,7 @@ public:
 
 private:
     FolderSizeIndex folder_sizes_;
+    ULONGLONG folder_size_retry_after_ = 0;
     bool folder_size_usn_update_ = false;
     std::atomic<bool> folder_size_gap_{false};
     FolderSizeIndex::Item FolderSizeItem(int32_t id) const;
@@ -325,7 +326,7 @@ private:
     void FlushDeltas();
     void OpenDeltasLocked();
     void CloseDeltas();
-    void ReplayDeltasLocked();
+    bool ReplayDeltasLocked();
     DeltaLog* DeltaFor(wchar_t letter);
     void FullRebuild(const char* reason = "requested_or_watch_gap");
     void PreserveOfflineVolumesLocked(const std::vector<VolumeInfo>& active,
@@ -393,7 +394,13 @@ private:
     bool MatchNodeLocked(int32_t i, const CompiledQuery& q, int32_t prefix_node,
                          bool folders_only, bool use_attrs) const;
     void UpdateVolumeVisibilityLocked(const std::vector<VolumeInfo>& active, bool only_hide = false);
-    void InvalidateFilterLocked() { ++filter_epoch_; if (!folder_size_usn_update_) folder_sizes_.Reset(); }
+    void InvalidateFilterLocked() {
+        ++filter_epoch_;
+        if (!folder_size_usn_update_) {
+            folder_sizes_.Reset();
+            folder_size_retry_after_ = 0;
+        }
+    }
     void SetStatus(std::wstring s);
     bool IsExcludedPath(std::wstring_view path) const;
     static bool ShouldSkipName(std::wstring_view name);

@@ -25,6 +25,7 @@ bool TraditionalChinese() noexcept {
 }
 std::atomic_uint64_t g_generation{1};
 std::atomic_int g_text_render_mode{0};
+std::atomic_int g_ui_font_scale{100};
 
 template <typename T>
 void Release(T*& value) noexcept {
@@ -158,8 +159,9 @@ HRESULT CreateTextFormat(IDWriteFactory2* factory, const TextFormatSpec& spec,
     if (!factory || spec.size <= 0.0f) return E_INVALIDARG;
     const wchar_t* family = ResolveFamily(factory, spec.role);
     const wchar_t* locale = spec.role == FontRole::Icon ? L"en-US" : LocaleName();
+    const float size = spec.role == FontRole::Icon ? spec.size : spec.size * UiFontScale();
     const HRESULT result = factory->CreateTextFormat(
-        family, nullptr, spec.weight, spec.style, spec.stretch, spec.size, locale, format);
+        family, nullptr, spec.weight, spec.style, spec.stretch, size, locale, format);
     if (SUCCEEDED(result) && *format && spec.role != FontRole::Icon) {
         ApplyFallbackInternal(factory, *format);
     }
@@ -221,6 +223,20 @@ void SetTextRenderMode(TextRenderMode mode) noexcept {
 
 TextRenderMode CurrentTextRenderMode() noexcept {
     return static_cast<TextRenderMode>(g_text_render_mode.load(std::memory_order_relaxed));
+}
+
+void SetUiFontScale(int percent) noexcept {
+    const int value = percent == 90 || percent == 112 || percent == 125 ? percent : 100;
+    if (g_ui_font_scale.exchange(value, std::memory_order_relaxed) != value)
+        g_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+int UiFontScalePercent() noexcept {
+    return g_ui_font_scale.load(std::memory_order_relaxed);
+}
+
+float UiFontScale() noexcept {
+    return static_cast<float>(UiFontScalePercent()) / 100.0f;
 }
 
 void InvalidateCaches() {

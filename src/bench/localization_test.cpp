@@ -107,7 +107,8 @@ int main() {
         for (const auto language : {L"zh-CN", L"zh-TW", L"en-US"}) {
             SetLanguage(language);
             for (const auto id : {StringId::LanguageZhTW, StringId::SettingsAutoUpdate,
-                                  StringId::SettingsAutoUpdateDesc, StringId::UpdateDescManual})
+                                  StringId::SettingsAutoUpdateDesc, StringId::UpdateDescManual,
+                                  StringId::SettingsUiFontSize, StringId::UiFontLarger})
                 newest &= !Get(id).empty();
         }
         SetLanguage(L"zh-TW");

@@ -2263,6 +2263,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             s->settings.TextRendering(hit.index);
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::SettingsFolderSort ||
+                   hit.region == ui::HitTestResult::SettingsUiFontSize ||
                    hit.region == ui::HitTestResult::SettingsStartupOpen ||
                    hit.region == ui::HitTestResult::SettingsNewTabOpen ||
                    hit.region == ui::HitTestResult::SettingsNotifyIcon ||
@@ -2271,6 +2272,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             // One branch on purpose: this else-if chain sits at MSVC's block
             // nesting limit (C1061), so new settings must not lengthen it.
             switch (hit.region) {
+            case ui::HitTestResult::SettingsUiFontSize: s->settings.UiFontSize(hit.index); break;
             case ui::HitTestResult::SettingsStartupOpen: s->settings.StartupOpen(hit.index); break;
             case ui::HitTestResult::SettingsNewTabOpen: s->settings.NewTabOpen(hit.index); break;
             case ui::HitTestResult::SettingsNotifyIcon: s->settings.NotifyIcon(hit.index); break;

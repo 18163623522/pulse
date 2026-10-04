@@ -383,6 +383,8 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
                 } else {
                     DrawFileIcon(iconRc.left, iconRc.top, icon, theme);
                 }
+                if (d.is_link)
+                    DrawLinkOverlay(iconRc.left, iconRc.top, icon, theme);
                 if (showState && !state.empty())
                     centeredText(state,
                         D2D1::RectF(contentRc.left, iconRc.bottom + stateGap,

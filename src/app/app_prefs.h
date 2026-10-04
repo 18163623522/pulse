@@ -58,6 +58,8 @@ struct AppPrefs {
     std::wstring home_folder;
     // Text rendering: 0 auto (LumaText), 1 sharp (pixel-snapped DirectWrite), 2 smooth
     int text_render = 0;
+    // Interface font size in percent of the built-in sizes: 90 / 100 / 112 / 125.
+    int ui_font_scale = 100;
     FolderViewPrefs folder_views;
     FolderSortPrefs folder_sorts;
     FolderGroupPrefs folder_groups;
@@ -140,5 +142,10 @@ bool ParseAccentRgb(const std::wstring& text, uint32_t& rgb) noexcept;
 // Menu row height for a file-list row height: 2 DIPs taller, kept within
 // 28..40, so 紧凑/标准/宽松 (28/34/40) give 30/36/40 (#27).
 int MenuRowHeightDip(int list_row_height) noexcept;
+// Interface font size: only 90/100/112/125 are kept, anything else is 100.
+int NormalizeUiFontScale(int percent) noexcept;
+// List row height actually used: the chosen density, raised so larger
+// interface fonts still fit (112% -> at least 32, 125% -> at least 35).
+int EffectiveRowHeightDip(int list_row_height, int ui_font_scale) noexcept;
 
 } // namespace pulse::app

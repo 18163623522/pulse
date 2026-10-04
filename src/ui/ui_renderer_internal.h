@@ -11,6 +11,7 @@
 #include "../common/text_format.h"
 #include "../common/display_path.h"
 #include "preview_format_catalog.h"
+#include "link_type_text.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -288,6 +289,10 @@ void ClearTextWidthCache() {
                                source.mtime.dwLowDateTime;
         entry.is_dir = penetrated ? source.link_target_is_dir : source.is_dir;
         entry.is_reparse = source.is_reparse;
+        entry.link_kind = fs::ClassifyLink(source.attrs, source.reparse_tag);
+        entry.is_link = entry.link_kind != fs::LinkKind::None ||
+            (!source.is_dir && IsShortcutName(source.name));
+        entry.link_destination = source.link_destination;
         entry.cloud_recall = source.cloud_recall;
         if (vm.tag_catalog && source.attrs == 0 && !entry.path.empty()) {
             app::PlaceItemKind known_kind = app::PlaceItemKind::Unknown;
@@ -303,6 +308,7 @@ void ClearTextWidthCache() {
                 penetrated ? fs::StripLnkSuffix(source.name) : source.name, entry.is_dir);
         }
         if (source.drive_type != 0) entry.type_text = DriveTypeText(source.drive_type);
+        if (entry.link_kind != fs::LinkKind::None) entry.type_text = LinkTypeText(entry.link_kind);
         if (source.drive_type != 0 && source.drive_total > 0) {
             const uint64_t free_bytes = std::min(source.drive_free, source.drive_total);
             entry.drive_used = static_cast<float>(
@@ -1757,6 +1763,8 @@ struct SettingsLayout {
     D2D1_RECT_F start_in_tray_row{};
     D2D1_RECT_F text_render_card{};
     D2D1_RECT_F text_render_row[3]{};
+    D2D1_RECT_F ui_font_size_card{};
+    D2D1_RECT_F ui_font_size_row[4]{};
     D2D1_RECT_F tray_icon_card{};
     D2D1_RECT_F tray_icon_row[3]{};
     D2D1_RECT_F language_card{};

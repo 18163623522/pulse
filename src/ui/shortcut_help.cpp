@@ -1,6 +1,7 @@
 #include "shortcut_help.h"
 #include "../common/windows_compat.h"
 #include "../common/localization.h"
+#include "typography.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <array>
@@ -128,7 +129,8 @@ void DrawShortcutHelp(Compositor& compositor, bool dark, D2D1_COLOR_F accent,
             ? L"Microsoft JhengHei" : L"Microsoft YaHei";
         compositor.DwriteFactory()->CreateTextFormat(family, nullptr,
             bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size*scale, L"", &format);
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            size*scale*typography::UiFontScale(), L"", &format);
         return format;
     };
     auto text = [&](std::wstring_view value, D2D1_RECT_F r, float size,

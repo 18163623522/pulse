@@ -14,6 +14,15 @@
 
 namespace pulse::fs {
 
+DWORD ReadReparseTag(const std::wstring& path) {
+    WIN32_FIND_DATAW data{};
+    const HANDLE find = FindFirstFileExW(NormalizePath(path).c_str(), FindExInfoBasic,
+        &data, FindExSearchNameMatch, nullptr, 0);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+    FindClose(find);
+    return (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? data.dwReserved0 : 0;
+}
+
 using NTSTATUS = LONG;
 constexpr NTSTATUS STATUS_SUCCESS = 0;
 constexpr NTSTATUS STATUS_NO_MORE_FILES = static_cast<NTSTATUS>(0x80000006L);
@@ -212,6 +221,7 @@ static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEn
         e.attrs = fd.dwFileAttributes;
         e.is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         e.is_reparse = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+        e.reparse_tag = e.is_reparse ? fd.dwReserved0 : 0;
         e.cloud_recall = (fd.dwFileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
         out.push_back(std::move(e));
     } while (FindNextFileW(h, &fd));
@@ -318,6 +328,8 @@ static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& ou
                 e.attrs = info->FileAttributes;
                 e.is_dir = (info->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                 e.is_reparse = (info->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                // FileFullDirectoryInformation returns the reparse tag in EaSize.
+                e.reparse_tag = e.is_reparse ? info->EaSize : 0;
                 e.cloud_recall = (info->FileAttributes & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) != 0;
                 out.push_back(std::move(e));
             }

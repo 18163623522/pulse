@@ -38,7 +38,9 @@ New-Item -ItemType Directory -Path $build -Force | Out-Null
 # depends on all three packaged hosts; standalone tests need explicit targets.
 $testNames = @('pulse_rename_ops_test', 'pulse_child_edit_test', 'pulse_localization_test',
     'pulse_update_test', 'pulse_update_installer_test', 'pulse_update_session_test', 'pulse_app_controllers_test',
-    'pulse_change_tracking_polling_test', 'pulse_change_tracking_test',
+    'pulse_change_tracking_polling_test', 'pulse_change_tracking_test', 'pulse_index_delta_replay_test',
+    'pulse_runtime_log_test', 'pulse_diagnostics_export_test', 'pulse_shell_command_test', 'pulse_reparse_entry_test',
+    'pulse_link_destination_test', 'pulse_link_pill_test', 'pulse_shell_icons_test',
     'pulse_change_tracking_memory_test', 'pulse_change_feed_memory_test', 'pulse_usn_packet_queue_test',
     'pulse_content_progress_ui_test', 'pulse_operation_presentation_test', 'pulse_column_strip_test',
     'pulse_file_lock_test', 'pulse_dialogs_test')
@@ -77,7 +79,7 @@ foreach ($mode in @('--startup-stop', '--shell-roundtrip')) {
 }
 $env:PULSE_SELFTEST_NO_SCREENSHOTS = '1'
 foreach ($mode in @('--parent-cycle-only', '--quiet-maintenance-only', '--name-pool-only',
-    '--maintenance-only', '--usn-only', '--feed-only', '--folder-sizes-only')) {
+    '--maintenance-only', '--usn-only', '--feed-only', '--folder-sizes-only', '--hierarchy-only', '--visibility-cache-only')) {
     & (Join-Path $build 'pulse_index_engine_test.exe') $mode
     if ($LASTEXITCODE -ne 0) { throw "Index regression $mode failed" }
 }
