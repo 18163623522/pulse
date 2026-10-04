@@ -529,6 +529,27 @@ add_executable(pulse_preview_regression_test src/bench/preview_regression_test.c
 target_link_libraries(pulse_preview_regression_test PRIVATE ole32 shell32 shlwapi)
 add_dependencies(pulse_preview_regression_test pulse_preview)
 
+# Native Markdown math: focused parsing, layout and offscreen rendering checks.
+add_executable(pulse_math_syntax_test src/bench/math_syntax_test.cpp
+    src/ui/math_syntax.cpp src/ui/math_macro.cpp src/ui/math_alphabet.cpp src/ui/math_font_metrics.cpp)
+
+add_executable(pulse_math_test src/bench/math_formula_test.cpp
+    src/bench/math_formula_stage3_test.cpp src/bench/math_formula_stage4_test.cpp
+    src/bench/math_formula_stage5_test.cpp
+    src/bench/math_formula_architecture_test.cpp
+    src/bench/math_formula_structures_test.cpp
+    src/bench/math_formula_reliable_test.cpp
+    src/ui/math_formula.cpp src/ui/math_syntax.cpp src/ui/math_layout.cpp
+    src/ui/math_macro.cpp src/ui/math_alphabet.cpp
+    src/ui/math_font_metrics.cpp src/ui/math_font_face.cpp
+    src/ui/markdown_view.cpp src/ui/syntax_highlight.cpp src/ui/typography.cpp
+    src/ui/thumbnail_cache.cpp src/ui/ui_compositor.cpp
+    src/preview_host/markdown_document.cpp third_party/md4c/md4c.c)
+target_compile_definitions(pulse_math_test PRIVATE MD4C_USE_UTF16)
+target_link_libraries(pulse_math_test PRIVATE dwrite d2d1 d3d11 dxgi dcomp dwmapi shcore
+    windowscodecs ole32 shell32 shlwapi user32 gdi32 comctl32 pulse_localization)
+pulse_enable_lumatext(pulse_math_test)
+
 add_executable(pulse_shell_icons_test src/bench/shell_icons_test.cpp src/ui/shell_icons.cpp)
 target_link_libraries(pulse_shell_icons_test PRIVATE ole32 shell32 comctl32 uuid)
 
