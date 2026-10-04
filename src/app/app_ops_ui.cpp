@@ -169,6 +169,22 @@ void PasteIntoCurrent(AppState& s) {
     }
 }
 
+ui::ConfirmDialogSpec BuildRecycleDeleteConfirm(const std::vector<std::wstring>& paths) {
+    ui::ConfirmDialogSpec confirm;
+    confirm.title = l10n::Get(l10n::StringId::Delete);
+    if (paths.size() == 1) {
+        confirm.message = l10n::Get(l10n::StringId::RecycleConfirmOne);
+    } else {
+        wchar_t buf[256]{};
+        swprintf_s(buf, l10n::Get(l10n::StringId::RecycleConfirmManyFormat).c_str(), paths.size());
+        confirm.message = buf;
+    }
+    // The dialog shows the first few and collapses the rest.
+    for (const std::wstring& path : paths) confirm.items.push_back(ClipboardPath(path));
+    confirm.confirm_text = l10n::Get(l10n::StringId::Delete);
+    return confirm;
+}
+
 void DeleteSelected(AppState& s, bool permanent) {
     if(DeferContentSelection(s,[=](AppState& v){DeleteSelected(v,permanent);})) return;
     app::Tab* tab = ActiveTab(s);
@@ -220,6 +236,9 @@ void DeleteSelected(AppState& s, bool permanent) {
         for (const std::wstring& path : paths) confirm.items.push_back(ClipboardPath(path));
         confirm.confirm_text = l10n::Get(l10n::StringId::PermanentDelete);
         confirm.danger = true;
+        if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
+    } else if (s.appPrefs.confirm_recycle_delete) {
+        const ui::ConfirmDialogSpec confirm = BuildRecycleDeleteConfirm(paths);
         if (!ui::ShowConfirmDialog(s.hwnd, confirm, s.darkMode, s.accentColor)) return;
     }
     ops::OpRequest req;

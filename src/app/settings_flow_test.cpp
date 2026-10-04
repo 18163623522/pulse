@@ -1,5 +1,6 @@
 #include "app_internal.h"
 #include "app_input.h"
+#include "app_ops_ui.h"
 #include "../ui/ui_renderer_internal.h"
 #include <fstream>
 #include <filesystem>
@@ -746,6 +747,28 @@ int RunSettingsFlowTest(AppState& s,const wchar_t* output) {
         click(layout().close_last_tab_row);
         check(flipped && s.appPrefs.close_window_with_last_tab==was,
               "mouse click toggles closing the window with the last tab");
+    }
+    s.settings.SetScroll(0.0f,0.0f);
+    s.settings.SetScroll(layout().confirm_delete_row.top-layout().content.top,
+        s.renderer.SettingsMaxScroll(BuildVm(s,false),window.right,window.bottom));
+    {
+        const auto list_layout=layout();
+        check(list_layout.confirm_delete_row.top>=list_layout.folder_sort_card.bottom &&
+              list_layout.confirm_delete_row.bottom<=list_layout.group[2].bottom,
+              "confirm-before-delete row sits in the file list card");
+        const bool was=s.appPrefs.confirm_recycle_delete;
+        click(list_layout.confirm_delete_row);
+        const bool flipped=s.appPrefs.confirm_recycle_delete!=was;
+        click(layout().confirm_delete_row);
+        check(flipped && s.appPrefs.confirm_recycle_delete==was,
+              "mouse click toggles confirming before deleting");
+        const auto one=BuildRecycleDeleteConfirm({L"C:\\fx\\a.txt"});
+        const auto many=BuildRecycleDeleteConfirm({L"C:\\fx\\a.txt",L"C:\\fx\\b.txt",L"C:\\fx\\c.txt"});
+        check(!one.danger && one.items.size()==1 &&
+              one.message==l10n::Get(l10n::StringId::RecycleConfirmOne) &&
+              many.items.size()==3 && many.message.find(L"3")!=std::wstring::npos &&
+              !many.confirm_text.empty() && !many.danger,
+              "recycle delete confirmation lists the items without the danger style");
     }
     s.settings.SetScroll(0,0);
     auto vm=BuildVm(s,false);

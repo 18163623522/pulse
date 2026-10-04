@@ -960,6 +960,28 @@ int wmain(int argc, wchar_t** argv) {
     parsed_prefs.ResetToDefaults();
     passed &= Report("reset keeps the window on the last tab close",
         !parsed_prefs.close_window_with_last_tab);
+    passed &= Report("confirm before deleting setting has localized text",
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsConfirmDelete).empty() &&
+        !pulse::l10n::Get(pulse::l10n::StringId::SettingsConfirmDeleteDesc).empty() &&
+        !pulse::l10n::Get(pulse::l10n::StringId::RecycleConfirmOne).empty() &&
+        !pulse::l10n::Get(pulse::l10n::StringId::RecycleConfirmManyFormat).empty());
+    passed &= Report("deleting to the Recycle Bin does not ask by default",
+        !prefs.confirm_recycle_delete);
+    settings_ui.ToggleUi(32);
+    passed &= Report("confirm before deleting enables and persists",
+        prefs.confirm_recycle_delete && parsed_prefs.FromJson(prefs.ToJson()) &&
+        parsed_prefs.confirm_recycle_delete);
+    settings_ui.ToggleUi(32);
+    passed &= Report("confirm before deleting disables and persists",
+        !prefs.confirm_recycle_delete && parsed_prefs.FromJson(prefs.ToJson()) &&
+        !parsed_prefs.confirm_recycle_delete);
+    parsed_prefs.confirm_recycle_delete = true;
+    passed &= Report("legacy preferences do not ask before deleting",
+        parsed_prefs.FromJson(L"{}") && !parsed_prefs.confirm_recycle_delete);
+    parsed_prefs.confirm_recycle_delete = true;
+    parsed_prefs.ResetToDefaults();
+    passed &= Report("reset does not ask before deleting",
+        !parsed_prefs.confirm_recycle_delete);
     passed &= Report("start in tray setting has localized text",
         pulse::l10n::Get(pulse::l10n::StringId::SettingsStartInTray) ==
             L"\u5F00\u673A\u81EA\u542F\u65F6\u9690\u85CF\u5230\u6258\u76D8" &&

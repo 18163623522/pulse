@@ -667,6 +667,7 @@ struct WindowViewModel {
     int settings_startup_open = 0; // 0 last tabs, 1 default location
     int settings_new_tab_open = 0; // 0 current folder, 1 default location
     bool settings_close_last_tab = false;
+    bool settings_confirm_delete = false;
     std::wstring settings_home_folder; // default location; empty = This PC
     int settings_text_render = 0; // 0 auto, 1 sharp, 2 smooth
     bool settings_open_folders = false;

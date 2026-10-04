@@ -173,6 +173,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.performance_row=row(64);
     for(auto& list_row : l.list_style_row) list_row=row(64);
     l.folder_sort_card=row(narrow ? 98.0f : 64.0f); segments(l.folder_sort_card,l.folder_sort_row,3,282);
+    l.confirm_delete_row=row(64);
     l.group[2]=D2D1::RectF(left,l.density_card.top,right,y);
     // Quick Look: read-only supported formats card, bit 2 of settings_expanded.
     y+=24*scale; l.preview_section=row(28);

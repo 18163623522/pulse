@@ -1551,4 +1551,8 @@ BEGIN
     IDS_NETWORK_LIVE_ADDED "已加入網路索引"
     IDS_NETWORK_LIVE_ADDED_MSG "正在建立索引；完成前，這裡的搜尋仍會即時進行。"
     IDS_NETWORK_LIVE_ADD_FAILED "無法加入網路索引"
+    IDS_SETTINGS_CONFIRM_DELETE "刪除前確認"
+    IDS_SETTINGS_CONFIRM_DELETE_DESC "按 Delete 移到資源回收筒前先詢問；永久刪除始終會確認"
+    IDS_RECYCLE_CONFIRM_ONE "要把此項目移到資源回收筒嗎？"
+    IDS_RECYCLE_CONFIRM_MANY_FORMAT "要把這 %zu 個項目移到資源回收筒嗎？"
 END

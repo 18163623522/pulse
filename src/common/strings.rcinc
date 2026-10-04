@@ -3013,6 +3013,10 @@ BEGIN
     IDS_NETWORK_LIVE_ADDED "已加入网络索引"
     IDS_NETWORK_LIVE_ADDED_MSG "正在建立索引；完成前，这里的搜索仍会实时进行。"
     IDS_NETWORK_LIVE_ADD_FAILED "无法加入网络索引"
+    IDS_SETTINGS_CONFIRM_DELETE "删除前确认"
+    IDS_SETTINGS_CONFIRM_DELETE_DESC "按 Delete 移到回收站前先询问；永久删除始终会确认"
+    IDS_RECYCLE_CONFIRM_ONE "要把此项目移到回收站吗？"
+    IDS_RECYCLE_CONFIRM_MANY_FORMAT "要把这 %zu 个项目移到回收站吗？"
 END
 
 LANGUAGE 0x09, 0x01
@@ -3057,6 +3061,10 @@ BEGIN
     IDS_NETWORK_LIVE_ADDED "Added to the network index"
     IDS_NETWORK_LIVE_ADDED_MSG "Indexing has started; until it finishes, searches here stay live."
     IDS_NETWORK_LIVE_ADD_FAILED "Couldn't add to the network index"
+    IDS_SETTINGS_CONFIRM_DELETE "Confirm before deleting"
+    IDS_SETTINGS_CONFIRM_DELETE_DESC "Ask before Delete moves items to the Recycle Bin. Permanent deletes always ask."
+    IDS_RECYCLE_CONFIRM_ONE "Move this item to the Recycle Bin?"
+    IDS_RECYCLE_CONFIRM_MANY_FORMAT "Move these %zu items to the Recycle Bin?"
 END
 
 // Traditional Chinese (Taiwan), generated from the Simplified blocks above.
