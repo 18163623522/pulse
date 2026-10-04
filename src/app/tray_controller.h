@@ -7,6 +7,14 @@
 
 namespace pulse::app {
 
+// Notification-area icon rule (#57). `background`: closing keeps Pulse running
+// (keep running after close, or global search). `mode`: 0 always, 1 only while
+// the window is hidden, 2 never.
+inline bool TrayIconWanted(bool background, int mode, bool window_hidden) {
+    if (mode == 2) return false;
+    return background && (mode != 1 || window_hidden);
+}
+
 class TrayController {
 public:
     enum class CallbackResult { NotHandled, Handled, ExitRequested };
@@ -20,13 +28,16 @@ public:
     void Attach(HWND hwnd, HINSTANCE instance);
     void Detach();
     bool SetVisible(bool visible);
-    void HideWindow();
+    // `show_icon` false (icon set to never): hide without an icon; a second
+    // launch of Pulse brings the window back.
+    void HideWindow(bool show_icon = true);
     void RestoreWindow();
     // Sign-in launch into the tray: add the icon and keep the window hidden.
     // Returns false (caller shows the window) when the icon cannot be added
     // although the taskbar exists; before Explorer is up the icon is added
     // on TaskbarCreated. `maximized`: the first restore shows it maximized.
-    bool StartHidden(bool maximized);
+    // `show_icon` false: stay hidden without an icon (see HideWindow).
+    bool StartHidden(bool maximized, bool show_icon = true);
     // Explorer (re)created the taskbar: icons added earlier are gone.
     static UINT TaskbarCreatedMessage();
     void HandleTaskbarCreated();

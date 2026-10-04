@@ -49,6 +49,7 @@ bool IsStoredWallpaper(const std::wstring& path, const std::wstring& dir) {
 void AppPrefs::ResetToDefaults() {
     launch_on_startup = false;
     keep_running_on_close = false;
+    notify_icon_mode = 0;
     open_folders_in_pulse = false;
     take_over_win_e = false;
     take_over_this_pc = false;
@@ -121,6 +122,8 @@ std::wstring AppPrefs::ToJson() const {
     out += launch_on_startup ? L"true" : L"false";
     out += L",\n  \"keep_running_on_close\":";
     out += keep_running_on_close ? L"true" : L"false";
+    out += L",\n  \"notify_icon_mode\":";
+    out += std::to_wstring(notify_icon_mode >= 0 && notify_icon_mode <= 2 ? notify_icon_mode : 0);
     out += L",\n  \"open_folders_in_pulse\":";
     out += open_folders_in_pulse ? L"true" : L"false";
     out += L",\n  \"integration_enabled\":";
@@ -276,6 +279,8 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     folder_groups.ReadJson(json);
     launch_on_startup = pulse::json::ExtractBool(json, L"launch_on_startup", false);
     keep_running_on_close = pulse::json::ExtractBool(json, L"keep_running_on_close", false);
+    notify_icon_mode = pulse::json::ExtractInt(json, L"notify_icon_mode", 0);
+    if (notify_icon_mode < 0 || notify_icon_mode > 2) notify_icon_mode = 0;
     open_folders_in_pulse = pulse::json::ExtractBool(json, L"open_folders_in_pulse", false);
     take_over_explorer_windows = pulse::json::ExtractBool(json, L"take_over_explorer_windows", false);
     integration_configured = json.find(L"\"integration_enabled\"") != std::wstring::npos;

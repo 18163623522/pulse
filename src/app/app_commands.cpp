@@ -5,6 +5,7 @@
 #include "app_column_view.h"
 #include "../ui/toolbar_layout.h"
 #include "app_internal.h"
+#include "tray_reveal.h"
 #include "group_wheel_ui.h"
 #include "text_diff.h"
 #include "global_search_controller.h"
@@ -922,6 +923,9 @@ void DispatchMenuCommand(AppState& s, int cmd) {
         break;
     case app::CmdSettings:
         OpenSettingsTab(s, 0);
+        break;
+    case app::CmdExitPulse:
+        PostMessageW(s.hwnd, WM_EXIT_PULSE, 0, 0);
         break;
     case app::CmdSettingsContextMenu:
         OpenSettingsTab(s, 2);
@@ -2383,7 +2387,7 @@ void ApplySettingsEffects(AppState& s, app::SettingsEffect effects) {
     if (app::HasEffect(effects, app::SettingsEffect::TrayDeckIcon))
         s.renderer.SetTrayIconDip(static_cast<float>(s.appPrefs.tray_icon_size));
     if (app::HasEffect(effects, app::SettingsEffect::TrayVisibility))
-        s.tray_controller.SetVisible(s.appPrefs.keep_running_on_close || s.appPrefs.global_search_enabled);
+        s.tray_controller.SetVisible(WantsTrayIcon(s, s.hidden_to_tray));
     if (app::HasEffect(effects, app::SettingsEffect::GlobalSearch))
         ApplyGlobalSearchSettings(s);
     if (app::HasEffect(effects, app::SettingsEffect::StatusBarPerformance))

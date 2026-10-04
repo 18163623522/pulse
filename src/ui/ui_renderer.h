@@ -665,6 +665,7 @@ struct WindowViewModel {
     bool settings_tips_seen = false;   // any teaching bubble already shown
     int settings_folder_sort = 0; // 0 folders first, 1 follow direction, 2 mixed
     int settings_startup_open = 0; // 0 last tabs, 1 default location
+    int settings_notify_icon = 0;  // 0 always, 1 in the background, 2 never (#57)
     int settings_new_tab_open = 0; // 0 current folder, 1 default location
     bool settings_close_last_tab = false;
     bool settings_confirm_delete = false;
@@ -848,6 +849,7 @@ struct HitTestResult {
         SettingsDensity,
         SettingsFolderSort,
         SettingsStartupOpen,
+        SettingsNotifyIcon,
         SettingsNewTabOpen,
         SettingsBlankClick,
         SettingsHomeFolder,

@@ -157,6 +157,7 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.integration_card=D2D1::RectF(left,integration_top,right,y);
     section(1);
     l.startup_row[0]=row(64); l.start_in_tray_row=row(64); l.startup_row[1]=row(64);
+    l.notify_icon_card=row(narrow ? 98.0f : 64.0f); segments(l.notify_icon_card,l.notify_icon_row,3,282);
     l.home_folder_card=row(narrow ? 98.0f : 64.0f);
     {
         const float rw=painter ? painter->MeasureButtonWidth(l10n::Get(l10n::StringId::ThisPc)) : 80*scale;

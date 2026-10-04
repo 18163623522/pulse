@@ -309,6 +309,12 @@ void SettingsController::StartupOpen(int index) {
         SaveAndApply(SettingsEffect::None);
 }
 
+void SettingsController::NotifyIcon(int index) {
+    static constexpr int values[] = {0, 1, 2};
+    if (prefs_ && SelectValue(index, values, prefs_->notify_icon_mode))
+        SaveAndApply(SettingsEffect::TrayVisibility);
+}
+
 void SettingsController::NewTabOpen(int index) {
     static constexpr int values[] = {0, 1};
     if (prefs_ && SelectValue(index, values, prefs_->new_tab_open))

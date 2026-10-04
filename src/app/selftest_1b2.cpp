@@ -2630,6 +2630,19 @@ void TestAppPrefsAndSettingsPath() {
           loaded.open_folders_in_pulse && loaded.language == L"system" &&
           !loaded.show_status_performance,
           L"appprefs: json round-trip");
+    {
+        AppPrefs icon;
+        icon.persist = false;
+        Check(icon.FromJson(L"{\"keep_running_on_close\":true}") && icon.notify_icon_mode == 0,
+              L"tray icon: older preferences keep the icon (#57)");
+        icon.notify_icon_mode = 2;
+        AppPrefs icon_loaded;
+        icon_loaded.persist = false;
+        Check(icon_loaded.FromJson(icon.ToJson()) && icon_loaded.notify_icon_mode == 2,
+              L"tray icon: the choice survives a reload");
+        Check(icon_loaded.FromJson(L"{\"notify_icon_mode\":7}") && icon_loaded.notify_icon_mode == 0,
+              L"tray icon: an unknown value falls back to always");
+    }
     Check(json.find(L"\"launch_on_startup\":false") != std::wstring::npos &&
           json.find(L"\"keep_running_on_close\":true") != std::wstring::npos &&
           json.find(L"\"open_folders_in_pulse\":true") != std::wstring::npos &&
@@ -3417,6 +3430,40 @@ void TestTrayReveal() {
                   L"start in tray: a recreated taskbar does not bring back a dropped icon");
             ShowWindow(hwnd, SW_RESTORE);
             ShowWindow(hwnd, SW_HIDE);
+
+            // Notification-area icon setting (#57).
+            Check(TrayIconWanted(true, 0, false) && !TrayIconWanted(true, 1, false) &&
+                  TrayIconWanted(true, 1, true) && !TrayIconWanted(true, 2, true) &&
+                  !TrayIconWanted(false, 0, true) && !TrayIconWanted(false, 1, true),
+                  L"tray icon: always, only in the background or never; none without background running");
+            state->appPrefs.keep_running_on_close = true;
+            state->appPrefs.notify_icon_mode = 2;
+            ShowWindow(hwnd, SW_SHOW);
+            HideMainWindowToTray(*state);
+            Check(!IsWindowVisible(hwnd) && !state->tray_controller.IconVisible() && state->hidden_to_tray,
+                  L"tray icon never: closing hides the window without an icon");
+            state->tray_controller.RestoreWindow();
+            Check(IsWindowVisible(hwnd) && !state->tray_controller.IconVisible() && !state->hidden_to_tray,
+                  L"tray icon never: a second launch brings the window back, still without an icon");
+            state->appPrefs.notify_icon_mode = 1;
+            HideMainWindowToTray(*state);
+            Check(!IsWindowVisible(hwnd) && state->tray_controller.IconVisible(),
+                  L"tray icon in background: closing shows the icon");
+            state->tray_controller.RestoreWindow();
+            Check(IsWindowVisible(hwnd) && !state->tray_controller.IconVisible(),
+                  L"tray icon in background: the icon goes when the window comes back");
+            state->appPrefs.notify_icon_mode = 0;
+            state->tray_controller.SetVisible(WantsTrayIcon(*state, false));
+            Check(state->tray_controller.IconVisible(),
+                  L"tray icon always: shown while the window is open");
+            state->tray_controller.SetVisible(false);
+            ShowWindow(hwnd, SW_HIDE);
+            state->appPrefs.notify_icon_mode = 2;
+            Check(state->tray_controller.StartHidden(false, false) && !IsWindowVisible(hwnd) &&
+                  !state->tray_controller.IconVisible(),
+                  L"tray icon never: a sign-in launch into the tray stays hidden without an icon");
+            state->appPrefs.keep_running_on_close = false;
+            state->appPrefs.notify_icon_mode = 0;
             state->tray_controller.Detach();
         }
         state->watches.Stop();
@@ -4236,6 +4283,12 @@ void TestSplitLayout() {
           L"menu: recent rows use 历史路径 badge");
     auto palQ = BuildCommandPalette(L"四宫", { L"C:\\Users" }, {}, false);
     Check(!palQ.empty() && palQ[0].command == CmdLayoutFourGrid, L"menu: palette filters by query");
+    {
+        bool offers_exit = false;
+        for (const auto& it : BuildCommandPalette(l10n::Get(l10n::StringId::ExitPulse), {}, {}, false))
+            offers_exit = offers_exit || it.command == CmdExitPulse;
+        Check(offers_exit, L"menu: the palette offers Exit Pulse (#57)");
+    }
     auto palLong = BuildCommandPalette(L"", { L"\\\\?\\C:\\Users\\TestUser" }, {}, false);
     bool recent_ok = false;
     for (const auto& it : palLong) {

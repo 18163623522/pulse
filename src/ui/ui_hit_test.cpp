@@ -278,6 +278,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                         return r;
                     }
                 }
+                for (int i = 0; i < 3; ++i) {
+                    if (ContainsPt(lay.notify_icon_row[i], x, y)) {
+                        r.region = HitTestResult::SettingsNotifyIcon;
+                        r.index = i;
+                        return r;
+                    }
+                }
                 for (int i = 0; i < 2; ++i) {
                     if (ContainsPt(lay.startup_open_row[i], x, y)) {
                         r.region = HitTestResult::SettingsStartupOpen;

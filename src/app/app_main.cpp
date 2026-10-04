@@ -906,6 +906,12 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_EXIT_PULSE:
+        // Palette "Exit Pulse" (#57): the tray menu's full exit, reachable
+        // when the icon is hidden. Posted so the palette unwinds first.
+        DestroyWindow(hwnd);
+        return 0;
+
     case WM_DPICHANGED: {
         s->scale = (float)HIWORD(wParam) / 96.0f;
         RECT* rc = reinterpret_cast<RECT*>(lParam);
@@ -2390,7 +2396,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     const bool start_in_tray = !test_hidden && !shell_tag && !state.shot.active && !state.menushot &&
         !state.colorpickshot && !state.colorpickdialog &&
         app::StartsHiddenInTray(startup_launch, state.appPrefs.start_in_tray) &&
-        state.tray_controller.StartHidden(nCmdShow == SW_SHOWMAXIMIZED);
+        state.tray_controller.StartHidden(nCmdShow == SW_SHOWMAXIMIZED, state.appPrefs.notify_icon_mode != 2);
     if (!start_in_tray)
         ShowWindow(hwnd, test_hidden || shell_tag ? SW_HIDE
                                                   : state.shot.active ? SW_SHOWNORMAL : nCmdShow);

@@ -274,6 +274,8 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         toggle(lay.startup_row[0],I::SettingsLaunch,I::SettingsLaunchDesc,L"\xE7E8",vm.settings_launch_on_startup,1);divider(lay.startup_row[0]);
         toggle(lay.start_in_tray_row,I::SettingsStartInTray,I::SettingsStartInTrayDesc,L"\xE921",vm.settings_start_in_tray,27);divider(lay.start_in_tray_row);
         toggle(lay.startup_row[1],I::SettingsKeepRunning,I::SettingsKeepRunningDesc,L"\xE737",vm.settings_keep_running,2);divider(lay.startup_row[1]);
+        const I notify_icon[]={I::NotifyIconAlways,I::NotifyIconBackground,I::NotifyIconNever};const int notify_values[]={0,1,2};
+        segmented(lay.notify_icon_card,lay.notify_icon_row,notify_icon,notify_values,vm.settings_notify_icon,H::SettingsNotifyIcon,I::SettingsNotifyIcon,I::SettingsNotifyIconDesc,3,L"\xE8A1");divider(lay.notify_icon_card);
         {
             // Default location: buttons sit beside the text, or below it when narrow.
             const bool below=lay.home_folder_choose.top>lay.home_folder_card.top+40*scale_;

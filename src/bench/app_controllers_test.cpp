@@ -858,6 +858,12 @@ int wmain(int argc, wchar_t** argv) {
     passed &= Report("settings UI controller routes preference commands",
         prefs.window_effect == L"mica-alt" && prefs.row_height == 28 &&
         prefs.accent_rgb == L"2468AC" && applied_effects == 10);
+    settings_ui.NotifyIcon(2);
+    passed &= Report("settings tray icon choice requests tray synchronization",
+        prefs.notify_icon_mode == 2 && HasEffect(last_effect, SettingsEffect::TrayVisibility));
+    settings_ui.NotifyIcon(5);
+    passed &= Report("settings tray icon ignores out-of-range choices", prefs.notify_icon_mode == 2);
+    settings_ui.NotifyIcon(0);
     settings_ui.ToggleUi(5);
     passed &= Report("settings hidden visibility toggle persists and refreshes panes",
         prefs.show_hidden_files && HasEffect(last_effect, SettingsEffect::FileVisibility));

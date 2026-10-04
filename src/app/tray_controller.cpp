@@ -57,9 +57,9 @@ bool TrayController::SetVisible(bool visible) {
     return true;
 }
 
-void TrayController::HideWindow() {
+void TrayController::HideWindow(bool show_icon) {
     if (!hwnd_) return;
-    SetVisible(true);
+    SetVisible(show_icon);
     ShowWindow(hwnd_, SW_HIDE);
 }
 
@@ -71,9 +71,9 @@ void TrayController::RestoreWindow() {
     SetForegroundWindow(hwnd_);
 }
 
-bool TrayController::StartHidden(bool maximized) {
+bool TrayController::StartHidden(bool maximized, bool show_icon) {
     if (!hwnd_) return false;
-    if (!SetVisible(true) && FindWindowW(L"Shell_TrayWnd", nullptr)) return false;
+    if (show_icon && !SetVisible(true) && FindWindowW(L"Shell_TrayWnd", nullptr)) return false;
     restore_maximized_ = maximized;
     ShowWindow(hwnd_, SW_HIDE);
     return true;

@@ -14,6 +14,10 @@ struct AppPrefs {
     bool persist = true;
     bool launch_on_startup = false;
     bool keep_running_on_close = false;
+    // notify_icon_mode: the notification-area icon while closing keeps Pulse
+    // running: 0 always, 1 only while the window is closed to it, 2 never
+    // (a second launch brings the window back; #57).
+    int notify_icon_mode = 0;
     bool open_folders_in_pulse = false;
     bool take_over_win_e = false;
     bool take_over_this_pc = false; // HKCU This PC open verb (default_file_manager.h)

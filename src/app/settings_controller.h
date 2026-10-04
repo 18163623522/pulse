@@ -141,6 +141,7 @@ public:
     // Optional Details columns (ui/details_column_set.h bits), every folder.
     void DetailsColumns(uint32_t mask);
     void StartupOpen(int index);
+    void NotifyIcon(int index);
     void NewTabOpen(int index);
     void BlankClick(int index);   // 0 nothing, 1 back, 2 up
     // 0 picks the default location's folder, 1 resets it to This PC.

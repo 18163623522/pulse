@@ -9,3 +9,5 @@ IDS_GLOBAL_SEARCH_DESC	啟用後關閉視窗仍可叫出；在系統匣選擇「
 IDS_ABOUT_HOMEPAGE	專案首頁
 IDS_SORT_WHEEL_SAMPLES	照片|專案資料|報告.pdf|旅行照片.jpg|預算.xlsx|會議記錄.docx|音樂.mp3
 IDS_SETTINGS_CONTEXT_MENU	右鍵選單
+IDS_SETTINGS_NOTIFY_ICON	系統匣圖示
+IDS_EXIT_PULSE	結束 Pulse

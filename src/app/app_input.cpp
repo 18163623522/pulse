@@ -2264,6 +2264,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
         } else if (hit.region == ui::HitTestResult::SettingsFolderSort ||
                    hit.region == ui::HitTestResult::SettingsStartupOpen ||
                    hit.region == ui::HitTestResult::SettingsNewTabOpen ||
+                   hit.region == ui::HitTestResult::SettingsNotifyIcon ||
                    hit.region == ui::HitTestResult::SettingsBlankClick ||
                    hit.region == ui::HitTestResult::SettingsHomeFolder) {
             // One branch on purpose: this else-if chain sits at MSVC's block
@@ -2271,6 +2272,7 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             switch (hit.region) {
             case ui::HitTestResult::SettingsStartupOpen: s->settings.StartupOpen(hit.index); break;
             case ui::HitTestResult::SettingsNewTabOpen: s->settings.NewTabOpen(hit.index); break;
+            case ui::HitTestResult::SettingsNotifyIcon: s->settings.NotifyIcon(hit.index); break;
             case ui::HitTestResult::SettingsBlankClick: s->settings.BlankClick(hit.index); break;
             case ui::HitTestResult::SettingsHomeFolder: s->settings.HomeFolder(hit.index); break;
             default: s->settings.FolderSort(hit.index); break;

@@ -98,7 +98,8 @@ constexpr UINT WM_FRAME_PUMP = WM_APP + 67;  // app::FramePump: one display fram
 constexpr UINT WM_SHELL_SELECT = WM_APP + 68;  // app::ShellSelectRequest* (shell_window_sync.h)
 constexpr UINT WM_EXPLORER_TAKEOVER = WM_APP + 69;  // app::ExplorerTakeoverRequest* (shell_window_sync.h)
 constexpr UINT WM_NETWORK_LIVE_SEARCH = WM_APP + 71;  // shared_ptr<LiveNetworkSearch>* (#74 live walk progressed)
-constexpr UINT WM_SHELL_VERB_SEED = WM_APP + 70;  // ShellVerbSeed* (machine verb cache read off the UI thread)
+constexpr UINT WM_SHELL_VERB_SEED = WM_APP + 70;
+constexpr UINT WM_EXIT_PULSE = WM_APP + 72;  // palette "Exit Pulse" (#57)  // ShellVerbSeed* (machine verb cache read off the UI thread)
 constexpr UINT kTimerUi = 1;
 
 enum class OmnibarMode { Path, Mixed, Command, Project };

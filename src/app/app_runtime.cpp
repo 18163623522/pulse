@@ -1786,6 +1786,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_tips_seen = s.appPrefs.tips_seen != 0;
     vm.settings_folder_sort = s.appPrefs.folder_sort_mode;
     vm.settings_startup_open = s.appPrefs.startup_open;
+    vm.settings_notify_icon = s.appPrefs.notify_icon_mode;
     vm.settings_new_tab_open = s.appPrefs.new_tab_open;
     vm.settings_close_last_tab = s.appPrefs.close_window_with_last_tab;
     vm.settings_confirm_delete = s.appPrefs.confirm_recycle_delete;
@@ -2385,6 +2386,7 @@ std::wstring TooltipForHover(AppState& s) {
     case R::SettingsDensity: return text(I::SettingsRowHeight);
     case R::SettingsFolderSort: return text(I::SettingsFolderSort);
     case R::SettingsStartupOpen: return text(I::SettingsStartupOpen);
+    case R::SettingsNotifyIcon: return text(I::SettingsNotifyIcon);
     case R::SettingsNewTabOpen: return text(I::SettingsNewTabOpen);
     case R::SettingsBlankClick: return text(I::SettingsBlankClickBack);
     case R::SettingsHomeFolder:

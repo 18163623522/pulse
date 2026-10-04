@@ -3021,6 +3021,12 @@ BEGIN
     IDS_APPLY_GROUP_ALL_SHORT "应用到所有文件夹"
     IDS_APPLY_GROUP_ALL_MESSAGE_FORMAT "所有文件夹都将按“%s”分组。之前为各个文件夹单独保存的分组会被清除，视图和排序不受影响；最近使用、搜索结果和回收站保留各自的分组。"
     IDS_APPLY_GROUP_NONE_MESSAGE "所有文件夹都将不分组。之前为各个文件夹单独保存的分组会被清除，视图和排序不受影响；最近使用、搜索结果和回收站保留各自的分组。"
+    IDS_SETTINGS_NOTIFY_ICON "托盘图标"
+    IDS_SETTINGS_NOTIFY_ICON_DESC "隐藏后，再次打开 Pulse 可恢复窗口"
+    IDS_NOTIFY_ICON_ALWAYS "始终显示"
+    IDS_NOTIFY_ICON_BACKGROUND "仅后台运行时"
+    IDS_NOTIFY_ICON_NEVER "不显示"
+    IDS_EXIT_PULSE "退出 Pulse"
 END
 
 LANGUAGE 0x09, 0x01
@@ -3073,6 +3079,12 @@ BEGIN
     IDS_APPLY_GROUP_ALL_SHORT "Apply to all folders"
     IDS_APPLY_GROUP_ALL_MESSAGE_FORMAT "All folders will be grouped by “%s”. Grouping saved for individual folders will be cleared. View and sort are not changed; Recent, search results and the Recycle Bin keep their own grouping."
     IDS_APPLY_GROUP_NONE_MESSAGE "No folder will be grouped. Grouping saved for individual folders will be cleared. View and sort are not changed; Recent, search results and the Recycle Bin keep their own grouping."
+    IDS_SETTINGS_NOTIFY_ICON "Notification area icon"
+    IDS_SETTINGS_NOTIFY_ICON_DESC "When hidden, open Pulse again to bring it back"
+    IDS_NOTIFY_ICON_ALWAYS "Always"
+    IDS_NOTIFY_ICON_BACKGROUND "In background"
+    IDS_NOTIFY_ICON_NEVER "Never"
+    IDS_EXIT_PULSE "Exit Pulse"
 END
 
 // Traditional Chinese (Taiwan), generated from the Simplified blocks above.
