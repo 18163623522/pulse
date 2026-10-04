@@ -1211,6 +1211,21 @@ SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
             ui::HexColor(0x2B88D8), L"OneDrive");
         if (!onedrive.path.empty()) m.cloud.push_back(std::move(onedrive));
     }
+    // Isolated test instances only: a fixture folder stands in for a OneDrive
+    // account so the row menu (#80) can be exercised without a signed-in client.
+    wchar_t fake[MAX_PATH]{};
+    if (m.cloud.empty() && GetEnvironmentVariableW(L"PULSE_TEST_DATA_DIR", nullptr, 0) > 0) {
+        const DWORD n = GetEnvironmentVariableW(L"PULSE_TEST_ONEDRIVE", fake, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            SidebarEntry onedrive;
+            onedrive.glyph = L"\xE753";
+            onedrive.fallback = L"OneDrive";
+            onedrive.color = ui::HexColor(0x2B88D8);
+            onedrive.label = L"OneDrive";
+            onedrive.path = fs::NormalizePath(fake);
+            m.cloud.push_back(std::move(onedrive));
+        }
+    }
     SidebarEntry recycle_bin;
     recycle_bin.glyph = L"\xE75C";
     recycle_bin.fallback = L"Bin";
@@ -1984,6 +1999,7 @@ ui::WindowViewModel BuildWindowViewModel(const Pane& pane,
     savedSearches.icon_glyph = L"\xE721"; // search
     tags.icon_glyph = L"\xE8EC";          // tag
     drives.icon_glyph = L"\xE977";        // this PC
+    drives.navigable = true;             // the title opens This PC (#80)
     nets.icon_glyph = L"\xE968";          // network
 
     tags.header = l10n::Get(l10n::StringId::SidebarTags);

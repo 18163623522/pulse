@@ -10,8 +10,8 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_LIST_SELECTION_OUTLINE_DESC;
-static_assert(static_cast<UINT>(StringId::ListSelectionOutlineDesc) <= kLastString);
+constexpr UINT kLastString = IDS_SIDEBAR_SHOW_HIDDEN;
+static_assert(static_cast<UINT>(StringId::SidebarShowHidden) <= kLastString);
 static_assert(static_cast<UINT>(StringId::ApplyGroupNoneMessage) <= kLastString);
 static_assert(static_cast<UINT>(StringId::ExitPulse) <= kLastString);
 static_assert(static_cast<UINT>(StringId::RecycleConfirmManyFormat) <= kLastString);

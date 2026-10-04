@@ -640,6 +640,7 @@ void ResetSidebarGroupDrag(AppState& s) {
     s.groupGapVisible = false;
     s.groupGapLineY = 0.0f;
     s.groupDragPath.clear();
+    s.groupDragNavigate = false;
 }
 
 // ---- Quick-access pin drag: reorders the pinned folders ---------------------
@@ -2718,6 +2719,11 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 s->groupDragPending = true;
                 s->groupDragActive = false;
                 s->groupDragId = vm.sidebar[static_cast<size_t>(hit.index)].id;
+                // #80: the This PC title opens This PC (the empty path) on a
+                // plain click; the chevron and the rest of the header fold.
+                s->groupDragNavigate = hit.sub_index == 1 &&
+                    vm.sidebar[static_cast<size_t>(hit.index)].navigable;
+                s->groupDragPath.clear();
                 s->groupDragStartPt = POINT{ mx, my };
                 s->groupDragToIndex = -1;
                 s->groupGapVisible = false;
@@ -2968,6 +2974,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             if (s->groupDragPending || s->groupDragActive) {
                 const bool was_active = s->groupDragActive;
                 const std::wstring path = s->groupDragPath;
+                const bool navigate = s->groupDragNavigate;
                 const int section = s->groupDragId;
                 if (was_active) CommitSidebarGroupDrag(*s);
                 ResetSidebarGroupDrag(*s);
@@ -2975,7 +2982,7 @@ LRESULT HandleLButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 if (!was_active) {
                     // A row of a header-less section navigates on release; a
                     // header folds its section (masks are keyed by id).
-                    if (!path.empty()) NavigateTo(*s, path);
+                    if (navigate || !path.empty()) NavigateTo(*s, path);
                     else if (section >= 0) s->sidebarCollapsedMask ^= 1u << section;
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -3487,6 +3494,11 @@ LRESULT HandleRButtonUp(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             ShowWorkspaceMenu(*s, _wtoi(rest.c_str()), sp);
             shown = true;
         } else if (HandleVerticalTabContextMenu(*s, hit, sp)) {
+            shown = true;
+        } else if (hit.region == ui::HitTestResult::SidebarItem &&
+                   hit.sidebar_section == static_cast<int>(app::SidebarSectionId::Cloud)) {
+            // OneDrive has no header to right-click (#80): its rows carry the menu.
+            ShowCloudPlaceMenu(*s, hit.path, sp);
             shown = true;
         } else if (hit.region == ui::HitTestResult::SidebarItem) {
             if (s->places.IsQuickAccessPinned(hit.path)) {

@@ -337,6 +337,9 @@ struct SidebarGroup {
     bool collapsed = false;
     bool hidden = false;           // Section menu: the group is not laid out at all.
     SidebarAddAction add_action = SidebarAddAction::None;
+    // The header title (icon + name) opens the section's own view (#80): only
+    // This PC has one. The rest of the header, and every other header, folds.
+    bool navigable = false;
     bool tabs_section = false;     // vertical tabs block: set apart by a divider
 };
 

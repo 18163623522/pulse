@@ -1090,6 +1090,47 @@ void TestBlankPaneClickNavigation() {
                     L"sidebar: plus hit targets retain actions when group order changes");
             }
         }
+        {
+            // #80: the This PC title is a link, its chevron folds, and every other
+            // header stays a plain fold toggle.
+            auto vm = BuildVm(*state, false);
+            const int drives_id = static_cast<int>(app::SidebarSectionId::Drives);
+            bool drives_link = false, others_plain = true;
+            for (auto& group : vm.sidebar) {
+                group.collapsed = true;
+                if (group.id == drives_id) {
+                    drives_link = group.navigable;
+                    // The self-test state lists no volumes; an empty section is
+                    // not laid out, so give it one row to keep the header.
+                    group.hidden = false;
+                    if (group.items.empty()) {
+                        ui::SidebarItem drive;
+                        drive.label = L"C:";
+                        drive.path = L"C:\\";
+                        group.items.push_back(std::move(drive));
+                    }
+                } else {
+                    others_plain = others_plain && !group.navigable;
+                }
+            }
+            Check(drives_link && others_plain, L"sidebar: only the This PC header is a link");
+            const auto sidebar = state->renderer.SidebarRect(1000, 700);
+            bool title_link = false, chevron_folds = false, others_fold = true;
+            for (float y = sidebar.top; y < sidebar.bottom; y += 2.0f) {
+                const auto title = state->renderer.HitTest(vm, D2D1::RectF(0, 0, 1000, 700),
+                    sidebar.left + 30.0f, y);
+                if (title.region != ui::HitTestResult::SidebarHeader) continue;
+                const bool drives = title.sidebar_section == drives_id;
+                if (drives) title_link |= title.sub_index == 1;
+                else others_fold = others_fold && title.sub_index != 1;
+                const auto chevron = state->renderer.HitTest(vm, D2D1::RectF(0, 0, 1000, 700),
+                    sidebar.right - 20.0f, y);
+                if (drives && chevron.region == ui::HitTestResult::SidebarHeader)
+                    chevron_folds |= chevron.sub_index != 1;
+            }
+            Check(title_link && chevron_folds && others_fold,
+                L"sidebar: This PC title navigates, its chevron and other headers fold");
+        }
         const auto list = ListRect(*state);
         const int x = static_cast<int>(list.left + 30);
         const int y = static_cast<int>(list.bottom - 30);

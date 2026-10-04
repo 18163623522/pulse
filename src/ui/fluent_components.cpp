@@ -2236,6 +2236,24 @@ D2D1_RECT_F Painter::SidebarSectionHeaderIconRect(const D2D1_RECT_F& bounds) con
     return D2D1::RectF(left, bounds.top + inset, left + Px(16.0f), bounds.bottom - inset);
 }
 
+D2D1_RECT_F Painter::SidebarSectionHeaderTitleRect(const D2D1_RECT_F& bounds,
+                                                   std::wstring_view text, bool has_icon) const {
+    // Same layout as DrawSidebarSectionHeader: icon, 6 px gap, then the text.
+    const float text_left = has_icon ? SidebarSectionHeaderIconRect(bounds).right + Px(6.0f)
+                                     : bounds.left + Px(10.0f);
+    const float max_right = bounds.right - Px(60.0f);
+    float width = 0.0f;
+    if (IDWriteTextLayout* layout = GetTextLayout(compositor_, SectionFormat(), text,
+            std::max(1.0f, max_right - text_left), std::max(1.0f, Height(bounds)),
+            DWRITE_TEXT_ALIGNMENT_LEADING)) {
+        DWRITE_TEXT_METRICS metrics{};
+        if (SUCCEEDED(layout->GetMetrics(&metrics))) width = metrics.width;
+    }
+    const float right = std::max(text_left, std::min(max_right, text_left + width + Px(8.0f)));
+    return D2D1::RectF(bounds.left + Px(2.0f), bounds.top + Px(3.0f), right,
+                       bounds.bottom - Px(3.0f));
+}
+
 void Painter::DrawSidebarSectionHeader(const SidebarSectionHeaderSpec& spec) {
     if (!theme_ || Width(spec.bounds) <= 0.0f || Height(spec.bounds) <= 0.0f) {
         return;

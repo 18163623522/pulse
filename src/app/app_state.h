@@ -610,6 +610,9 @@ struct AppState {
     // Set when the press came from a header-less section's own row (starred root,
     // OneDrive account): a plain click navigates there instead of folding.
     std::wstring groupDragPath;
+    // The press came from a navigable header's title (#80): a plain click opens
+    // groupDragPath even when it is empty (This PC).
+    bool groupDragNavigate = false;
 
     // Quick-access pin drag: pinned folders reorder inside the section.
     bool pinDragPending = false;

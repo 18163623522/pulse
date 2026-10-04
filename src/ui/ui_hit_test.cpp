@@ -702,6 +702,13 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 r.index = slot.group;
                 r.sidebar_section = vm.sidebar[slot.group].id;
                 r.label = vm.sidebar[slot.group].header;
+                const SidebarGroup& group = vm.sidebar[slot.group];
+                if (r.region == HitTestResult::SidebarHeader && group.navigable) {
+                    // #80: sub_index 1 = the title link; the rest folds.
+                    const D2D1_RECT_F title = painter_.SidebarSectionHeaderTitleRect(
+                        slot.rc, group.header, !group.icon_glyph.empty());
+                    if (ContainsPt(title, x, y)) r.sub_index = 1;
+                }
                 return r;
             }
             if (slot.kind == SidebarSlot::TrayPanel) {

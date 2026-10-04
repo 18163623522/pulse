@@ -13,3 +13,6 @@ IDS_SETTINGS_NOTIFY_ICON	系統匣圖示
 IDS_EXIT_PULSE	結束 Pulse
 IDS_LIST_SELECTION_OUTLINE	選取項目外框
 IDS_LIST_SELECTION_OUTLINE_DESC	選取的檔案和資料夾外加一圈強調色外框，在長清單中更容易辨識
+IDS_SIDEBAR_HIDE_CLOUD	在側邊欄中隱藏 OneDrive
+IDS_SIDEBAR_CLOUD_HIDDEN_HINT	已從側邊欄隱藏。在任一區段標題或側邊欄底部空白處按右鍵，即可重新顯示。
+IDS_SIDEBAR_SHOW_HIDDEN	顯示已隱藏的區段

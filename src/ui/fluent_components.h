@@ -422,6 +422,10 @@ public:
     void DrawSidebarSectionHeader(const SidebarSectionHeaderSpec& spec);
     // Leading-icon slot of a section header (valid when its glyph is set).
     D2D1_RECT_F SidebarSectionHeaderIconRect(const D2D1_RECT_F& bounds) const;
+    // Icon + title of a section header: the part that navigates on a navigable
+    // section (#80). Stops short of the add button and the chevron.
+    D2D1_RECT_F SidebarSectionHeaderTitleRect(const D2D1_RECT_F& bounds,
+                                              std::wstring_view text, bool has_icon) const;
     D2D1_RECT_F SidebarItemIconRect(const D2D1_RECT_F& bounds, bool status_dot) const;
     D2D1_RECT_F DriveSidebarItemIconRect(const D2D1_RECT_F& bounds) const;
     void DrawDriveSidebarItem(const DriveSidebarItemSpec& spec);

@@ -89,6 +89,8 @@ void ShowSidebarSectionsMenu(AppState& s, POINT screen_pt);
 // Menu for one section (header or empty space inside it): toggle its built-in
 // quick-access links, fold it, or hide it. Both take a SidebarSectionId value.
 void ShowSidebarSectionMenu(AppState& s, int section, POINT screen_pt);
+// Right-click on a OneDrive row (#80): the folder commands plus "hide OneDrive".
+void ShowCloudPlaceMenu(AppState& s, const std::wstring& path, POINT screen_pt);
 void ToggleSidebarSection(AppState& s, int group);
 void SetEverySidebarSectionCollapsed(AppState& s, bool collapsed);
 void ApplyAppWindowChrome(AppState& s);
