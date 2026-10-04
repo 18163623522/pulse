@@ -19,6 +19,7 @@
 #include "../app/entry_sort.h"
 
 #include <shlwapi.h>
+#include <shlobj.h>
 #include <cstdio>
 #include <cmath>
 #include <condition_variable>
@@ -391,6 +392,59 @@ bool TestAddressBarCommands() {
         std::wstring(pulse::app::AddressBarProgramExe(AddressBarProgram::Pwsh)) == L"pwsh.exe" &&
         std::wstring(pulse::app::AddressBarProgramExe(AddressBarProgram::WindowsTerminal)) == L"wt.exe" &&
         pulse::app::AddressBarProgramExe(AddressBarProgram::None) == nullptr);
+    return passed;
+}
+
+// #54: %VAR% and shell: shortcuts typed in the address bar.
+bool TestAddressShortcuts() {
+    using pulse::app::ResolveAddressShortcut;
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    auto env = [](const wchar_t* name) {
+        wchar_t buf[32768]{};
+        const DWORD n = GetEnvironmentVariableW(name, buf, ARRAYSIZE(buf));
+        return n > 0 && n < ARRAYSIZE(buf) ? std::wstring(buf, n) : std::wstring();
+    };
+    auto known = [](REFKNOWNFOLDERID id) {
+        PWSTR raw = nullptr;
+        std::wstring out;
+        if (SUCCEEDED(SHGetKnownFolderPath(id, 0, nullptr, &raw)) && raw) out = raw;
+        CoTaskMemFree(raw);
+        return out;
+    };
+    auto is = [](const wchar_t* text, const std::wstring& path) {
+        const auto r = ResolveAddressShortcut(text);
+        return r.resolved && r.path == path;
+    };
+    auto plain = [](const wchar_t* text) { return !ResolveAddressShortcut(text).resolved; };
+
+    // An isolated variable, so the check never depends on the machine's own.
+    SetEnvironmentVariableW(L"PULSE_TEST_ALIAS", L"C:\\PulseAlias");
+    const std::wstring temp = env(L"TEMP");
+    const std::wstring startup = known(FOLDERID_Startup);
+    const std::wstring sendto = known(FOLDERID_SendTo);
+    bool passed = true;
+    passed &= Report("address shortcut: %VAR% expands, case-insensitively, with a subpath",
+        !temp.empty() && is(L"%temp%", temp) && is(L"%TEMP%", temp) &&
+        is(L"%Temp%\\sub", temp + L"\\sub") &&
+        is(L"%PULSE_TEST_ALIAS%\\docs", L"C:\\PulseAlias\\docs") &&
+        is(L"  \"%PULSE_TEST_ALIAS%\"  ", L"C:\\PulseAlias"));
+    passed &= Report("address shortcut: shell: folders resolve to their filesystem path",
+        !startup.empty() && is(L"shell:startup", startup) && is(L"Shell:Startup", startup) &&
+        is(L"shell:startup\\", startup) && is(L"shell:startup\\Sub", startup + L"\\Sub") &&
+        is(L"shell:startup/Sub/", startup + L"\\Sub") &&
+        !sendto.empty() && is(L"shell:sendto", sendto));
+    passed &= Report("address shortcut: This PC and the recycle bin open Pulse's own views",
+        is(L"shell:MyComputerFolder", L"") &&
+        is(L"shell:::{20D04FE0-3AEA-1069-A2D8-08002B30309D}", L"") &&
+        is(L"shell:RecycleBinFolder", L"pulse:recycle") &&
+        is(L"shell:::{645FF040-5081-101B-9F08-00AA002F954E}", L"pulse:recycle"));
+    passed &= Report("address shortcut: plain paths, unknown names and stray % are left alone",
+        plain(L"C:\\Windows") && plain(L"\\\\server\\share") && plain(L"") &&
+        plain(L"%PULSE_NO_SUCH_VARIABLE%") && plain(L"100%") &&
+        plain(L"shell:") && plain(L"shell:PulseNoSuchFolder") &&
+        ResolveAddressShortcut(L" C:\\Windows ").path == L"C:\\Windows");
+    SetEnvironmentVariableW(L"PULSE_TEST_ALIAS", nullptr);
+    if (SUCCEEDED(com)) CoUninitialize();
     return passed;
 }
 
@@ -1369,6 +1423,7 @@ int wmain(int argc, wchar_t** argv) {
         lifecycle_completed);
 
     passed &= TestAddressBarCommands();
+    passed &= TestAddressShortcuts();
     passed &= TestShellRegistryDebounce();
     passed &= TestDefaultFileManager();
     passed &= TestShellWindowPlan();

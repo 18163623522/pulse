@@ -54,6 +54,14 @@ std::wstring FormatAddressPath(const std::wstring& text) {
     return t;
 }
 
+std::wstring AddressNavigationTarget(const std::wstring& text, bool* shortcut) {
+    const app::AddressShortcut resolved = app::ResolveAddressShortcut(text);
+    if (shortcut) *shortcut = resolved.resolved;
+    if (!resolved.resolved) return FormatAddressPath(text);
+    if (resolved.path.empty() || resolved.path.starts_with(L"pulse:")) return resolved.path;
+    return FormatAddressPath(resolved.path);
+}
+
 LRESULT CALLBACK AddressEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                         UINT_PTR /*uIdSubclass*/, DWORD_PTR dwRefData);
 LRESULT CALLBACK RenameEditProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -214,7 +222,7 @@ void HideAddressEditor(AppState& s, bool navigate) {
         // cmd / powershell / pwsh / wt open a console here instead of navigating.
         const app::AddressBarCommand command = app::ParseAddressBarCommand(buf);
         if (command.program != app::AddressBarProgram::None) RunAddressBarCommand(s, command);
-        else NavigateTo(s, FormatAddressPath(buf));
+        else NavigateTo(s, AddressNavigationTarget(buf));
     }
     s.addressIgnoreKillFocus = true;
     ShowWindow(s.hwndAddressEdit, SW_HIDE);

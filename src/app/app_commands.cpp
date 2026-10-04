@@ -2086,9 +2086,10 @@ void ShowOmnibar(AppState& s, OmnibarMode mode) {
     }
     if (q.kind == app::OmnibarQuery::Kind::Command) return;
     if (q.needle.empty()) return;
-    const std::wstring path = FormatAddressPath(q.needle);
+    bool shortcut = false;
+    const std::wstring path = AddressNavigationTarget(q.needle, &shortcut);
     const DWORD attrs = GetFileAttributesW(path.c_str());
-    if (app::LooksLikeFilesystemPath(q.needle) || attrs != INVALID_FILE_ATTRIBUTES)
+    if (shortcut || app::LooksLikeFilesystemPath(q.needle) || attrs != INVALID_FILE_ATTRIBUTES)
         NavigateTo(s, path);
 }
 void ShowRecyclePlaceMenu(AppState& s, POINT screen_pt) {
