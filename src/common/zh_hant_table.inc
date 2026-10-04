@@ -537,6 +537,8 @@ constexpr ZhHantPhrase kZhHantPhrases[] = {
     {L"\u9f20\u6807", L"\u6ed1\u9f20"},
     {L"\uff08\u4e0d\u652f\u6301\uff09", L"\uff08\u4e0d\u652f\u63f4\uff09"},
     {L"\uff08\u5df2\u622a\u65ad\uff09", L"\uff08\u5df2\u622a\u65b7\uff09"},
+    {L"\uff0c\u539f\u6587\u4ef6\u4fdd\u7559\u5728 ", L"\uff0c\u539f\u6a94\u6848\u4fdd\u7559\u5728 "},
+    {L"\uff1b\u65e0\u6cd5\u8fd8\u539f ", L"\uff1b\u7121\u6cd5\u9084\u539f "},
 };
 
 constexpr ZhHantChar kZhHantChars[] = {
