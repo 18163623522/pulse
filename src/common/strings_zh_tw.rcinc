@@ -1565,4 +1565,6 @@ BEGIN
     IDS_NOTIFY_ICON_BACKGROUND "僅背景執行時"
     IDS_NOTIFY_ICON_NEVER "不顯示"
     IDS_EXIT_PULSE "結束 Pulse"
+    IDS_LIST_SELECTION_OUTLINE "選取項目外框"
+    IDS_LIST_SELECTION_OUTLINE_DESC "選取的檔案和資料夾外加一圈強調色外框，在長清單中更容易辨識"
 END

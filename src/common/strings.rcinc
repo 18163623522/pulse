@@ -3027,6 +3027,8 @@ BEGIN
     IDS_NOTIFY_ICON_BACKGROUND "仅后台运行时"
     IDS_NOTIFY_ICON_NEVER "不显示"
     IDS_EXIT_PULSE "退出 Pulse"
+    IDS_LIST_SELECTION_OUTLINE "选中项描边"
+    IDS_LIST_SELECTION_OUTLINE_DESC "选中的文件和文件夹外加一圈强调色描边，长列表里更容易分辨"
 END
 
 LANGUAGE 0x09, 0x01
@@ -3085,6 +3087,8 @@ BEGIN
     IDS_NOTIFY_ICON_BACKGROUND "In background"
     IDS_NOTIFY_ICON_NEVER "Never"
     IDS_EXIT_PULSE "Exit Pulse"
+    IDS_LIST_SELECTION_OUTLINE "Outline selected items"
+    IDS_LIST_SELECTION_OUTLINE_DESC "Draw an accent outline around selected items so they stand out in long lists"
 END
 
 // Traditional Chinese (Taiwan), generated from the Simplified blocks above.

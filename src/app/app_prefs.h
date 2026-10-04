@@ -38,6 +38,7 @@ struct AppPrefs {
     bool list_zebra_rows = true;
     bool list_size_bar = false;
     bool list_tag_name_color = false; // tint tagged names with their first tag's color
+    bool list_selection_outline = false; // accent outline around selected items (#78)
     bool vertical_tabs = false;       // tabs as the first sidebar section
     bool sidebar_collapsed = false;   // sidebar folded to its icon rail (Ctrl+B)
     // 0 folders first, 1 follow the sort direction, 2 mixed with files

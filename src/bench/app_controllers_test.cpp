@@ -14,6 +14,7 @@
 #include "../common/localization.h"
 #include "../common/path_utils.h"
 #include "../ui/panel_metrics.h"
+#include "../ui/FluentTokens.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 #include "../app/entry_sort.h"
@@ -445,6 +446,32 @@ bool TestAddressShortcuts() {
         ResolveAddressShortcut(L" C:\\Windows ").path == L"C:\\Windows");
     SetEnvironmentVariableW(L"PULSE_TEST_ALIAS", nullptr);
     if (SUCCEEDED(com)) CoUninitialize();
+    return passed;
+}
+
+// #78: a selected row must stand out from its pane far more than a hovered one.
+bool TestSelectionTokens() {
+    using namespace pulse::ui;
+    auto luma = [](D2D1_COLOR_F c) { return 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b; };
+    auto lift = [&](const Theme& t, D2D1_COLOR_F fill) {
+        return std::fabs(luma(BlendOver(fill, t.surface_card)) - luma(t.surface_card));
+    };
+    bool stands_out = true, fades = true, outline = true;
+    for (bool dark : {true, false}) {
+        // The accent from the #78 screenshot, Windows blue, purple, green, magenta.
+        for (uint32_t rgb : {0x4466A8u, 0x0078D4u, 0x8764B8u, 0x2F7D5Bu, 0xC239B3u}) {
+            const Theme t = MakeTheme(dark, HexColor(rgb));
+            stands_out &= lift(t, t.list_selected_start) > 1.5f * lift(t, t.fill_hover);
+            fades &= t.list_selected_end.a > 0.0f && t.list_selected_end.a < t.list_selected_start.a;
+            outline &= t.list_selected_outline.a == 1.0f &&
+                lift(t, t.list_selected_outline) > lift(t, t.list_selected_start);
+        }
+    }
+    bool passed = true;
+    passed &= Report("selection: the gradient start stands out well beyond hover in both themes",
+        stands_out);
+    passed &= Report("selection: the gradient fades toward the end but never disappears", fades);
+    passed &= Report("selection: the outline is opaque and stronger than the fill", outline);
     return passed;
 }
 
@@ -1042,6 +1069,24 @@ int wmain(int argc, wchar_t** argv) {
     parsed_prefs.ResetToDefaults();
     passed &= Report("reset does not ask before deleting",
         !parsed_prefs.confirm_recycle_delete);
+    passed &= Report("outline selected items setting has localized text",
+        !pulse::l10n::Get(pulse::l10n::StringId::ListSelectionOutline).empty() &&
+        !pulse::l10n::Get(pulse::l10n::StringId::ListSelectionOutlineDesc).empty());
+    passed &= Report("selected items have no outline by default", !prefs.list_selection_outline);
+    settings_ui.ToggleUi(33);
+    passed &= Report("outline selected items enables and persists",
+        prefs.list_selection_outline && parsed_prefs.FromJson(prefs.ToJson()) &&
+        parsed_prefs.list_selection_outline);
+    settings_ui.ToggleUi(33);
+    passed &= Report("outline selected items disables and persists",
+        !prefs.list_selection_outline && parsed_prefs.FromJson(prefs.ToJson()) &&
+        !parsed_prefs.list_selection_outline);
+    parsed_prefs.list_selection_outline = true;
+    passed &= Report("legacy preferences draw no selection outline",
+        parsed_prefs.FromJson(L"{}") && !parsed_prefs.list_selection_outline);
+    parsed_prefs.list_selection_outline = true;
+    parsed_prefs.ResetToDefaults();
+    passed &= Report("reset draws no selection outline", !parsed_prefs.list_selection_outline);
     passed &= Report("start in tray setting has localized text",
         pulse::l10n::Get(pulse::l10n::StringId::SettingsStartInTray) ==
             L"\u5F00\u673A\u81EA\u542F\u65F6\u9690\u85CF\u5230\u6258\u76D8" &&
@@ -1424,6 +1469,7 @@ int wmain(int argc, wchar_t** argv) {
 
     passed &= TestAddressBarCommands();
     passed &= TestAddressShortcuts();
+    passed &= TestSelectionTokens();
     passed &= TestShellRegistryDebounce();
     passed &= TestDefaultFileManager();
     passed &= TestShellWindowPlan();

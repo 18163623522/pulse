@@ -298,6 +298,7 @@ void MainRenderer::DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F
         toggle(lay.list_style_row[1],I::ListZebraRows,I::ListZebraRowsDesc,L"\xE8FD",vm.settings_list_zebra_rows,18);divider(lay.list_style_row[1]);
         toggle(lay.list_style_row[2],I::ListSizeBar,I::ListSizeBarDesc,L"\xE9D2",vm.settings_list_size_bar,19);divider(lay.list_style_row[2]);
         toggle(lay.list_style_row[3],I::ListTagNameColor,I::ListTagNameColorDesc,L"\xE8EC",vm.settings_list_tag_names,22);divider(lay.list_style_row[3]);
+        toggle(lay.list_style_row[4],I::ListSelectionOutline,I::ListSelectionOutlineDesc,L"\xE73E",vm.settings_list_selection_outline,33);divider(lay.list_style_row[4]);
         const I folder_sort[]={I::FolderSortTop,I::FolderSortFollow,I::FolderSortMixed};const int folder_sort_values[]={0,1,2};
         segmented(lay.folder_sort_card,lay.folder_sort_row,folder_sort,folder_sort_values,vm.settings_folder_sort,H::SettingsFolderSort,I::SettingsFolderSort,I::SettingsFolderSortDesc);divider(lay.folder_sort_card);
         toggle(lay.confirm_delete_row,I::SettingsConfirmDelete,I::SettingsConfirmDeleteDesc,L"\xE74D",vm.settings_confirm_delete,32);

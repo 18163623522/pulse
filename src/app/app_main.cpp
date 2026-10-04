@@ -478,7 +478,8 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
         s->renderer.SetRowHeightDip(static_cast<float>(s->appPrefs.row_height));
         s->renderer.SetListStyle(s->appPrefs.list_smart_date, s->appPrefs.list_zebra_rows,
-                                 s->appPrefs.list_size_bar, s->appPrefs.list_tag_name_color);
+                                 s->appPrefs.list_size_bar, s->appPrefs.list_tag_name_color,
+                                 s->appPrefs.list_selection_outline);
         s->renderer.SetDetailsColumns(s->appPrefs.details_columns);
         s->renderer.SetRowActions(app::RowActionMask(s->ctxMenuPrefs.builtin_hidden));
         app::SetFolderSortMode(app::FolderSortModeFromInt(s->appPrefs.folder_sort_mode));

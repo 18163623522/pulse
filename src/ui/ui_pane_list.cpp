@@ -1845,6 +1845,21 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
     const bool detailsView = vm.view_mode == ViewMode::Details;
     D2D1_COLOR_F zebraColor = theme.text;
     zebraColor.a = (theme.bg.r < 0.5f) ? 0.035f : 0.025f;
+    // #78: the focused pane's selection is an accent gradient, strongest beside
+    // the indicator bar. Unfocused panes keep their neutral fill and high
+    // contrast keeps the system highlight.
+    ComPtr<ID2D1LinearGradientBrush> selection_gradient;
+    if (pane_focused && !IsHighContrast()) {
+        const D2D1_GRADIENT_STOP stops[] = {{0.0f, theme.list_selected_start},
+                                            {1.0f, theme.list_selected_end}};
+        ComPtr<ID2D1GradientStopCollection> collection;
+        if (SUCCEEDED(dc->CreateGradientStopCollection(stops, 2, &collection)) && collection.get()) {
+            dc->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.0f),
+                                                    D2D1::Point2F(1.0f, 0.0f)),
+                collection.get(), &selection_gradient);
+        }
+    }
 
     // Rows slide into place after small inserts/removals and new rows flash
     // (ui_motion.h ListShiftMotion). Same folder, view, filter and scroll only.
@@ -2002,10 +2017,27 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 const D2D1_RECT_F sel = D2D1::RectF(
                     bg.left + inset, bg.top + scale_,
                     bg.right - inset, bg.bottom - scale_);
-                FillRoundedRect(dc, brFillSelected_.get(), sel.left, sel.top,
-                    std::max(0.0f, sel.right - sel.left),
-                    std::max(0.0f, sel.bottom - sel.top),
-                    theme.radius_control * scale_);
+                const float sel_radius = theme.radius_control * scale_;
+                const D2D1_ROUNDED_RECT sel_rr = D2D1::RoundedRect(
+                    D2D1::RectF(sel.left, sel.top, std::max(sel.left, sel.right),
+                                std::max(sel.top, sel.bottom)),
+                    sel_radius, sel_radius);
+                if (selection_gradient.get()) {
+                    selection_gradient->SetStartPoint(D2D1::Point2F(sel.left, 0.0f));
+                    selection_gradient->SetEndPoint(D2D1::Point2F(sel.right, 0.0f));
+                    dc->FillRoundedRectangle(&sel_rr, selection_gradient.get());
+                } else {
+                    dc->FillRoundedRectangle(&sel_rr, brFillSelected_.get());
+                }
+                if (list_selection_outline_ && sel.right - sel.left > 2.0f * scale_) {
+                    // Settings > File list > Outline selected items (#78).
+                    MakeBrush(dc, pane_focused ? theme.list_selected_outline
+                                               : WithAlpha(theme.text, 0.30f), brFillInput_);
+                    const float half = 0.5f * scale_;
+                    dc->DrawRoundedRectangle(D2D1::RoundedRect(
+                        D2D1::RectF(sel.left + half, sel.top + half, sel.right - half, sel.bottom - half),
+                        sel_radius, sel_radius), brFillInput_.get(), 1.0f * scale_);
+                }
                 if (pane_focused) {
                     MakeBrush(dc, theme.accent, brAccent_);
                     const float indicator_h = std::min(18*scale_, std::max(0.0f, sel.bottom-sel.top-8*scale_));

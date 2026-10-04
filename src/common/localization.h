@@ -998,6 +998,8 @@ enum class StringId : UINT {
     NotifyIconBackground = IDS_NOTIFY_ICON_BACKGROUND,
     NotifyIconNever = IDS_NOTIFY_ICON_NEVER,
     ExitPulse = IDS_EXIT_PULSE,
+    ListSelectionOutline = IDS_LIST_SELECTION_OUTLINE,
+    ListSelectionOutlineDesc = IDS_LIST_SELECTION_OUTLINE_DESC,
     SettingsDefaultManagerDesc = IDS_SETTINGS_DEFAULT_MANAGER_DESC,
     SettingsDefaultManagerPartial = IDS_SETTINGS_DEFAULT_MANAGER_PARTIAL,
     SettingsTakeoverFolders = IDS_SETTINGS_TAKEOVER_FOLDERS,

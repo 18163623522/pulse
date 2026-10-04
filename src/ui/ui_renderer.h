@@ -660,6 +660,7 @@ struct WindowViewModel {
     bool settings_list_zebra_rows = true;
     bool settings_list_size_bar = false;
     bool settings_list_tag_names = false;
+    bool settings_list_selection_outline = false;
     bool settings_vertical_tabs = false;
     bool settings_show_hints = true;
     bool settings_tips_seen = false;   // any teaching bubble already shown
@@ -1141,9 +1142,10 @@ public:
     float TypeChipWidthDip(const std::wstring& chip) const;
     // Cached max(LumaText, DWrite) advance for list cells (small=true: SmallFormat).
     float CellTextWidth(const std::wstring& text, bool small_text = false) const;
-    void SetListStyle(bool smart_date, bool zebra, bool size_bar, bool tag_names) {
+    void SetListStyle(bool smart_date, bool zebra, bool size_bar, bool tag_names,
+                      bool selection_outline) {
         list_smart_date_ = smart_date; list_zebra_ = zebra; list_size_bar_ = size_bar;
-        list_tag_names_ = tag_names;
+        list_tag_names_ = tag_names; list_selection_outline_ = selection_outline;
         auto_widths_scale_ = -1.0f;
     }
     bool ListSmartDate() const { return list_smart_date_; }
@@ -1422,6 +1424,7 @@ private:
     float row_height_dip_ = 34.0f;
     bool list_smart_date_ = true, list_zebra_ = true, list_size_bar_ = false;
     bool list_tag_names_ = false;
+    bool list_selection_outline_ = false;
     unsigned row_actions_ = 7u;
     uint32_t details_columns_ = kDetailsColumnsDefault;
     // Motion state: highlight plates glide between items (ui_motion.h).

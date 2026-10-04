@@ -66,6 +66,7 @@ void AppPrefs::ResetToDefaults() {
     list_smart_date = true;
     list_zebra_rows = true;
     list_size_bar = false;
+    list_selection_outline = false;
     folder_sort_mode = 0;
     details_columns = ui::kDetailsColumnsDefault;
     startup_open = 0;
@@ -152,6 +153,8 @@ std::wstring AppPrefs::ToJson() const {
     out += list_size_bar ? L"true" : L"false";
     out += L",\n  \"list_tag_name_color\":";
     out += list_tag_name_color ? L"true" : L"false";
+    out += L",\n  \"list_selection_outline\":";
+    out += list_selection_outline ? L"true" : L"false";
     out += L",\n  \"vertical_tabs\":";
     out += vertical_tabs ? L"true" : L"false";
     out += L",\n  \"sidebar_collapsed\":";
@@ -296,6 +299,7 @@ bool AppPrefs::FromJson(const std::wstring& json) {
     list_zebra_rows = pulse::json::ExtractBool(json, L"list_zebra_rows", true);
     list_size_bar = pulse::json::ExtractBool(json, L"list_size_bar", false);
     list_tag_name_color = pulse::json::ExtractBool(json, L"list_tag_name_color", false);
+    list_selection_outline = pulse::json::ExtractBool(json, L"list_selection_outline", false);
     vertical_tabs = pulse::json::ExtractBool(json, L"vertical_tabs", false);
     sidebar_collapsed = pulse::json::ExtractBool(json, L"sidebar_collapsed", false);
     folder_sort_mode = pulse::json::ExtractInt(json, L"folder_sort_mode", 0);

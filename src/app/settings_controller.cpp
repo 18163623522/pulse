@@ -583,6 +583,9 @@ void SettingsController::ToggleUi(int index) {
     } else if (index == 22) {
         prefs_->list_tag_name_color = !prefs_->list_tag_name_color;
         SaveAndApply(SettingsEffect::ListStyle);
+    } else if (index == 33) {
+        prefs_->list_selection_outline = !prefs_->list_selection_outline;
+        SaveAndApply(SettingsEffect::ListStyle);
     } else if (index == 23) {
         prefs_->vertical_tabs = !prefs_->vertical_tabs;
         SaveAndApply(SettingsEffect::None);
