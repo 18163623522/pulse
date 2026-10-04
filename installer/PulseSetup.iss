@@ -74,8 +74,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 
 [CustomMessages]
-PulseUpdateBusy=Pulse 仍在处理文件或无法安全退出。请等待任务完成并退出所有 Pulse 窗口后重试。 / Pulse is busy or could not exit safely. Finish pending work and close all Pulse windows, then retry.
-chinesetrad.PulseUpdateBusy=Pulse 仍在處理檔案或無法安全結束。請等待工作完成並結束所有 Pulse 視窗後重試。 / Pulse is busy or could not exit safely. Finish pending work and close all Pulse windows, then retry.
+PulseUpdateBusy=Pulse 正在复制或移动文件，暂时无法升级。请等任务完成后重新运行安装程序。 / Pulse is copying or moving files. Wait for it to finish, then run Setup again.
+chinesetrad.PulseUpdateBusy=Pulse 正在複製或移動檔案，暫時無法升級。請等工作完成後重新執行安裝程式。 / Pulse is copying or moving files. Wait for it to finish, then run Setup again.
+PulseUpdateWaitBusy=Pulse 正在复制或移动文件，完成后才能升级。%n%n请等任务完成，然后点“重试”继续安装。 / Pulse is copying or moving files. Wait for it to finish, then click Retry to continue.
+chinesetrad.PulseUpdateWaitBusy=Pulse 正在複製或移動檔案，完成後才能升級。%n%n請等工作完成，然後按「重試」繼續安裝。 / Pulse is copying or moving files. Wait for it to finish, then click Retry to continue.
+PulseUpdateCloseFailed=无法关闭正在运行的 Pulse。请退出 Pulse 后重新运行安装程序。 / Pulse could not be closed. Exit Pulse, then run Setup again.
+chinesetrad.PulseUpdateCloseFailed=無法關閉正在執行的 Pulse。請結束 Pulse 後重新執行安裝程式。 / Pulse could not be closed. Exit Pulse, then run Setup again.
 IntegrationRestoreFailed=部分打开命令仍指向 Pulse，卸载后这些入口可能无法打开。请重新安装 Pulse 后在系统集成设置中恢复，或修复 Windows 文件关联。 / Some open commands still point to Pulse. After uninstall they may stop working. Reinstall Pulse to restore integration, or repair Windows file associations.
 IntegrationRestoreIncomplete=Pulse 打开命令已移除，但旧版本没有保留完整的原始关联，无法确认全部恢复。现有第三方设置和备份已保留。 / Pulse open commands were removed, but old versions did not retain complete original associations. Other settings and backups were preserved.
 chinesetrad.IntegrationRestoreFailed=部分開啟命令仍指向 Pulse，解除安裝後這些入口可能無法開啟。請重新安裝 Pulse 後在系統整合設定中還原，或修復 Windows 檔案關聯。 / Some open commands still point to Pulse. After uninstall they may stop working. Reinstall Pulse to restore integration, or repair Windows file associations.
@@ -192,6 +196,7 @@ var
   UpgradeFolderCommands: array[0..1] of String;
   UpgradeWinECommand: String;
   UpgradeThisPcCommand: String;
+  PulseCloseError: String;
 
 
 
@@ -755,6 +760,15 @@ begin
     Result := FmtMessage(CustomMessage('PrevUninstFailed'), [IntToStr(ResultCode)]);
 end;
 
+{ --- Closing running Pulse ----------------------------------------------
+  Everything up to the end marker avoids the app directory and the registry, so
+  scripts/test_installer_close_running.ps1 runs it unchanged against
+  stand-in processes. }
+const
+  PulseCloseDone = 0;
+  PulseCloseFailed = 1;
+  PulseCloseBusy = 2;
+
 function RegisterPulseShutdownMessage(const Name: String): LongWord;
   external 'RegisterWindowMessageW@user32.dll stdcall';
 { Inno Setup 6 executes Pascal Script in its 32-bit Setup.e32 engine even
@@ -762,6 +776,20 @@ function RegisterPulseShutdownMessage(const Name: String): LongWord;
 function SendPulseShutdownMessage(Window: HWND; Msg: LongWord; WParam, LParam: Longint;
   Flags, Timeout: LongWord; var Reply: LongWord): LongWord;
   external 'SendMessageTimeoutW@user32.dll stdcall';
+function FindPulseWindowAfter(Parent, After: HWND; ClassName: String; WindowName: LongWord): HWND;
+  external 'FindWindowExW@user32.dll stdcall';
+function GetPulseWindowProcess(Window: HWND; var ProcessId: LongWord): LongWord;
+  external 'GetWindowThreadProcessId@user32.dll stdcall';
+function OpenPulseProcess(Access, Inherit, ProcessId: LongWord): LongWord;
+  external 'OpenProcess@kernel32.dll stdcall';
+function QueryPulseProcessImage(Process, Flags: LongWord; Buffer: String; var Size: LongWord): LongWord;
+  external 'QueryFullProcessImageNameW@kernel32.dll stdcall';
+function TerminatePulseProcess(Process, ExitCode: LongWord): LongWord;
+  external 'TerminateProcess@kernel32.dll stdcall';
+function WaitForPulseProcess(Process, Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function ClosePulseProcessHandle(Process: LongWord): LongWord;
+  external 'CloseHandle@kernel32.dll stdcall';
 
 function PulseImageRunning(const ImageName: String): Boolean;
 var
@@ -784,37 +812,248 @@ begin
   Result := Pos(Lowercase(ImageName), Lowercase(String(Output))) <> 0;
 end;
 
-function ClosePulseForUpdate: Boolean;
+{ Pure: is Path inside one of the '|'-separated Dirs? A path that could not
+  be read counts as inside, so an uninspectable process still blocks setup. }
+function PulsePathInDirectories(const Path, Dirs: String): Boolean;
 var
-  Window: HWND;
-  Msg: LongWord;
-  Reply: LongWord;
-  I: Integer;
+  Rest, Dir: String;
+  P: Integer;
+begin
+  Result := True;
+  if Trim(Path) = '' then Exit;
+  Rest := Dirs;
+  while Rest <> '' do
+  begin
+    P := Pos('|', Rest);
+    if P = 0 then
+    begin
+      Dir := Rest;
+      Rest := '';
+    end else
+    begin
+      Dir := Copy(Rest, 1, P - 1);
+      Delete(Rest, 1, P);
+    end;
+    Dir := Trim(Dir);
+    if Dir = '' then Continue;
+    Dir := AddBackslash(Dir);
+    if CompareText(Copy(Trim(Path), 1, Length(Dir)), Dir) = 0 then Exit;
+  end;
+  Result := False;
+end;
+
+{ Pure: '|'-terminated process ids of pulse.exe rows in tasklist /FO CSV /NH
+  output, e.g. "pulse.exe","1234","Console","1","50,000 K". }
+function ParsePulseProcessIds(const Output: String): String;
+var
+  Rest, Line: String;
+  P: Integer;
+begin
+  Result := '';
+  Rest := Output;
+  while Rest <> '' do
+  begin
+    P := Pos(#10, Rest);
+    if P = 0 then
+    begin
+      Line := Rest;
+      Rest := '';
+    end else
+    begin
+      Line := Copy(Rest, 1, P - 1);
+      Delete(Rest, 1, P);
+    end;
+    Line := Trim(Line);
+    if CompareText(Copy(Line, 1, 13), '"pulse.exe","') <> 0 then Continue;
+    Delete(Line, 1, 13);
+    P := Pos('"', Line);
+    if (P > 1) and (StrToIntDef(Copy(Line, 1, P - 1), 0) > 0) then
+      Result := Result + Copy(Line, 1, P - 1) + '|';
+  end;
+end;
+
+function PulseProcessPath(ProcessId: LongWord): String;
+var
+  Process, Size: LongWord;
+  Buffer: String;
+begin
+  Result := '';
+  Process := OpenPulseProcess($1000, 0, ProcessId);   { PROCESS_QUERY_LIMITED_INFORMATION }
+  if Process = 0 then Exit;
+  Buffer := StringOfChar(' ', 1024);
+  Size := 1024;
+  if QueryPulseProcessImage(Process, 0, Buffer, Size) <> 0 then
+    Result := Copy(Buffer, 1, Size);
+  ClosePulseProcessHandle(Process);
+end;
+
+{ Ends a process from the install directory and waits for it to be gone. }
+function EndPulseProcess(ProcessId: LongWord): Boolean;
+var
+  Process: LongWord;
 begin
   Result := False;
+  Process := OpenPulseProcess($00100001, 0, ProcessId);   { SYNCHRONIZE | PROCESS_TERMINATE }
+  if Process = 0 then Exit;
+  if WaitForPulseProcess(Process, 0) <> 0 then
+    TerminatePulseProcess(Process, 0);
+  Result := WaitForPulseProcess(Process, 5000) = 0;
+  ClosePulseProcessHandle(Process);
+end;
+
+{ Pulse 1.0.48 and older predate the update handshake and answer it with 0.
+  Send what Windows sends at sign-out, where those versions save their tabs,
+  window layout and places, then end the process as sign-out would. Without
+  this, every upgrade from them stopped with "Pulse is busy" even after the
+  window was closed to the tray. }
+function EndLegacyPulse(Window: HWND; ProcessId: LongWord): Boolean;
+var
+  Reply: LongWord;
+begin
+  Reply := 0;
+  SendPulseShutdownMessage(Window, $0011, 0, 1, 2, 10000, Reply);   { WM_QUERYENDSESSION, ENDSESSION_CLOSEAPP }
+  SendPulseShutdownMessage(Window, $0016, 1, 1, 2, 10000, Reply);   { WM_ENDSESSION }
+  Result := EndPulseProcess(ProcessId);
+  Log('Closed Pulse without update handshake (pid ' + IntToStr(ProcessId) + '): ' + IntToStr(Ord(Result)));
+end;
+
+{ Asks every Pulse window whose executable lives in Dirs to exit. Windows of
+  Pulse copies elsewhere (portable or development builds) do not lock the
+  installed files and are left alone. }
+function ClosePulseWindows(const Dirs: String): Integer;
+var
+  Window: HWND;
+  Msg, Reply, ProcessId: LongWord;
+  I: Integer;
+begin
+  Result := PulseCloseFailed;
   Msg := RegisterPulseShutdownMessage('Pulse.PrepareUpdateShutdown.v1');
   if Msg = 0 then Exit;
-  { Each accepted request destroys that window. A busy/older/unresponsive
-    process blocks installation; never force-terminate the UI or its work. }
-  for I := 1 to 40 do
+  Window := 0;
+  for I := 1 to 64 do
   begin
-    Window := FindWindowByClassName('PulseMainWindow');
-    if Window = 0 then Break;
-    Reply := 0;
-    if SendPulseShutdownMessage(Window, Msg, 0, 0, 2, 30000, Reply) = 0 then Exit;
-    if Reply <> 1 then Exit;
+    Window := FindPulseWindowAfter(0, Window, 'PulseMainWindow', 0);
+    if Window = 0 then
+    begin
+      Result := PulseCloseDone;
+      Exit;
+    end;
+    ProcessId := 0;
+    GetPulseWindowProcess(Window, ProcessId);
+    if PulsePathInDirectories(PulseProcessPath(ProcessId), Dirs) then
+    begin
+      { An accepted request destroys the window; a busy one keeps working. }
+      Reply := 0;
+      if SendPulseShutdownMessage(Window, Msg, 0, 0, 2, 30000, Reply) = 0 then Exit;
+      if Reply = 2 then
+      begin
+        Result := PulseCloseBusy;
+        Exit;
+      end;
+      if (Reply <> 1) and not EndLegacyPulse(Window, ProcessId) then Exit;
+      Window := 0;   { the window list changed; scan it again }
+    end;
   end;
-  { Covers older versions without this window, headless instances and the
-    brief interval between window destruction and process exit. }
-  for I := 1 to 40 do
+end;
+
+{ Waits for pulse.exe processes from Dirs that no longer have a window (one
+  that just accepted, or an instance without UI) and ends those still there
+  after ten seconds. A failed process query keeps setup blocked. }
+function WaitForPulseProcesses(const Dirs: String): Boolean;
+var
+  ResultCode, I, P: Integer;
+  OutputPath, Ids, Id: String;
+  Output: AnsiString;
+  Pending: Boolean;
+begin
+  Result := False;
+  OutputPath := ExpandConstant('{tmp}\pulse-process-ids.txt');
+  for I := 1 to 42 do
   begin
-    if not PulseImageRunning('pulse.exe') then
+    if not Exec(ExpandConstant('{cmd}'),
+      '/D /C ""' + ExpandConstant('{sys}\tasklist.exe') +
+      '" /FI "IMAGENAME eq pulse.exe" /FO CSV /NH > "' + OutputPath + '" 2>&1"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then Exit;
+    if ResultCode <> 0 then Exit;
+    if not LoadStringFromFile(OutputPath, Output) then Exit;
+    DeleteFile(OutputPath);
+    Ids := ParsePulseProcessIds(String(Output));
+    Pending := False;
+    while Ids <> '' do
+    begin
+      P := Pos('|', Ids);
+      Id := Copy(Ids, 1, P - 1);
+      Delete(Ids, 1, P);
+      if not PulsePathInDirectories(PulseProcessPath(StrToIntDef(Id, 0)), Dirs) then Continue;
+      Pending := True;
+      if I = 41 then
+      begin
+        Log('Ending leftover Pulse process ' + Id);
+        EndPulseProcess(StrToIntDef(Id, 0));
+      end;
+    end;
+    if not Pending then
     begin
       Result := True;
       Exit;
     end;
-    Sleep(250);
+    if I < 41 then Sleep(250);
   end;
+end;
+
+{ Closes Pulse from Dirs. A window still copying or moving files is asked
+  again every second for up to BusySeconds before PulseCloseBusy is returned. }
+function ClosePulseInstances(const Dirs: String; BusySeconds: Integer): Integer;
+var
+  I: Integer;
+begin
+  Result := PulseCloseFailed;
+  for I := 0 to BusySeconds do
+  begin
+    Result := ClosePulseWindows(Dirs);
+    if Result <> PulseCloseBusy then Break;
+    if I < BusySeconds then Sleep(1000);
+  end;
+  if (Result = PulseCloseDone) and not WaitForPulseProcesses(Dirs) then
+    Result := PulseCloseFailed;
+end;
+{ --- end of closing running Pulse --- }
+
+{ Directories whose pulse.exe this setup replaces: the target and, when the
+  install moves, the registered previous one. }
+function PulseInstallDirectories: String;
+var
+  Root: Integer;
+  Previous: String;
+begin
+  Result := ExpandConstant('{app}');
+  if not PreviousPulseRoot(Root) then Exit;
+  if not RegQueryStringValue(Root, PulseUninstallKey, 'Inno Setup: App Path', Previous) then
+    RegQueryStringValue(Root, PulseUninstallKey, 'InstallLocation', Previous);
+  if (Trim(Previous) <> '') and not SamePulseDirectory(Previous, Result) then
+    Result := Result + '|' + Trim(Previous);
+end;
+
+{ Closes every Pulse that would hold the installed files. Older versions are
+  closed the way sign-out closes them; a version that is still copying or
+  moving files is waited for, and interactive setups offer Retry. }
+function ClosePulseForUpdate: Boolean;
+var
+  Dirs: String;
+  State: Integer;
+begin
+  Dirs := PulseInstallDirectories;
+  Log('Closing Pulse running from: ' + Dirs);
+  repeat
+    State := ClosePulseInstances(Dirs, 10);
+    Result := State = PulseCloseDone;
+    if State = PulseCloseBusy then
+      PulseCloseError := CustomMessage('PulseUpdateBusy')
+    else
+      PulseCloseError := CustomMessage('PulseUpdateCloseFailed');
+  until Result or (State <> PulseCloseBusy) or
+    (SuppressibleMsgBox(CustomMessage('PulseUpdateWaitBusy'), mbInformation,
+       MB_RETRYCANCEL, IDCANCEL) <> IDRETRY);
 end;
 
 procedure StopPulseHosts;
@@ -875,8 +1114,11 @@ var
 begin
   { Ask every UI process to finish safely before touching hosts or installed
     files. Stopping only the service leaves the network agent running. }
-  Result := CustomMessage('PulseUpdateBusy');
-  if not ClosePulseForUpdate then Exit;
+  if not ClosePulseForUpdate then
+  begin
+    Result := PulseCloseError;
+    Exit;
+  end;
   StopPulseHosts;
   WaitUntilPulseIndexGone;
   { Same directory: overwrite in place under the stable AppId. Running the
@@ -893,7 +1135,11 @@ begin
     Exit;
   end;
   PreviousUninstallError := UninstallPreviousVersion;
-  if not ClosePulseForUpdate then Exit;
+  if not ClosePulseForUpdate then
+  begin
+    Result := PulseCloseError;
+    Exit;
+  end;
   StopPulseHosts;
   WaitUntilPulseIndexGone;
   WaitUntilPulseIndexServiceGone;
