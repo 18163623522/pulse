@@ -961,8 +961,7 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
 }
 
 int FolderGroupFor(const AppState& s, const std::wstring& path) {
-    const auto saved = s.appPrefs.folder_groups.Find(path);
-    return static_cast<int>(saved.value_or(app::DefaultGroupFor(path)));
+    return static_cast<int>(s.appPrefs.folder_groups.Resolve(path));
 }
 
 // A Size sort orders folders by the totals known so far (#58); the UI timer

@@ -3043,6 +3043,29 @@ void TestFolderSorts() {
     Check(reloaded.folder_sorts.Default() == by_name &&
           reloaded.folder_views.Default() == ViewMode::Details && !reloaded.folder_sorts.Find(unc),
           L"folder sorts: old preferences load with name order and details view");
+    {
+        using pulse::app::GroupBy;
+        prefs.folder_groups.Set(L"C:\\G1", GroupBy::Size);
+        prefs.folder_groups.Set(L"pulse:recent", GroupBy::None);
+        prefs.folder_groups.ApplyToAll(GroupBy::Type);
+        Check(prefs.folder_groups.Resolve(L"C:\\G1") == GroupBy::Type &&
+              prefs.folder_groups.Resolve(L"C:\\Fresh") == GroupBy::Type &&
+              prefs.folder_groups.Resolve(L"pulse:recent") == GroupBy::None &&
+              prefs.folder_groups.Resolve(L"pulse:recycle") == GroupBy::Date &&
+              prefs.folder_groups.Resolve(L"") == GroupBy::None,
+              L"folder groups: apply to all covers real folders and keeps virtual views (#75)");
+        reloaded.FromJson(prefs.ToJson());
+        Check(reloaded.folder_groups.Default() == GroupBy::Type &&
+              reloaded.folder_groups.Resolve(L"C:\\Fresh") == GroupBy::Type &&
+              reloaded.folder_groups.Resolve(L"pulse:recent") == GroupBy::None,
+              L"folder groups: applied default survives reload");
+        prefs.folder_groups.Set(L"C:\\G1", GroupBy::None);
+        Check(prefs.folder_groups.Resolve(L"C:\\G1") == GroupBy::None,
+              L"folder groups: a later per-folder choice beats the default");
+        reloaded.FromJson(L"{}");
+        Check(!reloaded.folder_groups.Default() && reloaded.folder_groups.Resolve(L"C:\\Fresh") == GroupBy::None,
+              L"folder groups: old preferences keep folders ungrouped");
+    }
     prefs.ResetToDefaults();
     Check(prefs.folder_sorts.Default() == by_name &&
           prefs.folder_views.Default() == ViewMode::Details,
@@ -3110,6 +3133,18 @@ void TestFolderSorts() {
         active->current_path = L"pulse:recent";
         Check(!ApplyViewToAllFolders(*state, false), L"folder sorts: apply to all ignores virtual views");
         active->current_path = real_path;
+        SetGroupBy(*state, 4);
+        Check(ApplyGroupToAllFolders(*state, 3, false), L"folder groups: apply to all runs on a real folder");
+        active->NavigateTo(c);
+        StartLoadingPath(*state, *active, c);
+        Check(active->group_by == 3, L"folder groups: apply to all groups unsaved folders (#75)");
+        active->NavigateTo(a);
+        StartLoadingPath(*state, *active, a);
+        Check(active->group_by == 3, L"folder groups: apply to all overrides earlier per-folder grouping");
+        active->current_path = L"pulse:recent";
+        Check(!ApplyGroupToAllFolders(*state, 3, false), L"folder groups: apply to all ignores virtual views");
+        active->current_path = real_path;
+        state->appPrefs.folder_groups.Clear();
     }
     state->watches.Stop();
     DestroyWindow(hwnd);

@@ -686,6 +686,9 @@ void DispatchMenuCommand(AppState& s, int cmd) {
     case app::CmdApplyViewToAllFolders:
         ApplyViewToAllFolders(s);
         break;
+    case app::CmdApplyGroupToAllFolders:
+        if (const app::Tab* tab = ActiveTab(s)) ApplyGroupToAllFolders(s, tab->group_by);
+        break;
     case app::CmdRefresh:
         if (const auto* tab = ActiveTab(s)) {
             s.store.MarkDirty(tab->current_path);
@@ -1338,6 +1341,7 @@ void ShowBackgroundContextMenu(AppState& s, POINT screen_pt) {
     view_options.can_group = !tab->content_results &&
         (view_options.filesystem || kind == L"recent" || view_options.group_virtual);
     view_options.group_by = tab->group_by;
+    view_options.can_apply_group_all = view_options.can_group && view_options.filesystem;
     if (IsRecycleTab(tab)) {
         const bool can_empty = tab->snapshot && tab->EntryCount() != 0;
         const std::wstring undoLabel = s.ops.UndoLabel();
@@ -1630,6 +1634,42 @@ bool ApplyViewToAllFolders(AppState& s, bool confirm) {
     return true;
 }
 
+bool ApplyGroupToAllFolders(AppState& s, int group_by, bool confirm) {
+    auto usable = [&s] {
+        const app::Tab* tab = ActiveTab(s);
+        return tab && !tab->content_results && !tab->current_path.empty() &&
+               !fs::IsVirtualPath(tab->current_path);
+    };
+    if (!usable()) return false;
+    const app::GroupBy by = app::GroupByFromInt(group_by);
+    if (by == app::GroupBy::Location) return false;  // multi-folder views only
+    if (confirm) {
+        ui::ConfirmDialogSpec spec;
+        spec.title = l10n::Get(l10n::StringId::ApplyViewAllTitle);
+        if (by == app::GroupBy::None) {
+            spec.message = l10n::Get(l10n::StringId::ApplyGroupNoneMessage);
+        } else {
+            static constexpr l10n::StringId kLabels[] = {
+                l10n::StringId::GroupNone, l10n::StringId::GroupByName, l10n::StringId::GroupByDate,
+                l10n::StringId::GroupByType, l10n::StringId::GroupBySize, l10n::StringId::GroupByTag};
+            wchar_t buf[512]{};
+            swprintf_s(buf, l10n::Get(l10n::StringId::ApplyGroupAllMessageFormat).c_str(),
+                       l10n::Get(kLabels[static_cast<int>(by)]).c_str());
+            spec.message = buf;
+        }
+        spec.confirm_text = l10n::Get(l10n::StringId::ApplyViewAllConfirm);
+        spec.cancel_text = l10n::Get(l10n::StringId::Cancel);
+        if (!ui::ShowConfirmDialog(s.hwnd, spec, s.darkMode, s.accentColor)) return false;
+        if (!usable()) return false;  // the modal dialog pumps messages
+    }
+    // Show it here first, then make it the default: ApplyToAll also drops the
+    // per-folder entry SetGroupBy just wrote, so this folder follows later changes.
+    SetGroupBy(s, static_cast<int>(by));
+    s.appPrefs.folder_groups.ApplyToAll(by);
+    s.appPrefs.Save();
+    return true;
+}
+
 // Drop groups with no remaining members (after mass closes / leave operations).
 void SetViewMode(AppState& s, ui::ViewMode mode) {
     app::Tab* tab = ActiveTab(s);
@@ -1727,6 +1767,8 @@ void ShowGroupDropdown(AppState& s) {
         std::wstring kind;
         app::ParsePulsePath(tab->current_path, &kind, nullptr);
         options.group_virtual = kind == L"search" || kind == L"saved-search" || kind == L"tag" || kind == L"recycle";
+        options.can_apply_group_all = !tab->content_results && !tab->current_path.empty() &&
+                                      !fs::IsVirtualPath(tab->current_path);
     }
     if (!options.can_group) return;
     if constexpr (kGroupWheel) {

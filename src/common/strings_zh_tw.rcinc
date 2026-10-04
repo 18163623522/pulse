@@ -1555,4 +1555,8 @@ BEGIN
     IDS_SETTINGS_CONFIRM_DELETE_DESC "按 Delete 移到資源回收筒前先詢問；永久刪除始終會確認"
     IDS_RECYCLE_CONFIRM_ONE "要把此項目移到資源回收筒嗎？"
     IDS_RECYCLE_CONFIRM_MANY_FORMAT "要把這 %zu 個項目移到資源回收筒嗎？"
+    IDS_APPLY_GROUP_ALL_FOLDERS "將分組套用到所有資料夾…"
+    IDS_APPLY_GROUP_ALL_SHORT "套用到所有資料夾"
+    IDS_APPLY_GROUP_ALL_MESSAGE_FORMAT "所有資料夾都將按「%s」分組。之前為各個資料夾單獨儲存的分組會被清除，檢視和排序不受影響；最近使用、搜尋結果和資源回收筒保留各自的分組。"
+    IDS_APPLY_GROUP_NONE_MESSAGE "所有資料夾都將不分組。之前為各個資料夾單獨儲存的分組會被清除，檢視和排序不受影響；最近使用、搜尋結果和資源回收筒保留各自的分組。"
 END

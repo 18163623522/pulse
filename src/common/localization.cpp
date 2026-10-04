@@ -10,7 +10,8 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_RECYCLE_CONFIRM_MANY_FORMAT;
+constexpr UINT kLastString = IDS_APPLY_GROUP_NONE_MESSAGE;
+static_assert(static_cast<UINT>(StringId::ApplyGroupNoneMessage) <= kLastString);
 static_assert(static_cast<UINT>(StringId::RecycleConfirmManyFormat) <= kLastString);
 static_assert(static_cast<UINT>(StringId::NetworkLiveAddFailed) <= kLastString);
 static_assert(static_cast<UINT>(StringId::IntegrationReapply) <= kLastString);

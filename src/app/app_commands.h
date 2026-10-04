@@ -69,6 +69,8 @@ void SetViewMode(AppState& s, ui::ViewMode mode);
 // "Apply to all folders" (#31) for the active real folder. Returns true when
 // applied; confirm=false skips the dialog (self tests).
 bool ApplyViewToAllFolders(AppState& s, bool confirm = true);
+// Group menu / group picker: `group_by` becomes every real folder's grouping (#75).
+bool ApplyGroupToAllFolders(AppState& s, int group_by, bool confirm = true);
 void ShowViewDropdown(AppState& s, int pane_index);
 void ShowSortDropdown(AppState& s);
 // Toolbar "Group" button: the group-by choices on their own.

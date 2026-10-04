@@ -3017,6 +3017,10 @@ BEGIN
     IDS_SETTINGS_CONFIRM_DELETE_DESC "按 Delete 移到回收站前先询问；永久删除始终会确认"
     IDS_RECYCLE_CONFIRM_ONE "要把此项目移到回收站吗？"
     IDS_RECYCLE_CONFIRM_MANY_FORMAT "要把这 %zu 个项目移到回收站吗？"
+    IDS_APPLY_GROUP_ALL_FOLDERS "将分组应用到所有文件夹…"
+    IDS_APPLY_GROUP_ALL_SHORT "应用到所有文件夹"
+    IDS_APPLY_GROUP_ALL_MESSAGE_FORMAT "所有文件夹都将按“%s”分组。之前为各个文件夹单独保存的分组会被清除，视图和排序不受影响；最近使用、搜索结果和回收站保留各自的分组。"
+    IDS_APPLY_GROUP_NONE_MESSAGE "所有文件夹都将不分组。之前为各个文件夹单独保存的分组会被清除，视图和排序不受影响；最近使用、搜索结果和回收站保留各自的分组。"
 END
 
 LANGUAGE 0x09, 0x01
@@ -3065,6 +3069,10 @@ BEGIN
     IDS_SETTINGS_CONFIRM_DELETE_DESC "Ask before Delete moves items to the Recycle Bin. Permanent deletes always ask."
     IDS_RECYCLE_CONFIRM_ONE "Move this item to the Recycle Bin?"
     IDS_RECYCLE_CONFIRM_MANY_FORMAT "Move these %zu items to the Recycle Bin?"
+    IDS_APPLY_GROUP_ALL_FOLDERS "Apply grouping to all folders…"
+    IDS_APPLY_GROUP_ALL_SHORT "Apply to all folders"
+    IDS_APPLY_GROUP_ALL_MESSAGE_FORMAT "All folders will be grouped by “%s”. Grouping saved for individual folders will be cleared. View and sort are not changed; Recent, search results and the Recycle Bin keep their own grouping."
+    IDS_APPLY_GROUP_NONE_MESSAGE "No folder will be grouped. Grouping saved for individual folders will be cleared. View and sort are not changed; Recent, search results and the Recycle Bin keep their own grouping."
 END
 
 // Traditional Chinese (Taiwan), generated from the Simplified blocks above.

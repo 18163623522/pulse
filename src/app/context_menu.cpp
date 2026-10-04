@@ -314,6 +314,11 @@ ui::FluentMenuItem BuildGroupMenu(const BackgroundViewOptions& options) {
         if (row.value == last) child.separator_after = true;
         group.children.push_back(std::move(child));
     }
+    if (options.can_apply_group_all && !group.children.empty()) {
+        group.children.back().separator_after = true;
+        group.children.push_back(Item(CmdApplyGroupToAllFolders,
+            l10n::Get(l10n::StringId::ApplyGroupAllFolders).c_str(), L"\xE8B3"));
+    }
     return group;
 }
 
