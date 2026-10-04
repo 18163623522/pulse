@@ -25,6 +25,19 @@ bool Set(const std::wstring& path, const wchar_t* name, const std::wstring& text
     RegCloseKey(key); return ok;
 }
 void Clear() { RegDeleteTreeW(HKEY_CURRENT_USER, L"Software"); }
+bool KeyExists(const std::wstring& path) {
+    HKEY key = nullptr;
+    const LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key);
+    if (key) RegCloseKey(key);
+    return status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND;
+}
+void DeleteValue(const std::wstring& path, const wchar_t* name) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, name);
+        RegCloseKey(key);
+    }
+}
 }
 
 int wmain() {
@@ -62,7 +75,40 @@ int wmain() {
     Clear(); Set(shell,L"",L"open"); const auto open=Read(shell);
     Check(ApplyShellIntegration(ShellIntegrationKind::Folders,exe,false) && Read(shell)==open, "open default alone is not ownership");
     Set(command,L"",L"\""+exe+L"\" \"%1\""); Set(command,L"DelegateExecute",L"");
-    Check(!ApplyShellIntegration(ShellIntegrationKind::Directory,exe,false) && !Read(command).exists && Read(command,L"DelegateExecute").exists && Read(shell)==open, "legacy unknown backup reports incomplete and preserves unknown values");
+    // #81: an empty per-user DelegateExecute still overrides the system handler
+    // after Pulse's command has gone. A missing backup must not leave it behind.
+    Check(!ApplyShellIntegration(ShellIntegrationKind::Directory,exe,false) && !KeyExists(shell), "legacy restore removes owned overrides instead of leaving an unusable open verb");
+    for (const bool migrate : {false, true}) {
+        Clear();
+        Set(win, L"", L"\"" + exe + L"\"");
+        Set(win, L"DelegateExecute", L"");
+        if (migrate) Check(ApplyShellIntegration(ShellIntegrationKind::WinE, exe, true), "legacy Win+E registration migrates");
+        Check(!ApplyShellIntegration(ShellIntegrationKind::WinE, exe, false) && !KeyExists(win.substr(0, win.find(L"\\shell"))),
+            "legacy Win+E restore removes empty per-user CLSID override with or without migration");
+    }
+    Clear();
+    Set(pc, L"", L"open");
+    Set(pc + L"\\open\\command", L"", L"\"" + exe + L"\" \"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\"");
+    Set(pc + L"\\open\\command", L"DelegateExecute", L"");
+    Check(!ApplyShellIntegration(ShellIntegrationKind::ThisPc, exe, false) && !KeyExists(pc.substr(0, pc.find(L"\\shell"))),
+        "legacy This PC restore releases the system CLSID handler");
+    for (const bool reenable : {false, true}) {
+        Clear();
+        Set(win, L"", L"\"" + exe + L"\""); Set(win, L"DelegateExecute", L"");
+        Check(ApplyShellIntegration(ShellIntegrationKind::WinE, exe, true), "capture legacy ownership before partial restoration");
+        DeleteValue(win, L""); // Previous releases removed the command but left the override and snapshot.
+        if (reenable) Check(ApplyShellIntegration(ShellIntegrationKind::WinE, exe, true), "reenable retains partial restore provenance");
+        Check(!ApplyShellIntegration(ShellIntegrationKind::WinE, exe, false) && !KeyExists(win.substr(0, win.find(L"\\shell"))),
+            "snapshot-backed partial restore is repairable without preserving the broken override");
+    }
+    Clear();
+    Set(win, L"", L"\"" + exe + L"\""); Set(win, L"DelegateExecute", L"");
+    Check(ApplyShellIntegration(ShellIntegrationKind::WinE, exe, true), "capture legacy ownership for external handler test");
+    DeleteValue(win, L""); Set(win, L"DelegateExecute", L"{11111111-2222-3333-4444-555555555555}");
+    const auto later_delegate = Read(win, L"DelegateExecute");
+    ApplyShellIntegration(ShellIntegrationKind::WinE, exe, false);
+    Check(Read(win, L"DelegateExecute") == later_delegate, "partial restore preserves a later external COM handler");
+    Clear();
     Set(win,L"",L"\""+exe+L"\""); Set(win,L"DelegateExecute",L"");
     Set(win,L"PulseBackup",L"legacy command"); Set(win,L"PulseBackupDelegateExecute",L"");
     const auto legacy_command=Read(win,L"PulseBackup"), legacy_delegate=Read(win,L"PulseBackupDelegateExecute");

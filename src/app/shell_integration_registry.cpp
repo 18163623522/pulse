@@ -192,6 +192,10 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
     const bool valid = Decode(stored, bindings.size(), previous);
     const bool command_ours = ShellCommandTargetsExecutable(Text(current[0]), exe);
     const bool owned = valid && command_ours && SameValue(current[0], previous.written[0]);
+    // Older restores removed the command before clearing the other overrides.
+    // Only a matching snapshot can prove ownership once that anchor is absent.
+    const bool removed_anchor = valid && !current[0].exists && !previous.before[0].exists &&
+        ShellCommandTargetsExecutable(Text(previous.written[0]), exe);
 
     if (on) {
         if (stored.exists && !valid) return false;
@@ -199,7 +203,9 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
         next.before = current;
         for (size_t i = 0; i < bindings.size(); ++i) {
             next.written.push_back(bindings[i].desired);
-            if (owned && SameValue(current[i], previous.written[i])) next.before[i] = previous.before[i];
+            if ((owned || removed_anchor) &&
+                (SameValue(current[i], previous.written[i]) || (removed_anchor && i == 0)))
+                next.before[i] = previous.before[i];
             else if (!valid && command_ours && (i == 0 || SameValue(current[i], bindings[i].desired))) {
                 next.before[i].known = false; // legacy state is not an original-value backup
                 next.before[i].exists = false;
@@ -227,7 +233,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
         return true;
     }
 
-    if (!command_ours) return true; // another manager owns this association now
+    if (!command_ours && !removed_anchor) return true; // no evidence that these values belong to Pulse
     if (!valid) {
         // Migrate available legacy text through the same ownership checks.
         previous.before.resize(bindings.size());
@@ -237,7 +243,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
             previous.written.push_back(i == 0 ? current[i] : bindings[i].desired);
         }
     }
-    if (valid && !owned) return false; // someone edited Pulse's command; don't overwrite their version
+    if (valid && !owned && !removed_anchor) return false; // someone edited Pulse's command
     bool ok = valid;
     bool write_failed = false;
     for (size_t i = bindings.size(); i-- > 0;) {
@@ -251,9 +257,10 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
         if (!Read(bindings[i].key, bindings[i].name, actual)) { ok = false; write_failed = true; continue; }
         if (!SameValue(actual, previous.written[i])) continue;
         if (!previous.before[i].known) {
-            if (previous.before[i].exists || i == 0) {
-                if (!Write(bindings[i].key, bindings[i].name, previous.before[i])) write_failed = true;
-            }
+            // Retaining our empty DelegateExecute after removing our command
+            // disables Explorer's inherited handler (#81). Restore any legacy
+            // backup, otherwise remove only values still matching our writes.
+            if (!Write(bindings[i].key, bindings[i].name, previous.before[i])) write_failed = true;
             ok = false;
         } else if (!Write(bindings[i].key, bindings[i].name, previous.before[i])) {
             ok = false;

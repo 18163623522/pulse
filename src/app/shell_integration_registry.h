@@ -9,7 +9,7 @@ enum class ShellIntegrationKind { Folders, WinE, ThisPc, Directory, Drive };
 
 // Uses HKCU (redirectable with RegOverridePredefKey in isolated tests).
 // A false restore result can mean that legacy registrations had no exact
-// backup: their owned executable command is removed, unknown values stay put.
+// backup: matching Pulse overrides are removed, unrelated values stay put.
 bool ApplyShellIntegration(ShellIntegrationKind kind, const std::wstring& exe, bool on);
 bool ReadShellIntegration(ShellIntegrationKind kind, const std::wstring& exe);
 bool HasShellIntegrationOwnership(ShellIntegrationKind kind, const std::wstring& exe);
