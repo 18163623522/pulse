@@ -323,7 +323,7 @@ target_link_options(pulse_dialog_gallery PRIVATE /MANIFEST:NO)
 pulse_enable_lumatext(pulse_dialog_gallery)
 
 set(PULSE_PICKER_ART_SOURCES src/ui/folder_picker_art.cpp src/ui/shell_icons.cpp
-    src/ui/thumbnail_cache.cpp src/ui/cover_palette.cpp src/ui/fluent_menu.cpp)
+    src/ui/thumbnail_cache.cpp src/ui/fluent_menu.cpp)
 target_sources(pulse_dialog_gallery PRIVATE ${PULSE_PICKER_ART_SOURCES})
 target_link_libraries(pulse_dialog_gallery PRIVATE shlwapi uuid)
 get_target_property(PULSE_PICKER_TEST_SOURCES pulse_dialog_gallery SOURCES)
@@ -502,7 +502,7 @@ target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mf
 add_executable(pulse_ffmpeg_playback_test src/bench/ffmpeg_playback_test.cpp
     src/ui/ffmpeg_playback.cpp src/ui/audio_waveform.cpp src/common/ffmpeg_tool.cpp)
 target_link_libraries(pulse_ffmpeg_playback_test PRIVATE user32 winmm ole32 mfuuid)
-add_executable(pulse_cover_palette_test src/bench/cover_palette_test.cpp src/ui/cover_palette.cpp)
+add_executable(pulse_cover_palette_test src/bench/cover_palette_test.cpp)
 
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp
@@ -599,7 +599,7 @@ pulse_add_version_resource(pulse_preview "Pulse preview host" "Pulse.Preview" "P
 
 # Preview protocol self test (console; drives Pulse.Preview.exe over the pipe)
 add_executable(pulse_preview_test src/bench/preview_test_main.cpp src/bench/preview_coverage.cpp
-    src/bench/thumbnail_cache_test.cpp src/ui/thumbnail_cache.cpp src/ui/cover_palette.cpp src/preview_host/video_codec.cpp
+    src/bench/thumbnail_cache_test.cpp src/ui/thumbnail_cache.cpp src/preview_host/video_codec.cpp
     src/preview_host/zip_entry.cpp src/preview_host/office_model.cpp
     src/preview_host/office_doc_model.cpp src/preview_host/office_slide_model.cpp
     src/preview_host/office_sheet_model.cpp
@@ -634,7 +634,7 @@ add_executable(pulse_math_test src/bench/math_formula_test.cpp
     src/ui/math_macro.cpp src/ui/math_alphabet.cpp
     src/ui/math_font_metrics.cpp src/ui/math_font_face.cpp
     src/ui/markdown_view.cpp src/ui/syntax_highlight.cpp src/ui/typography.cpp
-    src/ui/thumbnail_cache.cpp src/ui/cover_palette.cpp src/ui/ui_compositor.cpp
+    src/ui/thumbnail_cache.cpp src/ui/ui_compositor.cpp
     src/preview_host/markdown_document.cpp third_party/md4c/md4c.c)
 target_compile_definitions(pulse_math_test PRIVATE MD4C_USE_UTF16)
 target_link_libraries(pulse_math_test PRIVATE dwrite d2d1 d3d11 dxgi dcomp dwmapi shcore
@@ -1064,10 +1064,10 @@ add_executable(pulse_folder_thumbnail_ipc_test src/bench/folder_thumbnail_ipc_te
 target_link_libraries(pulse_folder_thumbnail_ipc_test PRIVATE ole32 windowscodecs uuid)
 add_dependencies(pulse_folder_thumbnail_ipc_test pulse_preview)
 add_executable(pulse_folder_thumbnail_cache_test src/bench/folder_thumbnail_cache_test.cpp
-    src/ui/thumbnail_cache.cpp src/ui/cover_palette.cpp src/ui/folder_thumbnail_cache.cpp)
+    src/ui/thumbnail_cache.cpp src/ui/folder_thumbnail_cache.cpp)
 target_link_libraries(pulse_folder_thumbnail_cache_test PRIVATE d2d1 d3d11 dxgi dwrite windowscodecs ole32 shell32 shlwapi uuid)
 add_executable(pulse_thumbnail_cache_unit_test src/bench/thumbnail_cache_unit_main.cpp
-    src/bench/thumbnail_cache_test.cpp src/ui/thumbnail_cache.cpp src/ui/cover_palette.cpp)
+    src/bench/thumbnail_cache_test.cpp src/ui/thumbnail_cache.cpp)
 target_link_libraries(pulse_thumbnail_cache_unit_test PRIVATE d2d1 d3d11 dxgi dwrite windowscodecs ole32 shell32 shlwapi uuid)
 target_link_libraries(pulse_preview_command_test PRIVATE pulse_localization)
 add_executable(pulse_image_preview_integrity_test src/bench/image_preview_integrity_test.cpp
