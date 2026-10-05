@@ -247,3 +247,139 @@ float LayoutSettingsContent(SettingsLayout& l, const WindowViewModel& vm, float 
     y+=24*scale;
     return y;
 }
+
+// ---- 预览增强包 page (5) ---------------------------------------------------
+// Texts shared by layout (measuring) and drawing. l10n::Pick converts to
+// Traditional Chinese at run time, like the Quick Look format catalog.
+namespace pack_text {
+inline const wchar_t* Title() { return l10n::Pick(L"预览增强包", L"Preview packs"); }
+inline const wchar_t* Intro() { return l10n::Pick(
+    L"按需为预览和缩略图添加格式支持。预览增强包单独下载、在隔离的预览进程中运行，可随时卸载。",
+    L"Add formats to previews and thumbnails on demand. Packs download separately, run in the isolated preview process and can be removed at any time."); }
+inline const wchar_t* OpenFolder() { return l10n::Pick(L"打开文件夹", L"Open folder"); }
+inline const wchar_t* Media() { return l10n::Pick(L"媒体", L"Media"); }
+inline const wchar_t* Advanced() { return l10n::Pick(L"高级", L"Advanced"); }
+inline const wchar_t* MediaTitle() { return l10n::Pick(L"FFmpeg 媒体增强", L"FFmpeg media"); }
+inline const wchar_t* MediaDesc() { return l10n::Pick(
+    L"系统缺少解码器的视频也能生成缩略图、显示时长和媒体信息：HEVC、AV1、VP9、ProRes、FLV、RMVB、MPEG-TS 等。",
+    L"Thumbnails, playing time and media details for videos Windows has no decoder for: HEVC, AV1, VP9, ProRes, FLV, RMVB, MPEG-TS and more."); }
+inline const wchar_t* MediaMeta() { return l10n::Pick(L"LGPL-2.1 · 仅解码构建，不含 GPL 组件", L"LGPL-2.1 · decode-only build, no GPL parts"); }
+inline const wchar_t* Install() { return l10n::Pick(L"安装", L"Install"); }
+inline const wchar_t* Remove() { return l10n::Pick(L"卸载", L"Remove"); }
+inline const wchar_t* CustomTitle() { return l10n::Pick(L"使用已安装的 FFmpeg", L"Use an installed FFmpeg"); }
+inline const wchar_t* CustomDesc() { return l10n::Pick(
+    L"改用这台电脑上已有的 FFmpeg 代替预览增强包（不做完整性校验）",
+    L"Use an FFmpeg already on this PC instead of the pack (not verified)"); }
+inline const wchar_t* NoCustom() { return l10n::Pick(L"尚未选择 ffmpeg.exe", L"No ffmpeg.exe chosen"); }
+inline const wchar_t* Browse() { return l10n::Pick(L"浏览…", L"Browse…"); }
+inline const wchar_t* UseDetected() { return l10n::Pick(L"使用检测到的", L"Use found"); }
+inline const wchar_t* RemoveTitle() { return l10n::Pick(L"卸载 Pulse 时删除预览增强包", L"Remove packs when uninstalling Pulse"); }
+inline const wchar_t* RemoveDesc() { return l10n::Pick(L"否则保留，重新安装 Pulse 后可直接使用", L"Otherwise they stay and work again after reinstalling Pulse"); }
+inline const wchar_t* Note() { return l10n::Pick(
+    L"预览增强包在隔离的预览进程中运行：崩溃或超时只影响当前预览，Pulse 会回退到内置的缩略图和文本视图。",
+    L"Packs run in the isolated preview process: a crash or timeout only affects that preview, and Pulse falls back to its built-in views."); }
+inline std::wstring Bytes(uint64_t bytes) {
+    wchar_t text[48]{};
+    if (bytes >= 1024ull * 1024 * 1024) swprintf_s(text, L"%.1f GB", bytes / (1024.0 * 1024 * 1024));
+    else if (bytes >= 1024ull * 1024) swprintf_s(text, L"%.0f MB", bytes / (1024.0 * 1024));
+    else swprintf_s(text, L"%.0f KB", bytes / 1024.0);
+    return text;
+}
+inline std::wstring Summary(const WindowViewModel& vm) {
+    if (!vm.settings_pack_installed) return l10n::Pick(L"尚未安装预览增强包", L"No preview packs installed");
+    wchar_t text[128]{};
+    swprintf_s(text, l10n::Pick(L"已安装 %u 个 · 占用 %s", L"%u installed · %s"),
+               vm.settings_pack_installed, Bytes(vm.settings_pack_bytes).c_str());
+    return text;
+}
+inline std::wstring Found(const std::wstring& path) {
+    return std::wstring(l10n::Pick(L"检测到：", L"Found: ")) + path;
+}
+struct Badge { std::wstring text; fluent::BadgeKind kind = fluent::BadgeKind::Neutral; };
+inline Badge MediaBadge(const WindowViewModel& vm) {
+    if (vm.settings_pack_ffmpeg && !vm.settings_pack_ffmpeg_enabled)
+        return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
+    if (vm.settings_pack_ffmpeg == 2) return {l10n::Pick(L"使用你的 FFmpeg", L"Using your FFmpeg"), fluent::BadgeKind::Accent};
+    if (vm.settings_pack_ffmpeg == 1) {
+        std::wstring text = l10n::Pick(L"已安装", L"Installed");
+        if (!vm.settings_pack_version.empty()) text += L" " + vm.settings_pack_version;
+        return {text, fluent::BadgeKind::Success};
+    }
+    return {l10n::Pick(L"未安装", L"Not installed"), fluent::BadgeKind::Neutral};
+}
+inline const wchar_t* Primary(const WindowViewModel& vm) {
+    return vm.settings_pack_media_installed ? Remove() : Install();
+}
+// Switch and path rows exist once there is something to switch.
+inline bool ShowsEnable(const WindowViewModel& vm) { return vm.settings_pack_ffmpeg != 0; }
+inline bool ShowsPath(const WindowViewModel& vm) {
+    return vm.settings_pack_use_custom || !vm.settings_pack_detected_path.empty();
+}
+inline bool ShowsDetect(const WindowViewModel& vm) {
+    return !vm.settings_pack_detected_path.empty() &&
+        _wcsicmp(vm.settings_pack_detected_path.c_str(), vm.settings_pack_custom_path.c_str()) != 0;
+}
+} // namespace pack_text
+
+float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float scale,
+                          float y, const fluent::Painter* painter) {
+    const float left = l.content.left + 20*scale, right = l.content.right - 20*scale;
+    auto row = [&](float h) { auto r = D2D1::RectF(left, y, right, y + h*scale); y = r.bottom; return r; };
+    auto button_w = [&](std::wstring_view text) { return painter ? painter->MeasureButtonWidth(text) : 96*scale; };
+    auto caption_h = [&](std::wstring_view text, float width) {
+        return text.empty() ? 0.0f : painter
+            ? painter->MeasureWrappedCaptionHeight(text, (std::max)(40*scale, width)) : 40*scale;
+    };
+    y += 30*scale;  // below the intro line, as on the search page
+    // Summary: how many packs, their disk use and where they live.
+    l.pack_summary = row(72);
+    const float open_w = button_w(pack_text::OpenFolder());
+    l.pack_open = D2D1::RectF(right - 16*scale - open_w, l.pack_summary.top + 20*scale,
+                              right - 16*scale, l.pack_summary.top + 52*scale);
+
+    // Media: the FFmpeg pack card.
+    y += 24*scale; l.pack_media_section = row(28);
+    const float top = y, text_left = left + 54*scale, inner_right = right - 16*scale;
+    float badge_right = inner_right;
+    if (pack_text::ShowsEnable(vm)) {
+        l.pack_enable = D2D1::RectF(inner_right - 42*scale, top + 14*scale, inner_right, top + 46*scale);
+        badge_right = l.pack_enable.left - 12*scale;
+    }
+    const auto badge = pack_text::MediaBadge(vm);
+    const float badge_w = painter ? painter->MeasureBadgeWidth(badge.text) : 96*scale;
+    l.pack_badge = D2D1::RectF(badge_right - badge_w, top + 19*scale, badge_right, top + 41*scale);
+    l.pack_desc_h = caption_h(pack_text::MediaDesc(), inner_right - text_left);
+    float footer = top + 40*scale + l.pack_desc_h + 12*scale;
+    const float primary_w = button_w(pack_text::Primary(vm));
+    l.pack_primary = D2D1::RectF(inner_right - primary_w, footer, inner_right, footer + 32*scale);
+    float bottom = footer + 32*scale + 14*scale;
+    if (!vm.settings_pack_notice.empty()) {
+        const float notice_h = caption_h(vm.settings_pack_notice, inner_right - text_left - 12*scale);
+        l.pack_notice = D2D1::RectF(text_left - 8*scale, bottom - 4*scale, inner_right, bottom + notice_h + 12*scale);
+        bottom = l.pack_notice.bottom + 12*scale;
+    }
+    l.pack_card = D2D1::RectF(left, top, right, bottom);
+    y = bottom;
+
+    // Advanced: an FFmpeg of the user's own, and what uninstall does.
+    y += 24*scale; l.pack_advanced_section = row(28);
+    const float group_top = y;
+    l.pack_custom_row = row(64);
+    if (pack_text::ShowsPath(vm)) {
+        l.pack_path_row = row(vm.settings_pack_detected_path.empty() ? 52.0f : 66.0f);
+        const float browse_w = button_w(pack_text::Browse());
+        const float button_top = l.pack_path_row.top + (l.pack_path_row.bottom - l.pack_path_row.top - 32*scale) / 2;
+        l.pack_browse = D2D1::RectF(inner_right - browse_w, button_top, inner_right, button_top + 32*scale);
+        if (pack_text::ShowsDetect(vm)) {
+            const float detect_w = button_w(pack_text::UseDetected());
+            l.pack_detect = D2D1::RectF(l.pack_browse.left - 8*scale - detect_w, button_top,
+                                        l.pack_browse.left - 8*scale, button_top + 32*scale);
+        }
+    }
+    l.pack_remove_row = row(64);
+    l.pack_group = D2D1::RectF(left, group_top, right, y);
+    y += 12*scale;
+    l.pack_note = D2D1::RectF(left, y, right, y + caption_h(pack_text::Note(), right - left - 8*scale) + 4*scale);
+    y = l.pack_note.bottom + 24*scale;
+    return y;
+}

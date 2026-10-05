@@ -184,20 +184,39 @@ inline ResolvedPack ResolvePackUncached(PackId id) {
     return out;
 }
 
+// Write times of packs.json and <key>\installed.json. Settings and the
+// installer write one of them on every change, so comparing this stamp lets a
+// change made in Settings reach the very next request.
+inline uint64_t PackStamp(PackId id) {
+    const std::wstring root = PacksRoot();
+    if (root.empty()) return 0;
+    uint64_t stamp = 0;
+    for (const std::wstring& file : {root + L"\\packs.json", root + L"\\" + PackKey(id) + L"\\installed.json"}) {
+        WIN32_FILE_ATTRIBUTE_DATA data{};
+        const uint64_t time = GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data)
+            ? (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime
+            : 1;
+        stamp = stamp * 1000003u + time;
+    }
+    return stamp;
+}
+
 // The preview host asks this for every candidate file, so the answer is
-// cached: the disk is consulted at most once every few seconds, and a pack
-// installed or removed from Settings is picked up without restarting.
+// cached: two attribute reads per call, the settings and pack files only when
+// they changed or every few seconds (a custom ffmpeg.exe may have been deleted).
 inline ResolvedPack ResolvePack(PackId id) {
-    struct Slot { ULONGLONG checked = 0; ResolvedPack value; };
+    struct Slot { ULONGLONG checked = 0; uint64_t stamp = 0; ResolvedPack value; };
     static Slot slots[kPackCount];
     static std::mutex lock;
     constexpr ULONGLONG kRecheckMs = 3000;
     const ULONGLONG now = GetTickCount64();
+    const uint64_t stamp = PackStamp(id);
     std::lock_guard<std::mutex> guard(lock);
     Slot& slot = slots[static_cast<uint32_t>(id)];
-    if (slot.checked == 0 || now - slot.checked >= kRecheckMs) {
+    if (slot.checked == 0 || now - slot.checked >= kRecheckMs || stamp != slot.stamp) {
         slot.value = ResolvePackUncached(id);
         slot.checked = now ? now : 1;
+        slot.stamp = stamp;
     }
     return slot.value;
 }

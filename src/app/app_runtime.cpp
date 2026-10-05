@@ -417,6 +417,22 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
             vm.settings_content_status = ContentIndexStatusText(s);
             vm.settings_expanded = s.settingsExpanded;
             if (vm.settings_page == 0) vm.settings_preview_codecs = ui::DetectPreviewCodecs(false, s.hwnd);
+            if (vm.settings_page == 5) {
+                // Cached in the controller: the disk is read at most every 2 s.
+                const auto& packs = s.settings.Packs();
+                vm.settings_pack_ffmpeg = packs.ffmpeg;
+                vm.settings_pack_media_installed = packs.media_installed;
+                vm.settings_pack_ffmpeg_enabled = packs.enabled;
+                vm.settings_pack_use_custom = packs.use_custom;
+                vm.settings_pack_remove_on_uninstall = packs.remove_on_uninstall;
+                vm.settings_pack_installed = packs.installed;
+                vm.settings_pack_bytes = packs.bytes;
+                vm.settings_pack_version = packs.version;
+                vm.settings_pack_custom_path = packs.custom_path;
+                vm.settings_pack_detected_path = packs.detected_path;
+                vm.settings_pack_root = packs.root;
+                vm.settings_pack_notice = packs.notice;
+            }
             vm.settings_theme = s.themeOverride == ui::ThemeMode::Light ? 1 : s.themeOverride == ui::ThemeMode::Dark ? 2 : 0;
             const auto content_config = s.contentSearch.GetConfig();
             const auto content_status = s.contentSearch.GetStatus();

@@ -3,6 +3,8 @@
 #include "../common/localization.h"
 #include "about_info.h"
 #include "../ui/preview_format_catalog.h"
+#include "../ui/folder_picker_dialog.h"
+#include "../common/preview_packs.h"
 #include <shellapi.h>
 #include <algorithm>
 #include <cwctype>
@@ -123,6 +125,39 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     }
     case H::SettingsIntegration: s.settings.IntegrationAction(hit.index);break;
     case H::SettingsPreviewStore: ui::OpenPreviewCodecStore(s.hwnd,hit.index);break;
+    case H::SettingsPackAction: {
+        bool refresh=false;
+        switch(static_cast<ui::PackAction>(hit.index)) {
+        case ui::PackAction::Install: refresh=s.settings.InstallMediaPack();break;
+        case ui::PackAction::Remove: refresh=s.settings.RemoveMediaPack();break;
+        case ui::PackAction::Enable: refresh=s.settings.ToggleMediaPack();break;
+        case ui::PackAction::UseCustom: refresh=s.settings.ToggleCustomFfmpeg();break;
+        case ui::PackAction::UseDetected: refresh=s.settings.UseDetectedFfmpeg();break;
+        case ui::PackAction::RemoveOnUninstall: s.settings.ToggleRemovePacksOnUninstall();break;
+        case ui::PackAction::Browse: {
+            ui::FolderPickerSpec spec;spec.mode=ui::PickerMode::File;
+            spec.title=l10n::Pick(L"选择 ffmpeg.exe",L"Choose ffmpeg.exe");
+            spec.filters={{L"ffmpeg.exe",L"ffmpeg.exe"}};
+            const auto& state=s.settings.Packs();
+            const std::wstring& current=!state.custom_path.empty() ? state.custom_path : state.detected_path;
+            if(!current.empty()) spec.initial_path=packs::DirectoryOf(current);
+            ui::FilePickerResult picked;
+            if(ui::ShowFilePicker(s.hwnd,spec,s.darkMode,s.accentColor,picked) && !picked.paths.empty())
+                refresh=s.settings.SetCustomFfmpeg(picked.paths.front());
+            break;
+        }
+        case ui::PackAction::OpenFolder: {
+            const std::wstring root=s.settings.Packs().root;
+            if(!root.empty() && packs::CreateDirectoryChain(root)) NewTab(s,root);
+            return true;
+        }
+        }
+        // Thumbnails that failed (or came from the other FFmpeg) are decoded again.
+        if(refresh) s.renderer.EvictThumbnails();
+        auto vm=BuildVm(s,false);
+        const float maximum=s.renderer.SettingsMaxScroll(vm,static_cast<float>(s.compositor.Width()),static_cast<float>(s.compositor.Height()));
+        s.settings.SetScroll(s.settings.scroll(),maximum);break;
+    }
     case H::SettingsGlobalSearchHotkey: SetFocus(s.hwnd);s.settings.BeginGlobalSearchHotkeyCapture();break;
     case H::SettingsTheme: SetThemeMode(s,hit.index);break;
     case H::SettingsDropdown: {

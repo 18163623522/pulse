@@ -523,6 +523,24 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 if (ContainsPt(lay.update_auto_row, x, y)) {
                     r.region = HitTestResult::SettingsToggle; r.index = 31; return r;
                 }
+            } else if (vm.settings_page == 5) {
+                // Buttons first: they sit inside the clickable rows.
+                const std::pair<const D2D1_RECT_F*, PackAction> pack_targets[] = {
+                    {&lay.pack_open, PackAction::OpenFolder},
+                    {&lay.pack_primary, vm.settings_pack_media_installed ? PackAction::Remove : PackAction::Install},
+                    {&lay.pack_enable, PackAction::Enable},
+                    {&lay.pack_detect, PackAction::UseDetected},
+                    {&lay.pack_browse, PackAction::Browse},
+                    {&lay.pack_custom_row, PackAction::UseCustom},
+                    {&lay.pack_remove_row, PackAction::RemoveOnUninstall},
+                };
+                for (const auto& [bounds, action] : pack_targets) {
+                    if (bounds->right > bounds->left && ContainsPt(*bounds, x, y)) {
+                        r.region = HitTestResult::SettingsPackAction;
+                        r.index = static_cast<int>(action);
+                        return r;
+                    }
+                }
             } else if (vm.settings_page == 4) {
                 for (int i = 0; i < 3; ++i) {
                     if (ContainsPt(lay.dup_scope[i], x, y)) {

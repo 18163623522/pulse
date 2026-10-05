@@ -6,6 +6,7 @@
 #include "shell_integration_registry.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
+#include "../common/preview_packs.h"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,7 @@ int SettingsController::PageFromName(std::wstring_view name) noexcept {
     if (name == L"context") return 2;
     if (name == L"about") return 3;
     if (name == L"duplicates") return 4;
+    if (name == L"packs") return 5;
     return 0;
 }
 
@@ -43,13 +45,172 @@ const wchar_t* SettingsController::PageName(int page) noexcept {
     if (page == 2) return L"context";
     if (page == 3) return L"about";
     if (page == 4) return L"duplicates";
+    if (page == 5) return L"packs";
     return L"general";
 }
 
 void SettingsController::SelectPage(int page) noexcept {
     CancelGlobalSearchHotkeyCapture();
-    page_ = std::clamp(page, 0, 4);
+    page_ = std::clamp(page, 0, 5);
     scroll_ = 0.0f;
+    packs_checked_ = 0;  // re-read the packs when their page opens
+}
+
+// ---- 预览增强包 ----------------------------------------------------------------
+
+namespace {
+
+uint64_t DirectoryBytes(const std::wstring& directory, int depth = 0) {
+    if (depth > 4) return 0;
+    uint64_t total = 0;
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileExW((directory + L"\\*").c_str(), FindExInfoBasic, &data,
+                                   FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            total += DirectoryBytes(directory + L"\\" + data.cFileName, depth + 1);
+        else
+            total += (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+    return total;
+}
+
+bool RemoveTree(const std::wstring& directory) {
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileExW((directory + L"\\*").c_str(), FindExInfoBasic, &data,
+                                   FindExSearchNameMatch, nullptr, 0);
+    bool ok = true;
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
+            const std::wstring child = directory + L"\\" + data.cFileName;
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                ok = RemoveTree(child) && ok;
+            } else if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                ok = RemoveDirectoryW(child.c_str()) && ok;   // a junction: never follow it
+            } else {
+                SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+                ok = DeleteFileW(child.c_str()) && ok;
+            }
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+    }
+    return RemoveDirectoryW(directory.c_str()) && ok;
+}
+
+bool IsFfmpegExe(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    return _wcsicmp(name.c_str(), L"ffmpeg.exe") == 0 && packs::IsRegularFile(path);
+}
+
+} // namespace
+
+void SettingsController::RefreshPacks() {
+    using packs::PackId;
+    PackState state;
+    state.notice = std::move(packs_.notice);
+    state.root = packs::PacksRoot();
+    const packs::PackSettings settings = packs::LoadPackSettings();
+    state.enabled = settings.enabled[static_cast<uint32_t>(PackId::Media)];
+    state.use_custom = settings.use_custom_ffmpeg;
+    state.custom_path = settings.custom_ffmpeg;
+    state.remove_on_uninstall = settings.remove_on_uninstall;
+    const packs::InstalledPack media = packs::ReadInstalledPack(PackId::Media);
+    state.media_installed = media.present;
+    state.version = media.version;
+    state.installed = media.present ? 1u : 0u;
+    if (packs::ReadInstalledPack(PackId::Images).present) ++state.installed;
+    // What the preview host would use, ignoring the on/off switch so the card
+    // can still say which FFmpeg it is switching.
+    if (state.use_custom && packs::IsRegularFile(state.custom_path)) state.ffmpeg = 2;
+    else if (media.present) state.ffmpeg = 1;
+    wchar_t found[MAX_PATH]{};
+    if (SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, found, nullptr) && IsFfmpegExe(found))
+        state.detected_path = found;
+    if (!state.root.empty()) state.bytes = DirectoryBytes(state.root);
+    packs_ = std::move(state);
+    packs_checked_ = GetTickCount64();
+}
+
+const SettingsController::PackState& SettingsController::Packs() {
+    if (!packs_checked_ || GetTickCount64() - packs_checked_ >= 2000) RefreshPacks();
+    return packs_;
+}
+
+bool SettingsController::InstallMediaPack() {
+    // The signed pack is not published yet; point at what works today.
+    packs_.notice = l10n::Pick(
+        L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
+        L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
+    return false;
+}
+
+bool SettingsController::RemoveMediaPack() {
+    const std::wstring root = packs::PacksRoot();
+    if (root.empty()) return false;
+    const bool removed = RemoveTree(root + L"\\" + packs::PackKey(packs::PackId::Media));
+    packs_.notice = removed ? std::wstring{} : std::wstring(l10n::Pick(
+        L"有文件正在使用，未能全部删除。关闭正在播放的视频后再试一次。",
+        L"Some files are in use and were not removed. Close playing videos and try again."));
+    RefreshPacks();
+    return true;
+}
+
+namespace {
+bool UpdatePackSettings(const std::function<void(packs::PackSettings&)>& change) {
+    packs::PackSettings settings = packs::LoadPackSettings();
+    change(settings);
+    return packs::SavePackSettings(settings);
+}
+} // namespace
+
+bool SettingsController::ToggleMediaPack() {
+    const bool saved = UpdatePackSettings([](packs::PackSettings& s) { s.enabled[0] = !s.enabled[0]; });
+    packs_.notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
+bool SettingsController::ToggleCustomFfmpeg() {
+    const std::wstring detected = Packs().detected_path;
+    const bool saved = UpdatePackSettings([&](packs::PackSettings& s) {
+        s.use_custom_ffmpeg = !s.use_custom_ffmpeg;
+        if (s.use_custom_ffmpeg && !packs::IsRegularFile(s.custom_ffmpeg) && !detected.empty())
+            s.custom_ffmpeg = detected;
+    });
+    packs_.notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
+bool SettingsController::SetCustomFfmpeg(const std::wstring& path) {
+    if (!IsFfmpegExe(path)) {
+        packs_.notice = l10n::Pick(L"请选择名为 ffmpeg.exe 的程序。", L"Choose the program named ffmpeg.exe.");
+        return false;
+    }
+    const bool saved = UpdatePackSettings([&](packs::PackSettings& s) {
+        s.custom_ffmpeg = path;
+        s.use_custom_ffmpeg = true;
+    });
+    packs_.notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
+bool SettingsController::UseDetectedFfmpeg() {
+    const std::wstring detected = Packs().detected_path;
+    return !detected.empty() && SetCustomFfmpeg(detected);
+}
+
+void SettingsController::ToggleRemovePacksOnUninstall() {
+    UpdatePackSettings([](packs::PackSettings& s) { s.remove_on_uninstall = !s.remove_on_uninstall; });
+    RefreshPacks();
 }
 
 void SettingsController::SetScroll(float value, float maximum) noexcept {

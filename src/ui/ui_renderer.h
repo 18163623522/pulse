@@ -557,6 +557,18 @@ struct DuplicateDriveView {
     bool selected = false;
 };
 
+// HitTestResult::SettingsPackAction indices (Settings > 预览增强包).
+enum class PackAction : int {
+    Install = 0,        // FFmpeg pack: download and install
+    Remove,             // FFmpeg pack: uninstall
+    Enable,             // FFmpeg pack: on / off
+    UseCustom,          // use an FFmpeg already on this PC
+    Browse,             // choose that ffmpeg.exe
+    UseDetected,        // take the ffmpeg.exe found on PATH
+    OpenFolder,         // %LOCALAPPDATA%\Pulse\packs
+    RemoveOnUninstall,  // delete the packs with Pulse
+};
+
 struct WindowViewModel {
     std::wstring window_title;
     std::vector<TabView> tabs;
@@ -657,6 +669,19 @@ struct WindowViewModel {
     bool settings_content_instant = false;
     unsigned settings_expanded = kSettingsDefaultExpandedMask;
     unsigned settings_preview_codecs = 0;  // DetectPreviewCodecs() mask, General page only
+    // Settings > 预览增强包 (page 5), from SettingsController's cached pack state.
+    uint32_t settings_pack_ffmpeg = 0;          // 0 none, 1 pack installed, 2 own FFmpeg in use
+    bool settings_pack_ffmpeg_enabled = true;
+    bool settings_pack_use_custom = false;
+    bool settings_pack_remove_on_uninstall = true;
+    uint32_t settings_pack_installed = 0;       // installed pack count
+    bool settings_pack_media_installed = false; // the FFmpeg pack itself is on disk
+    uint64_t settings_pack_bytes = 0;           // disk use of the packs folder
+    std::wstring settings_pack_version;         // installed FFmpeg pack version
+    std::wstring settings_pack_custom_path;     // chosen ffmpeg.exe
+    std::wstring settings_pack_detected_path;   // ffmpeg.exe found on PATH
+    std::wstring settings_pack_root;            // %LOCALAPPDATA%\Pulse\packs
+    std::wstring settings_pack_notice;          // last action's message, empty when none
     int settings_theme = 0; // system, light, dark
     bool settings_open = false;
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates
@@ -917,6 +942,7 @@ struct HitTestResult {
         ToolbarGroup,        // toolbar "Group" button / active chip: open the group menu
         ToolbarGroupClear,   // "x" on the active group chip: stop grouping
         SettingsPreviewStore,  // Settings > Quick Look formats: get a missing system extension (index = row)
+        SettingsPackAction,    // Settings > 预览增强包: index = PackAction
     } region = None;
     SidebarAddAction sidebar_action = SidebarAddAction::None;
     int index = -1;          // tab/row/sidebar item/tray batch/tray item.
@@ -1098,6 +1124,9 @@ public:
         return active;
     }
     void RefreshFolderThumbnails() { folder_thumbnail_cache_.Refresh(); }
+    // A preview pack was installed, removed or switched: files that had no
+    // thumbnail may have one now, so cached results are dropped.
+    void EvictThumbnails() { thumbnail_cache_.Evict(); }
     auto FolderThumbnailDebugStats() { return folder_thumbnail_cache_.ReadDebugStats(); }
     void SetFolderThumbnailsEnabled(bool enabled) { folder_thumbnails_enabled_ = enabled; }
     // region = HitTestResult region of the button that copied, index its index.
@@ -1347,6 +1376,7 @@ private:
     void DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawSettingsContext(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawSettingsCore(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
+    void DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
 
     void DrawList(const PaneViewModel& vm, float x, float y, float w, float h, const Theme& theme,
                   int hover_region = 0, int hover_control_index = -1, bool pane_focused = true,

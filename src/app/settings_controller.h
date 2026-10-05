@@ -116,6 +116,26 @@ public:
     void SetScroll(float value, float maximum) noexcept;
     void ScrollBy(float delta, float scale, float maximum) noexcept;
 
+    // Settings > 预览增强包 (page 5). The disk is read at most every 2 s while
+    // the page is shown; actions write packs.json and re-read at once.
+    struct PackState {
+        uint32_t ffmpeg = 0;              // packs::ToolSource: 0 none, 1 pack, 2 own FFmpeg
+        bool media_installed = false;     // the FFmpeg pack itself is on disk
+        bool enabled = true, use_custom = false, remove_on_uninstall = true;
+        uint32_t installed = 0;
+        uint64_t bytes = 0;
+        std::wstring version, custom_path, detected_path, root, notice;
+    };
+    const PackState& Packs();
+    // Each returns true when thumbnails have to be decoded again.
+    bool InstallMediaPack();
+    bool RemoveMediaPack();
+    bool ToggleMediaPack();
+    bool ToggleCustomFfmpeg();
+    bool SetCustomFfmpeg(const std::wstring& path);
+    bool UseDetectedFfmpeg();
+    void ToggleRemovePacksOnUninstall();
+
     bool VolumePending(std::wstring_view id) const;
     bool network_pending() const noexcept;
     bool diagnostics_pending() const noexcept;
@@ -197,6 +217,9 @@ private:
     std::wstring global_search_error_;
     int page_ = 0;
     float scroll_ = 0.0f;
+    PackState packs_;
+    uint64_t packs_checked_ = 0;
+    void RefreshPacks();
     std::shared_ptr<TaskState> task_state_ = std::make_shared<TaskState>();
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;
