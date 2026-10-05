@@ -362,6 +362,9 @@ void VideoPreview::Run(std::shared_ptr<Shared> state, std::wstring path) {
         state->snapshot.error = hr;
         state->snapshot.ready = false;
         state->snapshot.playing = false;
+        state->snapshot.unsupported_audio = IsAudio(path) &&
+            (hr == MF_E_UNSUPPORTED_BYTESTREAM_TYPE || hr == MF_E_INVALIDMEDIATYPE ||
+             hr == MF_E_TOPO_CODEC_NOT_FOUND);
     };
     if (FAILED(com)) { fail(com); return; }
     if (!IsAudio(path) && !state->stop.load()) {

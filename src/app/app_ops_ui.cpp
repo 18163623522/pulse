@@ -220,6 +220,10 @@ void DeleteSelected(AppState& s, bool permanent) {
         return;
     }
     std::vector<std::wstring> paths = SelectedFullPaths(*tab);
+    DeletePaths(s, std::move(paths), permanent);
+}
+
+void DeletePaths(AppState& s, std::vector<std::wstring> paths, bool permanent) {
     if (paths.empty()) return;
     if (permanent) {
         ui::ConfirmDialogSpec confirm;
@@ -299,6 +303,10 @@ void CollectToTray(AppState& s, bool move_intent) {
     app::Tab* tab = ActiveTab(s);
     if (!tab || !tab->snapshot || IsRecycleTab(tab)) return;
     std::vector<std::wstring> paths = SelectedFullPaths(*tab);
+    CollectPathsToTray(s, paths, move_intent);
+}
+
+void CollectPathsToTray(AppState& s, const std::vector<std::wstring>& paths, bool move_intent) {
     if (!paths.empty()) {
         s.tray.Collect(paths, move_intent);
         // Mirror the cut state onto the list rows (ui.md §5.2 rule 6).
@@ -401,6 +409,12 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
     if (status.task_id != 0 && status.task_id == s.operationDismissedTaskId &&
         !s.operationPinnedByUser) {
         if (s.operationWindow->IsVisible()) s.operationWindow->Hide();
+        return;
+    }
+
+    if (status.active && status.authorization != ops::AuthorizationState::None) {
+        // Keep the existing operation window visible without stealing focus from UAC.
+        if (!s.operationWindow->IsVisible()) s.operationWindow->Show(false);
         return;
     }
 

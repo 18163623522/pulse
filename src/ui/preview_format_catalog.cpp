@@ -52,31 +52,31 @@ std::vector<PreviewFormatGroup> BuildGroups() {
     AppendTable(images, f::kPsd);
     AppendTable(images, f::kMetaFile);
     add(L"图片", L"Images",
-        L"GIF / WebP / APNG 动图可播放；图标可切换尺寸；HEIC / AVIF 需要下方的系统扩展",
-        L"Animated GIF / WebP / APNG play; icons switch sizes; HEIC / AVIF need the system extensions below",
+        L"动图受预览限额限制；TIFF 可翻页；SVG 使用系统渲染，不支持的内容显示源码；HEIC / AVIF 需要系统扩展",
+        L"Animation has preview limits; TIFF supports pages; SVG uses system rendering; unsupported content shows source; HEIC / AVIF need system extensions",
         std::move(images));
 
     std::vector<std::wstring> documents;
     AppendTable(documents, f::kPdfRaster);
     for (const wchar_t* extension : {L"md", L"docx", L"epub", L"ipynb"}) documents.emplace_back(extension);
     add(L"文档", L"Documents",
-        L"DOCX 无需安装 Office；EPUB 带目录、按章阅读；Markdown 和 Notebook 按排版显示",
-        L"DOCX without Office; EPUB with contents, one chapter at a time; Markdown and notebooks rendered",
+        L"PDF 分页显示；DOCX 为正文阅读转换，非原版排版；EPUB 保留无法读取的章节及原因",
+        L"PDF pages; DOCX is a reading conversion, not original layout; unavailable EPUB chapters keep their place and explanation",
         std::move(documents));
 
     std::vector<std::wstring> data;
-    for (const wchar_t* extension : {L"csv", L"tsv", L"xlsx", L"json", L"xml", L"yaml", L"yml",
+    for (const wchar_t* extension : {L"csv", L"tsv", L"xlsx", L"xlsm", L"json", L"xml", L"yaml", L"yml",
                                      L"toml", L"ini", L"cfg", L"conf", L"properties"})
         data.emplace_back(extension);
     add(L"表格与数据", L"Tables & data",
-        L"CSV / TSV / XLSX 以表格显示；JSON / XML 为可折叠的树",
-        L"CSV / TSV / XLSX as a table; JSON / XML as a collapsible tree", std::move(data));
+        L"CSV / TSV 为表格；XLSX / XLSM 按需读取所选工作表；JSON / XML 为树",
+        L"CSV / TSV tables; XLSX / XLSM load the selected worksheet on demand; JSON / XML trees", std::move(data));
 
     std::vector<std::wstring> text;
     AppendTable(text, f::kText);
     add(L"代码与文本", L"Code & text", L"语法高亮", L"Syntax highlighting", std::move(text));
 
-    // Quick Look plays what VideoPreview accepts (Media Foundation).
+    // These are playback candidates, not a guarantee of installed system support.
     std::vector<std::wstring> media;
     for (const wchar_t* extension : {L"mp4", L"mkv", L"mov", L"webm", L"avi", L"wmv", L"m4v",
                                      L"mpg", L"mpeg", L"m2ts", L"mts", L"3gp", L"mp3", L"flac",
@@ -84,13 +84,14 @@ std::vector<PreviewFormatGroup> BuildGroups() {
                                      L"aif", L"aiff"})
         if (VideoPreview::Supports(std::wstring(L"x.") + extension)) media.emplace_back(extension);
     add(L"音视频", L"Audio & video",
-        L"由系统解码器播放；HEVC / AV1 视频需要下方的系统扩展",
-        L"Played by the system decoders; HEVC / AV1 video need the system extensions below",
+        L"播放取决于系统组件；OGG / OGA / Opus 需兼容的系统媒体扩展；HEVC / AV1 见下方",
+        L"Playback depends on Windows media components; OGG / OGA / Opus need compatible system extensions; HEVC / AV1 below",
         std::move(media));
 
     std::vector<std::wstring> archives;
     AppendTable(archives, f::kArchive);
-    add(L"压缩包", L"Archives", L"浏览内容，无需解压", L"Browse the contents without extracting",
+    add(L"压缩包与镜像", L"Archives & images", L"浏览已加载条目；压缩流按实际内容识别；UDF 无法完整读取时明确提示",
+        L"Browse loaded entries; compressed streams are detected by content; incomplete UDF previews are explicitly marked",
         std::move(archives));
 
     std::vector<std::wstring> fonts;

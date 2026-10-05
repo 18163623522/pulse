@@ -1785,6 +1785,7 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     vm.settings_list_size_bar = s.appPrefs.list_size_bar;
     vm.settings_list_tag_names = s.appPrefs.list_tag_name_color;
     vm.settings_list_selection_outline = s.appPrefs.list_selection_outline;
+    vm.settings_list_thumbnail_badges = s.appPrefs.list_thumbnail_badges;
     vm.settings_vertical_tabs = s.appPrefs.vertical_tabs;
     vm.settings_show_hints = s.appPrefs.show_hints;
     vm.settings_tips_seen = s.appPrefs.tips_seen != 0;

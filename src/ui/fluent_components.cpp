@@ -688,6 +688,19 @@ void Painter::DrawFocusRing(const D2D1_RECT_F& bounds, float radius) {
     StrokeRounded(Inflate(bounds, Px(1.0f)), radius + Px(1.0f), BrushId::Accent, width);
 }
 
+void Painter::DrawCommandButton(const ButtonSpec& spec) {
+    if (!dc_) return;
+    const auto& state = spec.state;
+    if (state.enabled && (state.hovered || state.selected))
+        FillRoundedRect(spec.bounds, Px(theme_.radius_control), state.hovered ? theme_.fill_hover : theme_.fill_selected);
+    const auto color = !state.enabled ? theme_.text_disabled : state.selected ? theme_.accent : theme_.text_secondary;
+    const auto command = command_icons::FromGlyph(spec.glyph);
+    EnsureStrokeStyle();
+    command_icons::Draw(dc_, ScratchBrush(color), round_stroke_.get(), command,
+        command_icons::CenteredBounds(spec.bounds, Px(20.0f)));
+    if (state.keyboard_focus) DrawFocusRing(spec.bounds, Px(theme_.radius_control));
+}
+
 void Painter::DrawButton(const ButtonSpec& spec) {
     if (!theme_ || !compositor_) {
         return;

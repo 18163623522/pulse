@@ -9,6 +9,7 @@
 #include <propkey.h>
 #include <propvarutil.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,24 @@ std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
         AddProperty(store.Get(), PKEY_Document_PageCount, L"页数", out);
     }
     return out;
+}
+
+uint32_t ReadMediaDurationMs(const std::wstring& path) {
+    if (!IsOneOf(ExtensionOf(path), {L".mp4", L".mkv", L".mov", L".avi", L".webm", L".wmv",
+                                     L".m4v", L".mpg", L".mpeg", L".ts", L".mts", L".m2ts",
+                                     L".3gp", L".flv"}))
+        return 0;
+    ComPtr<IPropertyStore> store;
+    if (FAILED(SHGetPropertyStoreFromParsingName(ShellPath(path).c_str(), nullptr, GPS_BESTEFFORT,
+                                                 IID_PPV_ARGS(&store))) || !store) return 0;
+    PROPVARIANT value{};
+    PropVariantInit(&value);
+    uint32_t ms = 0;
+    // 100 ns units; clamp to what fits the response (about 49 days).
+    if (SUCCEEDED(store->GetValue(PKEY_Media_Duration, &value)) && value.vt == VT_UI8)
+        ms = static_cast<uint32_t>((std::min)(value.uhVal.QuadPart / 10000ull, 0xFFFFFFFFull));
+    PropVariantClear(&value);
+    return ms;
 }
 
 } // namespace pulse::preview

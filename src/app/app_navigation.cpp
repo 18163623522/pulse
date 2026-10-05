@@ -21,6 +21,7 @@
 #include "entry_group.h"
 #include "entry_order_hold.h"
 #include "session.h"
+#include "layout_pane_selection.h"
 #include "../fs/fs_net_cache.h"
 #include "context_menu.h"
 #include "batch_rename.h"
@@ -857,6 +858,11 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
         LoadChangeView(s, tab, rest);
         return;
     }
+    if (kind == L"networks") {
+        RequestNetworkLocations(s);
+        FillNetworkLocationsView(s, tab);
+        return;
+    }
     if (kind == L"workspace") {
         OpenWorkspace(s, _wtoi(rest.c_str()));
         return;
@@ -993,6 +999,7 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     tab.loading = true;
     tab.ClearSelection();
     tab.pending_selected_name.clear();
+    tab.pending_preview_rename.clear();
     tab.pending_selected_names.clear();
     tab.pending_ensure_selection_visible = false;
     tab.pending_generation = 0;
@@ -1159,8 +1166,10 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
             tab->pending_selected_name.clear();
             tab->pending_ensure_selection_visible = false;
             std::wstring renameTarget;
+            const auto previewRenameTarget = std::exchange(tab->pending_preview_rename, {});
+            const bool previewRename = focusedTab && !previewRenameTarget.empty();
             if (focusedTab) {
-                renameTarget = s.pendingRenameName;
+                renameTarget = previewRename ? previewRenameTarget : s.pendingRenameName;
                 if (renameTarget.empty() && s.renameIndex >= 0 && tab->snapshot &&
                     s.renameIndex < static_cast<int>(tab->EntryCount())) {
                     renameTarget = tab->EntryAt(s.renameIndex).name;
@@ -1228,7 +1237,7 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
                     break;
                 }
                 if (!startedRename) {
-                    s.pendingRenameName = renameTarget;
+                    if (!previewRename) s.pendingRenameName = renameTarget;
                     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
                 }
             }
@@ -1635,6 +1644,7 @@ void RestoreNavigationReturnSelection(AppState& s, app::Tab& tab,
 }
 
 void NavigateTo(AppState& s, const std::wstring& path) {
+    if (OpenSystemNetworkShortcut(s, path)) return;
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
     std::wstring normalized = fs::NormalizePath(path);
@@ -1704,9 +1714,9 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
         Panes(s).push_back(std::move(p));
         if (tab) StartLoadingPath(s, *tab, clone);
     }
-    std::vector<app::Pane*> used;
-    used.reserve(n);
-    for (size_t i = 0; i < n; ++i) used.push_back(Panes(s)[i].get());
+    std::vector<app::Pane*> visible;
+    if (Root(s)) Root(s)->CollectPanes(visible);
+    const auto used = app::SelectLayoutPanes(Panes(s), s.pane, n, visible);
     Root(s) = app::MakePresetTree(preset, used);
     LayoutOf(s) = preset;
     if (n != 2) {
@@ -1726,6 +1736,7 @@ void ApplyLayoutPreset(AppState& s, app::LayoutPreset preset) {
             for (auto& p : Panes(s)) p->target = false;
         }
     }
+    RememberLayoutFocus(s);
     SyncVisibleWatches(s);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
@@ -2122,6 +2133,7 @@ void OpenTabAt(AppState& s, const std::wstring& path) {
 }
 
 void NewTab(AppState& s, const std::wstring& path) {
+    if (OpenSystemNetworkShortcut(s, path)) return;
     RememberLayoutFocus(s);
     s.window_tabs.NewTab(path.empty() ? L"C:\\" : path);
     BindCurrentLayout(s);
@@ -2218,6 +2230,7 @@ void SelectNameInTab(AppState& s, app::Tab& tab, const std::wstring& name) {
 }
 
 void NewBackgroundTab(AppState& s, const std::wstring& path) {
+    if (OpenSystemNetworkShortcut(s, path)) return;
     const app::LayoutTab* opener = s.window_tabs.Active();
     if (path.empty() || !opener) {
         NewTab(s, path);

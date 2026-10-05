@@ -36,6 +36,7 @@ public:
     // Quick Look's cache: folders come as contents listings and Markdown as
     // rendered documents.
     void SetQuickLookContent(bool on) { quick_look_content_ = on; }
+    void SetFolderThumbnail(bool on) { folder_thumbnail_ = on; }
     void Reset();
     void Evict();
     // pan_x/pan_y non-null: cover mode (fill dest, crop overflow) with a
@@ -58,11 +59,14 @@ public:
                            PreviewViewport* viewport = nullptr,
                            uint32_t* text_encoding = nullptr,
                            bool align_artwork_bottom = false,
-                           D2D1_RECT_F* artwork_rect = nullptr);
+                           D2D1_RECT_F* artwork_rect = nullptr,
+                           uint32_t* media_duration_ms = nullptr,
+                           preview::Integrity* integrity = nullptr);
+    // media_duration_ms (optional): a video's playing time, 0 when unknown.
     PreviewDrawResult DrawGridThumbnail(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
         const std::wstring& path, DWORD attrs, uint32_t pixel_size, uint64_t generation,
         uint64_t modified, uint64_t size, float opacity, bool align_bottom,
-        D2D1_RECT_F* artwork);
+        D2D1_RECT_F* artwork, uint32_t* media_duration_ms = nullptr);
     bool Properties(const std::wstring& path, DWORD attrs, uint64_t generation,
                     uint64_t modified, uint64_t size,
                     std::vector<PreviewProperty>& properties);
@@ -70,6 +74,8 @@ public:
                           std::vector<PreviewProperty>& properties);
 private:
     friend struct ThumbnailCacheTestAccess;
+    friend class FolderThumbnailCache;
+    friend struct FolderThumbnailCacheTestAccess;
     struct Item {
         ComPtr<ID2D1Bitmap> bitmap;
         std::vector<uint8_t> pixels;
@@ -86,13 +92,16 @@ private:
         uint32_t frame_index = 0;
         uint32_t source_width = 0;
         uint32_t source_height = 0;
+        uint32_t duration_ms = 0;  // videos: System.Media.Duration
         std::wstring animation_identity;
         ipc::PreviewContentKind kind = ipc::PreviewContentKind::None;
         bool truncated = false;
+        preview::Integrity integrity;
         bool failed = false;
         // Transport failure (host timeout / crash): retried with back-off
         // instead of being remembered as "this file has no preview".
         bool transient = false;
+        bool folder_refresh_complete = false;
         uint64_t retry_at = 0;
         size_t cost = 0;
         std::list<std::wstring>::iterator lru_position;
@@ -107,6 +116,7 @@ private:
         uint32_t epoch = 0;
         bool details = false;
         uint32_t timeout_ms = 0;
+        uint32_t flags = 0;
         std::wstring path, key, identity;
     };
     // Last decoded still bitmap of a file at any pixel size: drawn while a
@@ -115,6 +125,8 @@ private:
     Item* StaleBitmap(const std::wstring& identity, const std::wstring& except_key);
     static uint32_t ResponseTimeoutMs(const std::wstring& path, ipc::PreviewRequestKind kind);
     void Worker();
+    bool FolderRequestCurrent(const Request& request);
+    static bool IsTransientResponse(bool transport_ok, const Request& request, uint32_t status);
     void SelectDetailsLocked(const std::wstring& identity);
     bool StoreResult(const Request& request, Item result);
     void Touch(Item& item);
@@ -125,6 +137,8 @@ private:
     ID2D1DeviceContext* dc_ = nullptr;
     std::atomic<HWND> hwnd_{nullptr};
     std::atomic<bool> quick_look_content_{false};
+    std::atomic<bool> folder_thumbnail_{false};
+    std::unordered_map<std::wstring, uint32_t> folder_requests_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     PROCESS_INFORMATION child_{};
     std::atomic<bool> running_{false};

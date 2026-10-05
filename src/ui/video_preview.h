@@ -30,6 +30,7 @@ public:
         // The video track's format has no installed decoder (e.g. HEVC without
         // the Store extension): MFPlay would only play the sound.
         bool missing_decoder = false;
+        bool unsupported_audio = false; // Media Foundation rejected the container or codec.
         std::wstring codec;       // short name ("HEVC"), set with missing_decoder
         std::wstring codec_name;  // display name ("HEVC (H.265)")
         const wchar_t* store_id = nullptr;  // Microsoft Store extension, if any
@@ -38,7 +39,8 @@ public:
     ~VideoPreview();
     VideoPreview(const VideoPreview&) = delete;
     VideoPreview& operator=(const VideoPreview&) = delete;
-    // Video and audio files MFPlay can open; audio-only files never show the
+    // Candidate video/audio extensions; actual support depends on installed
+    // Media Foundation sources and decoders. Audio-only files never show the
     // video child window (the Quick Look draws cover art and a waveform).
     static bool Supports(const std::wstring& path);
     static bool IsAudio(const std::wstring& path);

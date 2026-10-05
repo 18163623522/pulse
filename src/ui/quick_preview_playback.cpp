@@ -680,7 +680,14 @@ void QuickPreviewWindow::DrawPlaybackChrome(ID2D1DeviceContext* dc, ID2D1SolidCo
     brush->SetColor(original);
 }
 bool QuickPreviewWindow::CodecCardVisible(const VideoPreview::State& state) const {
-    return kCodecHint && state.missing_decoder && !VideoPreview::IsAudio(item_.path);
+    if (state.unsupported_audio) {
+        const auto content = ContentRect();
+        // Fall back to the status text when the existing card cannot fit.
+        if (content.right - content.left < 360.0f * scale_ ||
+            content.bottom - content.top < 226.0f * scale_) return false;
+    }
+    return kCodecHint && (state.unsupported_audio ||
+        (state.missing_decoder && !VideoPreview::IsAudio(item_.path)));
 }
 bool QuickPreviewWindow::OverCodecButton(POINT point) const {
     return Contains(codec_store_rect_, point) || Contains(codec_open_rect_, point);
@@ -702,6 +709,13 @@ void QuickPreviewWindow::DrawCodecCard(ID2D1DeviceContext* dc, const D2D1_RECT_F
                                        ID2D1SolidColorBrush* brush) {
     const bool zh = l10n::IsChinese();
     CodecCardText t;
+    if (state.unsupported_audio) {
+        t.title = l10n::HantText(l10n::Pick(L"此音频暂无法预览", L"Audio preview unavailable"));
+        t.lead = l10n::HantText(l10n::Pick(L"系统无法解码此音频。\n可尝试用默认应用打开。",
+                          L"Windows cannot decode this audio.\nTry opening it in the default app."));
+        DrawCodecCardText(dc, content, t, brush);
+        return;
+    }
     t.title = l10n::Pick(L"这台电脑无法显示此视频的画面", L"Can't show this video on this PC");
     t.lead = l10n::Pick(L"视频使用 ", L"It's encoded as ");
     t.name = state.codec_name;

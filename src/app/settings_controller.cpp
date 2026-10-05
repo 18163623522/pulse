@@ -3,6 +3,7 @@
 #include "settings_controller.h"
 #include "blank_pane_click.h"
 #include "default_file_manager.h"
+#include "shell_integration_registry.h"
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 
@@ -520,6 +521,9 @@ void SettingsController::IntegrationAction(int index) {
             if (!integration_error_.empty()) integration_error_ += l10n::Pick(L"、", L", ");
             integration_error_ += label;
         };
+        if ((index == 5 || index == 6) && HasLegacyShellIntegrationResidue() &&
+            !RepairLegacyShellIntegrationResidue())
+            failed(l10n::Pick(L"旧版资源管理器关联", L"Legacy Explorer associations"));
         if (!p.ApplyFolderOpen(p.integration_enabled && p.integration_folders))
             failed(l10n::Pick(L"文件夹和磁盘", L"Folders and drives"));
         if (!p.ApplyWinE(p.integration_enabled && p.integration_win_e))
@@ -591,6 +595,9 @@ void SettingsController::ToggleUi(int index) {
         SaveAndApply(SettingsEffect::ListStyle);
     } else if (index == 33) {
         prefs_->list_selection_outline = !prefs_->list_selection_outline;
+        SaveAndApply(SettingsEffect::ListStyle);
+    } else if (index == 34) {
+        prefs_->list_thumbnail_badges = !prefs_->list_thumbnail_badges;
         SaveAndApply(SettingsEffect::ListStyle);
     } else if (index == 23) {
         prefs_->vertical_tabs = !prefs_->vertical_tabs;

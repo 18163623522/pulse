@@ -108,7 +108,8 @@ int main() {
             SetLanguage(language);
             for (const auto id : {StringId::LanguageZhTW, StringId::SettingsAutoUpdate,
                                   StringId::SettingsAutoUpdateDesc, StringId::UpdateDescManual,
-                                  StringId::SettingsUiFontSize, StringId::UiFontLarger})
+                                  StringId::SettingsUiFontSize, StringId::UiFontLarger,
+                                  StringId::ListThumbnailBadges, StringId::ListThumbnailBadgesDesc})
                 newest &= !Get(id).empty();
         }
         SetLanguage(L"zh-TW");

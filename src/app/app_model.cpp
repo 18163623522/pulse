@@ -1,5 +1,7 @@
 // app_model.cpp
 #include "app_model.h"
+#include "layout_pane_selection.h"
+#include "network_sidebar.h"
 #include "search_query.h"
 #include "entry_group.h"
 #include "../common/json_utils.h"
@@ -570,11 +572,9 @@ std::unique_ptr<LayoutTab> MakeSingleLayoutTab(const std::wstring& path, const T
 
 void RebuildLayoutRoot(LayoutTab& tab) {
     const size_t n = LayoutPresetCount(tab.layout);
-    std::vector<Pane*> used;
-    used.reserve(n);
-    for (size_t i = 0; i < n && i < tab.panes.size(); ++i)
-        used.push_back(tab.panes[i].get());
-    if (used.empty() && !tab.panes.empty()) used.push_back(tab.panes[0].get());
+    std::vector<Pane*> visible;
+    if (tab.root) tab.root->CollectPanes(visible);
+    const auto used = SelectLayoutPanes(tab.panes, tab.FocusedPane(), n, visible);
     tab.root = used.empty() ? nullptr : MakePresetTree(tab.layout, used);
 }
 
@@ -1172,6 +1172,28 @@ std::vector<int> NormalizeSidebarOrder(const std::vector<int>& order) {
     return out;
 }
 
+void RefreshSidebarDriveCapacity(std::vector<SidebarEntry>& drives) {
+    DWORD old_mode = 0;
+    const BOOL changed = SetThreadErrorMode(SEM_FAILCRITICALERRORS, &old_mode);
+    for (auto& entry : drives) {
+        ULARGE_INTEGER free_bytes{}, total_bytes{};
+        entry.detail.clear();
+        entry.used_ratio = 0.0f;
+        entry.danger = false;
+        if (!GetDiskFreeSpaceExW(entry.path.c_str(), &free_bytes, &total_bytes, nullptr))
+            continue;
+        const uint64_t total = total_bytes.QuadPart;
+        const uint64_t free = std::min(free_bytes.QuadPart, total_bytes.QuadPart);
+        entry.detail = pulse::format::ByteSize(free, false, pulse::format::ByteSizeStyle::Compact)
+            + L" / " + pulse::format::ByteSize(total, false, pulse::format::ByteSizeStyle::Compact);
+        if (total > 0) {
+            entry.used_ratio = static_cast<float>(static_cast<double>(total - free) / static_cast<double>(total));
+            entry.danger = static_cast<double>(free) / static_cast<double>(total) < 0.10;
+        }
+    }
+    if (changed) SetThreadErrorMode(old_mode, nullptr);
+}
+
 SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
     SidebarModel m;
     // Starred items lead their own section, next to (not inside) quick access.
@@ -1250,27 +1272,17 @@ SidebarModel BuildSidebarModel(const fs::RecycleBinInfo* recycle) {
         wchar_t volName[MAX_PATH + 1] = {};
         DWORD sn = 0;
         GetVolumeInformationW(root, volName, MAX_PATH, &sn, nullptr, nullptr, nullptr, 0);
-        ULARGE_INTEGER freeBytes{}, totalBytes{};
-        GetDiskFreeSpaceExW(root, &freeBytes, &totalBytes, nullptr);
         SidebarEntry e;
         e.label = std::wstring(volName[0] ? volName : l10n::Get(l10n::StringId::LocalDisk).c_str()) +
                   L" (" + root[0] + L":)";
-        uint64_t total = totalBytes.QuadPart;
-        uint64_t free = freeBytes.QuadPart;
-        e.detail = pulse::format::ByteSize(free, false, pulse::format::ByteSizeStyle::Compact)
-                 + L" / " + pulse::format::ByteSize(total, false,
-                                                     pulse::format::ByteSizeStyle::Compact);
         e.glyph = L"\xE7F1"; // HardDrive (Segoe Fluent Icons)
         e.fallback = L"Drive";
         e.path = fs::NormalizePath(std::wstring(root));
         e.is_drive = true;
         e.color = ui::HexColor(kDrivePalette[m.drives.size() % 4]);
-        if (total > 0) {
-            e.used_ratio = (float)((double)(total - free) / (double)total);
-            if ((double)free / (double)total < 0.10) e.danger = true;
-        }
         m.drives.push_back(std::move(e));
     }
+    RefreshSidebarDriveCapacity(m.drives);
     return m;
 }
 
@@ -2035,6 +2047,7 @@ ui::WindowViewModel BuildWindowViewModel(const Pane& pane,
             nets.items.push_back(std::move(it));
         }
     }
+    AppendSystemNetworkLocations(nets, sidebar.system_networks);
     // Emit the sections in the user's order. Ids and the collapse/hide bits are
     // re-applied here because ConvertGroup builds fresh groups.
     vm.sidebar.reserve(sections.size());

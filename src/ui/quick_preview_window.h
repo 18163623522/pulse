@@ -11,36 +11,12 @@
 #include "fluent_menu.h"
 #include "video_preview.h"
 #include "audio_waveform.h"
+#include "quick_preview_command.h"
 
 #include <string>
 #include <vector>
 
 namespace pulse::ui {
-
-struct QuickPreviewItem {
-    std::wstring path;
-    std::wstring name;
-    DWORD attrs = 0;
-    uint64_t modified = 0;
-    uint64_t size = 0;
-    bool starred = false;    // Places star state; drives the Star/Unstar verb label
-    bool read_only = false;  // recycle / read-only view: no cut, rename, delete
-};
-
-// File verbs the preview asks its owner to run on the previewed entry. Posted
-// as wParam of the command message given to Initialize; lParam bit 0 mirrors
-// the Shift key so Delete can mean "permanent delete" like the main list.
-enum class QuickPreviewAction : int {
-    None = 0,
-    Open,
-    Cut,
-    Copy,
-    CopyPath,
-    ToggleStar,
-    Rename,
-    Delete,
-    Properties,
-};
 
 class QuickPreviewWindow {
 public:
@@ -61,6 +37,7 @@ public:
     bool visible() const noexcept;
     HWND hwnd() const noexcept { return hwnd_; }
     const QuickPreviewItem& item() const noexcept { return item_; }
+    bool TakeCommand(UINT_PTR token, QuickPreviewCommand& command) { return commands_.Take(token, command); }
     // Path chosen inside a folder listing, handed over once with open_message_.
     std::wstring TakeOpenPath() { std::wstring path; path.swap(open_path_); return path; }
 
@@ -204,7 +181,8 @@ private:
     void PaintFindEditLuma(HWND hwnd, HDC hdc);
     LRESULT ForwardFindEditKeepLuma(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
     void ShowContextMenu(POINT screen);
-    void PostAction(QuickPreviewAction action);
+    QuickPreviewItem ActionTarget() const;
+    void PostAction(QuickPreviewAction action, const QuickPreviewItem* target = nullptr);
     D2D1_RECT_F ChromeButtonRect(ChromeButton button) const;
     // "Rendered | Source" pill left of the chrome buttons; segment -1 = whole pill.
     D2D1_RECT_F MarkdownToggleRect(int segment) const;
@@ -250,6 +228,9 @@ private:
     ComPtr<IDWriteTextFormat> preview_text_format_;
     ComPtr<IDWriteTextLayout> text_layout_;
     QuickPreviewItem item_;
+    QuickPreviewCommands commands_;
+    std::wstring preview_notice_;
+    float preview_notice_height_ = 0;
     uint64_t generation_ = 1;
     bool dark_ = false;
     WindowEffect effect_ = WindowEffect::MicaAlt;
@@ -281,6 +262,7 @@ private:
     enum class ToggleKind { Markdown, TableSource, TableHandler, TreeSource, NotebookSource, DocHandler };
     ToggleKind toggle_kind_ = ToggleKind::Markdown;
     TableView table_;
+    uint32_t sheet_request_ = 0;
     bool table_source_ = false;   // session-wide: CSV shown as source
     bool table_handler_ = false;  // session-wide: XLSX in the system preview handler
     TreeView tree_;

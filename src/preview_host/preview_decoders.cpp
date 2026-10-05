@@ -243,7 +243,8 @@ bool MakeTextOrHex(const std::wstring& path, DWORD attrs, ipc::PreviewContentKin
 static bool DecodeImage(const std::wstring& path, DWORD attrs, UINT pixels,
                         std::vector<uint8_t>& out, UINT& width, UINT& height, UINT& stride,
                         UINT& source_width, UINT& source_height,
-                        const std::vector<unsigned char>* embedded = nullptr) {
+                        const std::vector<unsigned char>* embedded = nullptr,
+                        uint32_t frame_index = 0, uint32_t* frame_count = nullptr) {
     if (IsOfflinePlaceholder(attrs)) return false;
     ComPtr<IWICImagingFactory> factory;
     ComPtr<IWICBitmapDecoder> decoder;
@@ -259,7 +260,13 @@ static bool DecodeImage(const std::wstring& path, DWORD attrs, UINT pixels,
             FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder))) return false;
     } else if (FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                                          WICDecodeMetadataCacheOnDemand, &decoder))) return false;
-    if (FAILED(decoder->GetFrame(0, &frame))) return false;
+    if (frame_count) {
+        UINT count = 0;
+        if (FAILED(decoder->GetFrameCount(&count)) || !count) return false;
+        *frame_count = count;
+        frame_index = (std::min)(frame_index, count - 1);
+    }
+    if (FAILED(decoder->GetFrame(frame_index, &frame))) return false;
 
     UINT sourceWidth = 0, sourceHeight = 0;
     if (FAILED(frame->GetSize(&sourceWidth, &sourceHeight)) ||
@@ -679,28 +686,39 @@ static bool DecodeWebpFrame(const std::wstring& path, UINT pixels, uint32_t fram
     return FitCanvas(factory.Get(), canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride);
 }
 
-// acTL in the chunks before the first IDAT (read from the first 64 KB).
-static bool HasApngControl(const std::wstring& path) {
+// Scan chunk headers without reading large ancillary payloads before IDAT.
+static bool HasApngControl(const std::wstring& path, uint32_t& declared_frames) {
+    declared_frames = 0;
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_EXISTING, 0, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    uint8_t head[65536];
+    uint8_t head[8]{};
     DWORD n = 0;
-    const bool ok = ReadFile(file, head, sizeof(head), &n, nullptr) && n >= 8 + 25;
-    CloseHandle(file);
-    if (!ok || head[0] != 0x89 || head[1] != 'P' || head[2] != 'N' || head[3] != 'G') return false;
-    size_t pos = 8;
-    while (pos + 8 <= n) {
-        const uint32_t length = (static_cast<uint32_t>(head[pos]) << 24) | (static_cast<uint32_t>(head[pos + 1]) << 16) |
-                                (static_cast<uint32_t>(head[pos + 2]) << 8) | head[pos + 3];
-        const uint8_t* type = head + pos + 4;
-        if (type[0] == 'a' && type[1] == 'c' && type[2] == 'T' && type[3] == 'L') return true;
-        if ((type[0] == 'I' && type[1] == 'D' && type[2] == 'A' && type[3] == 'T') ||
-            (type[0] == 'I' && type[1] == 'E' && type[2] == 'N' && type[3] == 'D'))
-            return false;
-        pos += static_cast<size_t>(length) + 12;
+    bool found = false;
+    const auto be32 = [](const uint8_t* p) { return (static_cast<uint32_t>(p[0]) << 24) |
+        (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3]; };
+    if (ReadFile(file, head, 8, &n, nullptr) && n == 8 && head[0] == 0x89 && head[1] == 'P' && head[2] == 'N' && head[3] == 'G' &&
+        head[4] == 13 && head[5] == 10 && head[6] == 26 && head[7] == 10) {
+        for (size_t chunks = 0; chunks < 8192; ++chunks) {
+            if (!ReadFile(file, head, 8, &n, nullptr) || n != 8) break;
+            const uint32_t length = be32(head);
+            const std::string_view type(reinterpret_cast<const char*>(head + 4), 4);
+            if (type == "acTL") {
+                found = true;  // Malformed animation control still requires an explicit fallback warning.
+                uint8_t control[8]{};
+                if (length == 8 && ReadFile(file, control, 8, &n, nullptr) && n == 8) {
+                    declared_frames = be32(control);
+                }
+                break;
+            }
+            if (type == "IDAT" || type == "IEND") break;
+            LARGE_INTEGER skip{};
+            skip.QuadPart = static_cast<LONGLONG>(length) + 4;
+            if (!SetFilePointerEx(file, skip, nullptr, FILE_CURRENT)) break;
+        }
     }
-    return false;
+    CloseHandle(file);
+    return found;
 }
 
 // APNG: frames are rebuilt as standalone PNGs for WIC and composed here. The
@@ -713,6 +731,7 @@ struct ApngState {
     std::vector<uint8_t> file;
     preview::ApngInfo info;
     bool valid = false;
+    std::wstring failure_reason;
     uint32_t next = 0;             // frames composed into canvas
     std::vector<uint8_t> canvas;   // what frame next-1 shows
     std::vector<uint8_t> saved;    // canvas before frame next-1 (dispose 2)
@@ -729,24 +748,46 @@ static bool DecodeApngFrame(const std::wstring& path, UINT pixels, uint32_t fram
                               data.ftLastWriteTime.dwLowDateTime;
     std::lock_guard guard(g_apng.lock);
     ApngState& st = g_apng;
+    const auto publish = [&](bool fallback) {
+        const auto& reason = st.failure_reason.empty() ? st.info.incomplete_reason : st.failure_reason;
+        const uint32_t loaded = fallback ? 1u : static_cast<uint32_t>(st.info.frames.size());
+        r.text = preview::MakeImageFramesPayload(fallback ? L"static-fallback" : L"animation", loaded,
+            st.info.declared_frames, fallback ? 0 : (std::min)(frame_index, loaded - 1), reason);
+        if (!reason.empty()) {
+            r.error = L"image-preview-incomplete:" + reason;
+            r.truncated = true;
+        }
+    };
     if (st.path != path || st.size != size || st.modified != modified) {
         st.path = path; st.size = size; st.modified = modified;
         st.valid = false; st.next = 0;
         st.canvas.clear(); st.saved.clear(); st.info = {};
-        // Cheap check first: acTL sits before the first IDAT.
-        if (size < 64 || !HasApngControl(path) || size > 96u * 1024u * 1024u || !ReadFileBytes(path, 96u * 1024u * 1024u, st.file) ||
-            !preview::ParseApng(st.file, st.info) ||
-            static_cast<uint64_t>(st.info.width) * st.info.height > 4096u * 4096u) {
+        st.failure_reason.clear();
+        uint32_t declared = 0;
+        if (!HasApngControl(path, declared)) return false;
+        st.info.declared_frames = declared;
+        if (size > 96u * 1024u * 1024u) st.failure_reason = L"file-limit";
+        else if (!ReadFileBytes(path, 96u * 1024u * 1024u, st.file)) st.failure_reason = L"read-failed";
+        else if (!preview::ParseApng(st.file, st.info)) st.failure_reason =
+            st.info.incomplete_reason.empty() ? L"malformed" : st.info.incomplete_reason;
+        else if (static_cast<uint64_t>(st.info.width) * st.info.height > 4096u * 4096u)
+            st.failure_reason = L"canvas-limit";
+        if (!st.failure_reason.empty()) {
+            if (!st.info.declared_frames) st.info.declared_frames = declared;
             st.file.clear();
             st.file.shrink_to_fit();
-            return false;
-        }
-        st.valid = true;
+        } else st.valid = true;
     }
-    if (!st.valid) return false;
-    ComPtr<IWICImagingFactory> factory;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))))
+    if (!st.valid) {
+        if (!st.failure_reason.empty()) publish(true);
         return false;
+    }
+    ComPtr<IWICImagingFactory> factory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) {
+        st.failure_reason = L"decode-failed";
+        publish(true);
+        return false;
+    }
     const auto& frames = st.info.frames;
     const UINT cw = st.info.width, ch = st.info.height;
     frame_index = (std::min)(frame_index, static_cast<uint32_t>(frames.size() - 1));
@@ -779,6 +820,9 @@ static bool DecodeApngFrame(const std::wstring& path, UINT pixels, uint32_t fram
             FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) ||
             FAILED(decoder->GetFrame(0, &frame)) || !FramePixels(factory.Get(), frame.Get(), px, fw, fh)) {
             st.next = 0;  // start over next time
+            st.failure_reason = L"decode-failed";
+            st.valid = false;
+            publish(true);
             return false;
         }
         const UINT w = (std::min)(fw, f.width), h = (std::min)(fh, f.height);
@@ -795,7 +839,15 @@ static bool DecodeApngFrame(const std::wstring& path, UINT pixels, uint32_t fram
     loop_count = st.info.plays;
     r.source_width = cw;
     r.source_height = ch;
-    return FitCanvas(factory.Get(), st.canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride);
+    if (!FitCanvas(factory.Get(), st.canvas, cw, ch, pixels, r.pixels, r.width, r.height, r.stride)) {
+        frame_count = 1; delay_ms = loop_count = 0;
+        st.failure_reason = L"decode-failed";
+        publish(true);
+        return false;
+    }
+    st.failure_reason.clear();
+    publish(false);
+    return true;
 }
 
 // .ico / .cur: one directory entry (frame_index 0 = the largest, k = entry
@@ -856,7 +908,16 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
     const bool gif = q.extension == L".gif";
     const UINT cap = ipc::ClampPreviewPixelSize(q.request.pixel_size, gif);
     bool made = false;
-    if (gif) {
+    if (!q.offline && (q.extension == L".tif" || q.extension == L".tiff")) {
+        made = DecodeImage(q.path, q.request.attrs, cap, r.pixels, r.width, r.height,
+            r.stride, r.source_width, r.source_height, nullptr, q.request.frame_index, &frame_count);
+        if (made) r.text = preview::MakeImageFramesPayload(L"pages", frame_count, frame_count,
+            (std::min)(q.request.frame_index, frame_count - 1));
+        else {
+            r.error = L"image-page-decode-failed";
+            return DecodeStep::Failed;
+        }
+    } else if (gif) {
         made = DecodeGifFrame(q.path, q.request.attrs, cap, q.request.frame_index,
             r.pixels, r.width, r.height, r.stride, frame_count, frame_delay, loop_count,
             r.source_width, r.source_height);
@@ -894,7 +955,7 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
             return DecodeStep::Failed;
         }
     }
-    r.error = L"image-decode-failed";
+    if (r.error.empty()) r.error = L"image-decode-failed";
     return DecodeStep::Failed;
 }
 
@@ -903,16 +964,13 @@ static bool AcceptsVector(const DecodeRequest& q) {
     return preview::IsVectorExtension(q.extension);
 }
 static DecodeStep RunVector(const DecodeRequest& q, DecodeResult& r) {
-    // WIC has no SVG decoder, so these render through Direct2D into the same
-    // premultiplied BGRA pixels the raster path returns.
+    // Use the system SVG subset only after checking for unsupported content.
     if (!q.offline && preview::RasterizeSvgFile(q.path, q.cap, r.pixels, r.width, r.height,
             r.stride, r.source_width, r.source_height, &r.error))
         return MadeBitmap(r);
     if (q.offline) return DecodeStep::Failed;
-    // No Direct2D SVG support (Windows before 1703), a document too large to
-    // parse, or damaged markup: show the file as text instead of an empty
-    // placeholder.
-    r.error.clear();
+    // Preserve the renderer's reason while showing source for restricted,
+    // oversized or damaged documents.
     if (TextOrHexInto(q, r)) return DecodeStep::Made;
     r.error = L"svg-render-failed";
     return DecodeStep::Failed;
@@ -945,7 +1003,8 @@ static DecodeStep RunPdf(const DecodeRequest& q, DecodeResult& r) {
         UINT pages = 0;
         made = preview::RasterizePdfFile(q.path, q.cap, r.pixels, r.width, r.height, r.stride,
                                          r.source_width, r.source_height, &r.error,
-                                         q.request.frame_index, &pages);
+                                         q.request.frame_index, &pages, q.grid);
+        if (!made && r.error == L"pdf-thumbnail-budget") return DecodeStep::Failed;
         if (made && pages > 1) {
             r.frame_count = pages;
             r.frame_delay_ms = 0;
@@ -968,7 +1027,7 @@ static bool AcceptsArchive(const DecodeRequest& q) {
     return !q.is_directory && preview::IsArchiveExtension(q.extension) && !q.offline;
 }
 static DecodeStep RunArchive(const DecodeRequest& q, DecodeResult& r) {
-    if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, nullptr))
+    if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, &r.error))
         return DecodeStep::Next;
     r.kind = ipc::PreviewContentKind::Archive;
     return DecodeStep::Made;
@@ -1138,10 +1197,11 @@ static DecodeStep RunSniffed(const DecodeRequest& q, DecodeResult& r) {
         return RtfInto(q, r) ? DecodeStep::Made : DecodeStep::Next;
     case preview::SniffedFormat::Pdf:
         made = preview::RasterizePdfFile(q.path, q.cap, r.pixels, r.width, r.height, r.stride,
-                                         r.source_width, r.source_height, nullptr);
+                                         r.source_width, r.source_height, &r.error, 0, nullptr, q.grid);
+        if (!made && r.error == L"pdf-thumbnail-budget") return DecodeStep::Failed;
         break;
     case preview::SniffedFormat::Archive:
-        if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, nullptr)) {
+        if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, &r.error)) {
             r.text.clear();
             r.bytes_read = 0;
             return DecodeStep::Next;
@@ -1197,7 +1257,10 @@ static DecodeStep RunTable(const DecodeRequest& q, DecodeResult& r) {
     std::wstring payload;
     if (preview::IsSpreadsheetExtension(q.extension)) {
         uint32_t bytes = 0;
-        if (!preview::MakeXlsxTable(q.path, payload, bytes)) return DecodeStep::Next;
+        if (!preview::MakeXlsxTable(q.path, payload, bytes, q.request.frame_index)) {
+            r.error = L"sheet-read-failed";
+            return DecodeStep::Failed;
+        }
         r.bytes_read = bytes;
         r.truncated = false;
     } else {
@@ -1258,6 +1321,7 @@ static bool AcceptsDocx(const DecodeRequest& q) {
 static DecodeStep RunDocx(const DecodeRequest& q, DecodeResult& r) {
     std::wstring payload;
     if (!preview::MakeDocxDocument(q.path, payload, r.bytes_read, r.truncated)) return DecodeStep::Next;
+    r.error = L"docx-reading";
     r.text = std::move(payload);
     r.kind = ipc::PreviewContentKind::Markdown;
     return DecodeStep::Made;

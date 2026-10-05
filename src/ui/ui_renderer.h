@@ -6,11 +6,13 @@
 #include "fluent_components.h"
 #include "release_note_view.h"
 #include "shell_icons.h"
+#include "open_with_icons.h"
 #include "view_layout.h"
 #include "column_strip_layout.h"
 #include "panel_metrics.h"
 #include "toolbar_layout.h"
 #include "thumbnail_cache.h"
+#include "folder_thumbnail_cache.h"
 #include "archive_preview.h"
 #include "name_highlight.h"
 #include "preview_handler_host.h"
@@ -341,9 +343,9 @@ struct SidebarGroup {
     bool collapsed = false;
     bool hidden = false;           // Section menu: the group is not laid out at all.
     SidebarAddAction add_action = SidebarAddAction::None;
-    // The header title (icon + name) opens the section's own view (#80): only
-    // This PC has one. The rest of the header, and every other header, folds.
+    // The header title opens the section's own view; its chevron still folds.
     bool navigable = false;
+    std::wstring navigation_path; // Empty is This PC.
     bool tabs_section = false;     // vertical tabs block: set apart by a divider
 };
 
@@ -670,6 +672,7 @@ struct WindowViewModel {
     bool settings_list_size_bar = false;
     bool settings_list_tag_names = false;
     bool settings_list_selection_outline = false;
+    bool settings_list_thumbnail_badges = true;
     bool settings_vertical_tabs = false;
     bool settings_show_hints = true;
     bool settings_tips_seen = false;   // any teaching bubble already shown
@@ -1091,8 +1094,12 @@ public:
                  (task_pill_done_at_ != 0 && now - task_pill_done_at_ < kTaskPillDoneMs + 400);
         if (copy_feedback_.Tick(now)) active = true;
         if (group_wheel_.Tick(motion_now)) active = true;
+        if (folder_thumbnail_cache_.Tick(now)) active = true;
         return active;
     }
+    void RefreshFolderThumbnails() { folder_thumbnail_cache_.Refresh(); }
+    auto FolderThumbnailDebugStats() { return folder_thumbnail_cache_.ReadDebugStats(); }
+    void SetFolderThumbnailsEnabled(bool enabled) { folder_thumbnails_enabled_ = enabled; }
     // region = HitTestResult region of the button that copied, index its index.
     void NotifyCopied(int region, int index) {
         copy_feedback_.Trigger(region, index, GetTickCount64());
@@ -1161,6 +1168,10 @@ public:
         auto_widths_scale_ = -1.0f;
     }
     bool ListSmartDate() const { return list_smart_date_; }
+    // Grid thumbnails: default-program badge and video playing time.
+    void SetThumbnailBadges(bool on) { thumbnail_badges_ = on; }
+    // Default programs changed (SHCNE_ASSOCCHANGED).
+    void InvalidateOpenWithIcons() { open_with_icons_.InvalidateAssociations(); }
     // List-row hover buttons the user keeps: bit 0 star, bit 1 new tab, bit 2 more.
     void SetRowActions(unsigned mask) { row_actions_ = mask & 7u; }
     // Optional details columns (details_column_set.h bits).
@@ -1366,12 +1377,20 @@ private:
                       float x, float y, float width, float height,
                       D2D1_DRAW_TEXT_OPTIONS options = D2D1_DRAW_TEXT_OPTIONS_CLIP);
     void DrawFolderIcon(float x, float y, float size, const Theme& theme);
+    PreviewDrawResult DrawEntryThumbnail(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
+        const ListEntryView& entry, ViewMode mode, uint64_t generation, uint32_t pixels,
+        float opacity, bool align_bottom, D2D1_RECT_F* artwork, uint32_t* duration = nullptr);
     void DrawSidebarPeek(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
     void DrawFileIcon(float x, float y, float size, const Theme& theme);
     void DrawEntryIcon(const ListEntryView& entry, float x, float y, float size, const Theme& theme);
     void DrawLinkOverlay(float x, float y, float size, const Theme& theme, float opacity = 1.0f,
                          const std::wstring& label = {}, float expansion = 0.0f,
                          float right_limit = 0.0f, const D2D1_RECT_F* artwork = nullptr);
+    // Grid thumbnail corners: the default program's icon bottom-right, and a
+    // playing-time chip (videos) or "GIF" chip bottom-left. `artwork` is the
+    // drawn image, `icon_size` the item's icon square, both in pixels.
+    void DrawThumbnailBadges(const ListEntryView& entry, const D2D1_RECT_F& artwork, float icon_size,
+                             uint32_t duration_ms, const Theme& theme);
     // One item's icon mid view-switch (ui_view_morph.h): thumbnail and shell
     // icon cross-fade while the rect travels. dx/dy: the row transform.
     void DrawMorphIcon(const ListEntryView& entry, const PaneViewModel& vm,
@@ -1408,11 +1427,14 @@ private:
     Compositor* compositor_ = nullptr;
     fluent::Painter painter_;
     ShellIconCache icon_cache_;
+    OpenWithIconCache open_with_icons_;
     std::unordered_map<ID2D1Bitmap*, ComPtr<ID2D1Effect>> tray_shadows_;
     // Grid/list thumbnails and the details-pane preview decode through
     // separate hosts and budgets: a 2048 px selection preview (up to 16 MB)
     // must neither evict the visible grid nor queue ahead of it.
     ThumbnailCache thumbnail_cache_{96ull * 1024ull * 1024ull, 1024};
+    FolderThumbnailCache folder_thumbnail_cache_;
+    bool folder_thumbnails_enabled_ = true;
     ThumbnailCache details_cache_{48ull * 1024ull * 1024ull, 24};
     PreviewHandlerHost preview_handler_;
     HWND notify_hwnd_ = nullptr;
@@ -1440,6 +1462,7 @@ private:
     bool list_smart_date_ = true, list_zebra_ = true, list_size_bar_ = false;
     bool list_tag_names_ = false;
     bool list_selection_outline_ = false;
+    bool thumbnail_badges_ = true;
     unsigned row_actions_ = 7u;
     uint32_t details_columns_ = kDetailsColumnsDefault;
     // Motion state: highlight plates glide between items (ui_motion.h).
@@ -1515,6 +1538,7 @@ private:
     mutable ComPtr<ID2D1StrokeStyle> dashStroke_;
     ComPtr<ID2D1StrokeStyle> paneHeaderStroke_;
     ComPtr<ID2D1PathGeometry> link_arrow_geometry_;
+    ComPtr<ID2D1PathGeometry> play_triangle_geometry_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsBg_;
     mutable ComPtr<ID2D1SolidColorBrush> brFpsText_;
 

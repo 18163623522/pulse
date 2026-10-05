@@ -371,6 +371,8 @@ public:
     void DrawFocusRing(const D2D1_RECT_F& bounds, float radius);
 
     void DrawButton(const ButtonSpec& spec);
+    // Main toolbar and file picker command buttons share 20-DIP vector icons.
+    void DrawCommandButton(const ButtonSpec& spec);
     void DrawTextFieldFrame(const D2D1_RECT_F& bounds, const ControlState& state,
                            bool hosted_edit = false);
     void DrawTextField(const TextFieldSpec& spec);

@@ -3,6 +3,60 @@
 
 namespace pulse::ui {
 struct ThumbnailCacheTestAccess {
+    static bool SheetRegression() {
+        ComPtr<ID3D11Device> d3d;
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &d3d, nullptr, nullptr);
+        ComPtr<IDXGIDevice> dxgi;
+        if (SUCCEEDED(hr)) hr = d3d->QueryInterface(IID_PPV_ARGS(&dxgi));
+        ComPtr<ID2D1Device> device;
+        if (SUCCEEDED(hr)) hr = D2D1CreateDevice(dxgi.get(), nullptr, &device);
+        ComPtr<ID2D1DeviceContext> dc;
+        if (SUCCEEDED(hr)) hr = device->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc);
+        if (FAILED(hr)) return false;
+        ThumbnailCache cache;
+        cache.SetDeviceContext(dc.get());
+        cache.running_ = true;
+        bool ok = true;
+        auto check = [&](bool value, const char* label) {
+            std::printf("[%s] %s\n", value ? "PASS" : "FAIL", label);
+            ok &= value;
+        };
+        std::wstring text;
+        preview::Integrity integrity;
+        const auto draw = [&](uint32_t sheet) {
+            return cache.Draw(dc.get(), D2D1::RectF(0, 0, 100, 100), L"workbook.XLSX",
+                0, 512, 1, 2, 3, 1, &text, nullptr, nullptr, true, nullptr,
+                nullptr, nullptr, nullptr, nullptr, sheet, nullptr, nullptr, nullptr,
+                nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, false, nullptr, nullptr, &integrity);
+        };
+        draw(0);
+        const auto old = cache.queue_.front();
+        draw(16);
+        draw(99);
+        check(cache.queue_.size() == 1 && cache.queue_.front().frame_index == 99 &&
+            cache.pending_.size() == 1, "rapid sheet switches keep only latest queued content request");
+        const auto current = cache.queue_.front();
+        cache.queue_.clear();
+        ThumbnailCache::Item stale;
+        stale.kind = ipc::PreviewContentKind::Table;
+        stale.text = L"sheet0";
+        cache.StoreResult(old, std::move(stale));
+        check(draw(99) == PreviewDrawResult::Pending && text.empty(), "old sheet response cannot satisfy current sheet request");
+        ThumbnailCache::Item ready;
+        ready.kind = ipc::PreviewContentKind::Table;
+        ready.text = L"sheet99";
+        ready.integrity.state = preview::IntegrityState::Partial;
+        ready.integrity.reason = preview::IntegrityReason::OnDemand;
+        ready.integrity.loaded = 1;
+        ready.integrity.total = 100;
+        cache.StoreResult(current, std::move(ready));
+        check(draw(99) == PreviewDrawResult::Table && text == L"sheet99" &&
+            integrity.reason == preview::IntegrityReason::OnDemand && integrity.total == 100,
+            "cached sheet response retains structured integrity and selected content");
+        cache.running_ = false;
+        return ok;
+    }
     static bool PropertiesRegression() {
         ThumbnailCache cache;
         // Inspect queued requests deterministically without launching a worker.
@@ -96,6 +150,7 @@ struct ThumbnailCacheTestAccess {
             req.identity = L"animation";
             ThumbnailCache::Item item;
             item.frame_count = 10;
+            item.frame_delay_ms = 100;
             item.frame_index = static_cast<uint32_t>(i);
             item.animation_identity = req.identity;
             item.cost = 1;
@@ -105,6 +160,21 @@ struct ThumbnailCacheTestAccess {
         check(cache.items_.size() == 4 && cache.items_.contains(L"0") &&
               !cache.items_.contains(L"1") && cache.cache_bytes_ == 4,
               "animation keeps four most recently used frames");
+        cache.Evict();
+        for (int i = 0; i < 5; ++i) {
+            auto req = request(std::to_wstring(i));
+            req.identity = L"paged document";
+            ThumbnailCache::Item item;
+            item.frame_count = 10;
+            item.frame_delay_ms = 0;
+            item.frame_index = static_cast<uint32_t>(i);
+            item.animation_identity = req.identity;
+            item.cost = 1;
+            cache.StoreResult(req, std::move(item));
+        }
+        check(cache.items_.size() == 5 && cache.items_.contains(L"0") &&
+              cache.items_.contains(L"4") && cache.cache_bytes_ == 5,
+              "zero-delay document pages are not limited to four animation frames");
         cache.Reset();
         check(cache.items_.empty() && cache.lru_.empty() && cache.cache_bytes_ == 0,
               "reset clears all cache state");
@@ -256,4 +326,8 @@ bool RunThumbnailCacheTests() {
 
 bool RunThumbnailPropertiesRegression() {
     return pulse::ui::ThumbnailCacheTestAccess::PropertiesRegression();
+}
+
+bool RunThumbnailSheetRegression() {
+    return pulse::ui::ThumbnailCacheTestAccess::SheetRegression();
 }
