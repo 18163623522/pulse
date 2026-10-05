@@ -2,6 +2,7 @@
 #include "ui_compositor.h"
 #include "preview_viewport.h"
 #include "icon_artwork_bounds.h"
+#include "cover_palette.h"
 #include "../ipc/preview_protocol.h"
 #include <atomic>
 #include <condition_variable>
@@ -72,6 +73,11 @@ public:
                     std::vector<PreviewProperty>& properties);
     bool CachedProperties(const std::wstring& path, uint64_t modified, uint64_t size,
                           std::vector<PreviewProperty>& properties);
+    // Quick Look only: the cover colours of the still bitmap Draw shows for
+    // this file (the exact size, else the stale one drawn meanwhile). False
+    // until decoded, and for covers without a usable colour.
+    bool Palette(const std::wstring& path, uint32_t pixel_size, uint64_t modified,
+                 uint64_t size, CoverPalette& palette);
 private:
     friend struct ThumbnailCacheTestAccess;
     friend class FolderThumbnailCache;
@@ -80,6 +86,7 @@ private:
         ComPtr<ID2D1Bitmap> bitmap;
         std::vector<uint8_t> pixels;
         IconArtworkBounds artwork_bounds;
+        CoverPalette palette;   // Quick Look content only (see Palette)
         std::wstring text;
         std::wstring error;
         std::vector<PreviewProperty> properties;
