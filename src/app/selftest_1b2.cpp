@@ -6637,6 +6637,42 @@ void TestStagingTrayDeletion() {
     }
 }
 
+void TestStagingTraySession() {
+    // Each batch nests its own "items" array and paths may contain brackets;
+    // a reload must bring back every batch, not stop at the first ']'.
+    StagingTray tray;
+    tray.Collect({ L"C:\\tray-test\\a]b.txt", L"C:\\tray-test\\c.txt" }, false);
+    tray.Collect({ L"C:\\tray-test\\[x]\\d.txt" }, true);
+    std::wstring tray_json;
+    tray.ToJson(tray_json);
+    SessionSnapshot snap;
+    const std::wstring json = L"{\"version\":4,\"tray\":" + tray_json + L",\"detailsPanel\":1}";
+    ParseSessionJson(json, snap);
+    const auto& batches = snap.tray.batches();
+    Check(batches.size() == 2 && batches[0].items.size() == 2 && !batches[0].move_intent &&
+          batches[0].items[0].path.find(L"a]b.txt") != std::wstring::npos &&
+          batches[1].items.size() == 1 && batches[1].move_intent &&
+          batches[1].items[0].path.find(L"[x]\\d.txt") != std::wstring::npos,
+          L"session: every tray batch survives reload, including bracketed paths");
+    Check(snap.details_panel, L"session: fields after the tray still load");
+
+    // A rename or move reported by the completed job also retargets staged
+    // children of the folder, never siblings that only share a name prefix.
+    StagingTray moved;
+    moved.Collect({ L"C:\\tray-test\\dir", L"C:\\tray-test\\dir\\sub\\a.txt",
+                    L"C:\\tray-test\\dir-other\\b.txt" }, true);
+    moved.ReplacePath(L"C:\\tray-test\\dir", L"C:\\tray-test\\renamed");
+    const auto& items = moved.batches()[0].items;
+    Check(items.size() == 3 &&
+          items[0].path == fs::NormalizePath(L"C:\\tray-test\\renamed") &&
+          items[1].path == fs::NormalizePath(L"C:\\tray-test\\renamed\\sub\\a.txt") &&
+          items[2].path.find(L"dir-other") != std::wstring::npos,
+          L"tray: a completed folder rename remaps staged children only");
+    moved.ReplacePath(L"", L"C:\\x");
+    Check(moved.batches()[0].items[0].path == fs::NormalizePath(L"C:\\tray-test\\renamed"),
+          L"tray: an empty source path changes nothing");
+}
+
 void TestLayoutOwnedTabs() {
     WindowTabs tabs;
     tabs.NewTab(L"C:\\work");
@@ -7020,6 +7056,14 @@ int RunSelfTest1B2() {
         return g_fail ? 1 : 0;
     }
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"tray-session") == 0) {
+        TestStagingTrayDeletion();
+        TestStagingTraySession();
+        LogLine(L"\n== tray-session: %d passed, %d failed ==\n", g_pass, g_fail);
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return g_fail ? 1 : 0;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"pr-shell") == 0) {
         TestMenuModel();
         TestShellMenuMerge();
@@ -7202,6 +7246,7 @@ int RunSelfTest1B2() {
     TestSessionLayoutTabs();
     TestTabShortcuts();
     TestStagingTrayDeletion();
+    TestStagingTraySession();
     TestLayoutOwnedTabs();
     TestUtf8PersistFile();
     TestColorPickerModel();

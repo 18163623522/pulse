@@ -1523,6 +1523,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                                            i < completed.destinations.size(); ++i) {
                             s->places.RemapPaths(completed.sources[i],
                                                  completed.destinations[i]);
+                            // Only the items that really moved / were renamed:
+                            // every rename entry (list, tray) leaves the tray
+                            // to this, so failed or cancelled items keep their names.
+                            s->tray.ReplacePath(completed.sources[i], completed.destinations[i]);
                             tag_metadata_paths.push_back(completed.destinations[i]);
                         }
                         if (completed.type == ops::OpType::Move &&
