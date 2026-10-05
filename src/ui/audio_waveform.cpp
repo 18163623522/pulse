@@ -68,9 +68,23 @@ bool AudioWaveform::Snapshot(std::vector<float>& peaks, float& progress, bool& f
     return true;
 }
 
+std::vector<float> WaveformLevels::Levels() const {
+    std::vector<float> levels(sum_.size(), 0.0f);
+    double top = 0.0;
+    for (size_t i = 0; i < sum_.size(); ++i)
+        if (count_[i]) { levels[i] = static_cast<float>(std::sqrt(sum_[i] / count_[i])); top = (std::max)(top, static_cast<double>(levels[i])); }
+    if (top < 1e-4) return std::vector<float>(sum_.size(), 0.0f);   // below -80 dBFS: silence
+    for (float& level : levels) {
+        if (level <= 0.0f) continue;
+        const double db = 20.0 * std::log10(level / top);
+        level = static_cast<float>((std::clamp)((db + kWindowDb) / kWindowDb, 0.0, 1.0));
+    }
+    return levels;
+}
+
 namespace {
 MfResult MediaFoundationWaveform(const std::wstring& path, const std::atomic<bool>& stop,
-                                 const std::function<void(const std::vector<float>&, float, float)>& publish_raw) {
+                                 const std::function<void(const std::vector<float>&, float)>& publish_levels) {
     constexpr size_t kBuckets = AudioWaveform::kBuckets;
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(com)) return MfResult::Failed;
@@ -124,9 +138,8 @@ MfResult MediaFoundationWaveform(const std::wstring& path, const std::atomic<boo
     if (duration > kMaxDuration) return MfResult::Failed;
     if (duration <= 0) return MfResult::Unreadable;
 
-    std::vector<float> raw(kBuckets, 0.0f);
-    float loudest = 0.0f;
-    auto publish = [&](float progress) { publish_raw(raw, loudest, progress); };
+    WaveformLevels levels(kBuckets);
+    auto publish = [&](float progress) { publish_levels(levels.Levels(), progress); };
     auto last_publish = std::chrono::steady_clock::now();
     const double buckets_per_tick = static_cast<double>(kBuckets) / static_cast<double>(duration);
     const double ticks_per_frame = 1e7 / static_cast<double>(rate);
@@ -145,15 +158,10 @@ MfResult MediaFoundationWaveform(const std::wstring& path, const std::atomic<boo
         const auto* samples = reinterpret_cast<const float*>(data);
         const size_t frames = length / sizeof(float) / channels;
         for (size_t f = 0; f < frames; ++f) {
-            float peak = 0.0f;
-            for (UINT32 c = 0; c < channels; ++c)
-                peak = (std::max)(peak, std::fabs(samples[f * channels + c]));
-            if (!std::isfinite(peak)) continue;
             const double at = static_cast<double>(timestamp) + static_cast<double>(f) * ticks_per_frame;
             const size_t bucket = static_cast<size_t>((std::clamp)(at * buckets_per_tick, 0.0,
                 static_cast<double>(kBuckets - 1)));
-            raw[bucket] = (std::max)(raw[bucket], peak);
-            loudest = (std::max)(loudest, peak);
+            for (UINT32 c = 0; c < channels; ++c) levels.Add(bucket, samples[f * channels + c]);
         }
         buffer->Unlock();
         const auto now = std::chrono::steady_clock::now();
@@ -169,9 +177,9 @@ MfResult MediaFoundationWaveform(const std::wstring& path, const std::atomic<boo
 }  // namespace
 
 bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, const std::atomic<bool>& stop,
-                    const std::function<void(const std::vector<float>&, float, float)>& publish) {
+                    const std::function<void(const std::vector<float>&, float)>& publish) {
     constexpr size_t kBuckets = AudioWaveform::kBuckets;
-    constexpr uint32_t kRate = 8000;   // peaks only: mono 8 kHz is plenty for 600 buckets
+    constexpr uint32_t kRate = 8000;   // loudness only: mono 8 kHz is plenty for 600 buckets
     FfmpegMediaInfo info;
     if (!ProbeFfmpegMedia(ffmpeg_exe, path, info) || !info.audio) return false;
     if (info.duration <= 0 || info.duration > kMaxDuration) return false;
@@ -185,8 +193,7 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
     options.discard_stderr = true;
     ffmpeg::Process process;
     if (!process.Start(ffmpeg_exe, args, options)) return false;
-    std::vector<float> raw(kBuckets, 0.0f);
-    float loudest = 0.0f;
+    WaveformLevels levels(kBuckets);
     uint64_t done = 0;
     int16_t samples[8192];
     uint8_t carry[1];
@@ -203,30 +210,27 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
         if (got & 1) { carry[0] = bytes[got - 1]; carried = true; --got; }
         const size_t count = got / 2;
         for (size_t k = 0; k < count; ++k, ++done) {
-            const float peak = static_cast<float>(std::abs(static_cast<int>(samples[k]))) / 32768.0f;
             const size_t bucket = static_cast<size_t>((std::min)(static_cast<double>(done) * buckets_per_sample,
                                                                  static_cast<double>(kBuckets - 1)));
-            raw[bucket] = (std::max)(raw[bucket], peak);
-            loudest = (std::max)(loudest, peak);
+            levels.Add(bucket, static_cast<float>(samples[k]) / 32768.0f);
         }
         const auto now = std::chrono::steady_clock::now();
         if (now - last_publish > std::chrono::milliseconds(200)) {
             last_publish = now;
-            publish(raw, loudest, static_cast<float>((std::min)(static_cast<double>(done) / total, 1.0)));
+            publish(levels.Levels(), static_cast<float>((std::min)(static_cast<double>(done) / total, 1.0)));
         }
     }
     if (stop.load()) return true;   // abandoned: nothing to show, nothing failed
     process.Wait(2000);
     if (!done) return false;
-    publish(raw, loudest, 1.0f);
+    publish(levels.Levels(), 1.0f);
     return true;
 }
 
 void AudioWaveform::Run(std::shared_ptr<Shared> state, std::wstring path) {
-    const auto publish = [&](const std::vector<float>& raw, float loudest, float progress) {
-        const float scale = 1.0f / (std::max)(loudest, 0.05f);
+    const auto publish = [&](const std::vector<float>& levels, float progress) {
         std::lock_guard lock(state->mutex);
-        for (size_t i = 0; i < kBuckets && i < raw.size(); ++i) state->peaks[i] = (std::min)(1.0f, raw[i] * scale);
+        for (size_t i = 0; i < kBuckets && i < levels.size(); ++i) state->peaks[i] = levels[i];
         state->progress = progress;
     };
     MfResult result = MediaFoundationWaveform(path, state->stop, publish);

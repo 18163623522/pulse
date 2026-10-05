@@ -212,19 +212,19 @@ void Integration(const std::wstring& ffmpeg_exe) {
             L"\"aevalsrc=if(lt(t\\,1)\\,0\\,0.9*sin(2*PI*440*t)):s=44100:d=2\" -c:a wavpack " + ffmpeg::QuoteArgument(wave));
         Check(made, "waveform fixture generated");
         std::vector<float> peaks;
-        float loudest = 0, progress = 0;
+        float progress = 0;
         int publishes = 0;
         std::atomic<bool> stop{false};
         const ULONGLONG w0 = GetTickCount64();
         const bool ok = made && FfmpegWaveform(ffmpeg_exe, wave, stop,
-            [&](const std::vector<float>& raw, float peak, float at) { peaks = raw; loudest = peak; progress = at; ++publishes; });
+            [&](const std::vector<float>& levels, float at) { peaks = levels; progress = at; ++publishes; });
         std::printf("  waveform: %llu ms, %d publishes\n", GetTickCount64() - w0, publishes);
         Check(ok && progress == 1.0f && peaks.size() == AudioWaveform::kBuckets, "ffmpeg waveform completes");
         float quiet = 0, tone = 1;
-        for (size_t i = 0; i + 20 < peaks.size() / 2; ++i) quiet = (std::max)(quiet, peaks[i] / (std::max)(loudest, 1e-6f));
-        for (size_t i = peaks.size() / 2 + 20; i < peaks.size(); ++i) tone = (std::min)(tone, peaks[i] / (std::max)(loudest, 1e-6f));
-        Check(loudest > 0.8f && quiet < 0.02f && tone > 0.8f, "waveform follows silence then tone");
-        Check(!FfmpegWaveform(ffmpeg_exe, dir + L"\\missing.wv", stop, [](const std::vector<float>&, float, float) {}),
+        for (size_t i = 0; i + 20 < peaks.size() / 2; ++i) quiet = (std::max)(quiet, peaks[i]);
+        for (size_t i = peaks.size() / 2 + 20; i < peaks.size(); ++i) tone = (std::min)(tone, peaks[i]);
+        Check(quiet < 0.02f && tone > 0.9f, "waveform follows silence then tone");
+        Check(!FfmpegWaveform(ffmpeg_exe, dir + L"\\missing.wv", stop, [](const std::vector<float>&, float) {}),
               "missing file has no waveform");
         DeleteFileW(wave.c_str());
     }
@@ -238,8 +238,26 @@ void Integration(const std::wstring& ffmpeg_exe) {
 }
 } // namespace
 
+void LevelsMath() {
+    WaveformLevels levels(4);
+    for (int i = 0; i < 100; ++i) {
+        levels.Add(0, (i & 1) ? 0.5f : -0.5f);                       // loudest: RMS 0.5
+        levels.Add(1, (i & 1) ? 0.5f * 0.17783f : -0.5f * 0.17783f);  // -15 dB
+        levels.Add(2, (i & 1) ? 0.005f : -0.005f);                   // -40 dB
+    }
+    const std::vector<float> v = levels.Levels();
+    Check(v.size() == 4 && std::fabs(v[0] - 1.0f) < 1e-4f, "loudest bucket is full height");
+    Check(std::fabs(v[1] - 0.5f) < 0.01f, "-15 dB is half height (30 dB window)");
+    Check(v[2] == 0.0f && v[3] == 0.0f, "below the window and unreached buckets are empty");
+    WaveformLevels silent(3);
+    for (int i = 0; i < 10; ++i) silent.Add(1, 0.0f);
+    const std::vector<float> s = silent.Levels();
+    Check(s[0] == 0.0f && s[1] == 0.0f && s[2] == 0.0f, "silence stays flat");
+}
+
 int main() {
     PureHelpers();
+    LevelsMath();
     std::wstring ffmpeg_exe = Env(L"PULSE_TEST_FFMPEG");
     if (ffmpeg_exe.empty() && GetFileAttributesW(L"C:\\ffmpeg\\bin\\ffmpeg.exe") != INVALID_FILE_ATTRIBUTES)
         ffmpeg_exe = L"C:\\ffmpeg\\bin\\ffmpeg.exe";
