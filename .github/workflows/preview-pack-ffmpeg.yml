@@ -101,6 +101,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = '${{ github.ref_name }}'
-          gh release create $tag --repo '${{ github.repository }}' --title "FFmpeg preview pack $($tag -replace 'pack-ffmpeg-','')" `
+          # --latest=false: Pulse's updater reads releases/latest/download/update-manifest.json,
+          # so a pack release must never become the repository's "latest" release.
+          gh release create $tag --repo '${{ github.repository }}' --latest=false --title "FFmpeg preview pack $($tag -replace 'pack-ffmpeg-','')" `
             --notes 'Optional decode-only LGPL FFmpeg for Pulse previews. Installed from Settings > Preview packs.' `
             (Get-ChildItem pulse-pack-ffmpeg-*)
