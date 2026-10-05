@@ -50,8 +50,12 @@ jobs:
         run: |
           $ff = "pack-out/ffmpeg.exe"
           $decoders = (& $ff -hide_banner -decoders) -join "`n"
-          foreach ($d in 'hevc','h264','vp9','libdav1d','prores','rv40','flv','mpeg2video','aac','flac','ape') {
+          foreach ($d in 'hevc','h264','vp9','libdav1d','prores','rv40','flv','mpeg2video','theora','aac','flac','ape','vorbis','opus','speex') {
             if ($decoders -notmatch "\s$d\s") { throw "missing decoder: $d" }
+          }
+          $demuxers = (& $ff -hide_banner -demuxers) -join "`n"
+          foreach ($m in 'ogg','matroska,webm','mov,mp4,m4a,3gp,3g2,mj2','mpegts','flv','rm') {
+            if ($demuxers -notmatch "\s$([regex]::Escape($m))\s") { throw "missing demuxer: $m" }
           }
           & $ff -hide_banner -buildconf | Select-String -Pattern 'enable-gpl|enable-nonfree' | ForEach-Object { throw "GPL/nonfree flag in build: $_" }
       - name: Check the pack is self-contained
