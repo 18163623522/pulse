@@ -145,6 +145,7 @@ private:
     // the shared playback bar.
     bool IsAudioPreview() const;
     bool AudioMouseDown(POINT client);
+    bool AudioHover(POINT client);               // true when the hover changed
     void DrawAudio(ID2D1DeviceContext* dc, const VideoPreview::State& state,
                    ID2D1SolidColorBrush* text_brush, ID2D1SolidColorBrush* secondary_brush);
 
@@ -215,6 +216,7 @@ private:
     VideoPreview video_;
     AudioWaveform waveform_;
     D2D1_RECT_F audio_wave_rect_{};
+    float audio_hover_x_ = -1.0f;                // pointer x over the waveform, or -1
     bool playback_drag_ = false;
     bool playback_resume_ = false;
     bool playback_scrub_pending_ = false;

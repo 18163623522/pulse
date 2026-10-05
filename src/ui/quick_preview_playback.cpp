@@ -232,7 +232,7 @@ bool QuickPreviewWindow::PlaybackHover(POINT point) {
         (hover_x < 0) != (playback_hover_x_ < 0) || std::abs(hover_x - playback_hover_x_) >= 1.0f;
     playback_hover_x_ = hover_x;
     playback_hover_button_ = button;
-    return changed;
+    return AudioHover(point) || changed;
 }
 bool QuickPreviewWindow::PlaybackWheel(POINT point, float steps) {
     if (!kVideoChrome || !video_.active() || !Contains(PlaybackLayout().volume, point)) return false;
