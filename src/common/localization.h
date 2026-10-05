@@ -1346,6 +1346,7 @@ enum class StringId : UINT {
     SortHintType = IDS_SORT_HINT_TYPE,
     SortHintSize = IDS_SORT_HINT_SIZE,
     SortHintPath = IDS_SORT_HINT_PATH,
+    OpItemsPerSecond = IDS_OP_ITEMS_PER_SECOND,
 };
 
 bool IsLanguageId(std::wstring_view id) noexcept;

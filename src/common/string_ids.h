@@ -1358,3 +1358,6 @@
 #define IDS_UI_FONT_DEFAULT 2522
 #define IDS_UI_FONT_LARGE 2523
 #define IDS_UI_FONT_LARGER 2524
+
+// File operations that track items (delete, restore) label their speed with this unit.
+#define IDS_OP_ITEMS_PER_SECOND 2525
