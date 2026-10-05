@@ -500,8 +500,8 @@ target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mf
 # Quick Look playback through the FFmpeg pack; a real FFmpeg stands in for the
 # pack (PULSE_TEST_FFMPEG or C:\ffmpeg\bin), else the integration part is skipped.
 add_executable(pulse_ffmpeg_playback_test src/bench/ffmpeg_playback_test.cpp
-    src/ui/ffmpeg_playback.cpp src/common/ffmpeg_tool.cpp)
-target_link_libraries(pulse_ffmpeg_playback_test PRIVATE user32 winmm)
+    src/ui/ffmpeg_playback.cpp src/ui/audio_waveform.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_ffmpeg_playback_test PRIVATE user32 winmm ole32 mfuuid)
 
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp

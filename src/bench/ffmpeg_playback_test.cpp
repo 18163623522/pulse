@@ -3,7 +3,10 @@
 // libx265 (PULSE_TEST_FFMPEG=<ffmpeg.exe>, else C:\ffmpeg\bin) and is skipped
 // without one.
 #include "../ui/ffmpeg_playback.h"
+#include "../ui/audio_waveform.h"
 #include <tlhelp32.h>
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -201,6 +204,29 @@ void Integration(const std::wstring& ffmpeg_exe) {
         bool ended = false;
         for (ULONGLONG until = GetTickCount64() + 3000; GetTickCount64() < until && !ended; Sleep(20)) ended = player.Ended();
         Check(ended, "audio-only playback ends");
+    }
+    {
+        // Waveform for audio Media Foundation cannot read: 1 s silence, 1 s tone.
+        const std::wstring wave = dir + L"\\half.wv";
+        const bool made = RunWait(q + L" -hide_banner -loglevel error -y -f lavfi -i "
+            L"\"aevalsrc=if(lt(t\\,1)\\,0\\,0.9*sin(2*PI*440*t)):s=44100:d=2\" -c:a wavpack " + ffmpeg::QuoteArgument(wave));
+        Check(made, "waveform fixture generated");
+        std::vector<float> peaks;
+        float loudest = 0, progress = 0;
+        int publishes = 0;
+        std::atomic<bool> stop{false};
+        const ULONGLONG w0 = GetTickCount64();
+        const bool ok = made && FfmpegWaveform(ffmpeg_exe, wave, stop,
+            [&](const std::vector<float>& raw, float peak, float at) { peaks = raw; loudest = peak; progress = at; ++publishes; });
+        std::printf("  waveform: %llu ms, %d publishes\n", GetTickCount64() - w0, publishes);
+        Check(ok && progress == 1.0f && peaks.size() == AudioWaveform::kBuckets, "ffmpeg waveform completes");
+        float quiet = 0, tone = 1;
+        for (size_t i = 0; i + 20 < peaks.size() / 2; ++i) quiet = (std::max)(quiet, peaks[i] / (std::max)(loudest, 1e-6f));
+        for (size_t i = peaks.size() / 2 + 20; i < peaks.size(); ++i) tone = (std::min)(tone, peaks[i] / (std::max)(loudest, 1e-6f));
+        Check(loudest > 0.8f && quiet < 0.02f && tone > 0.8f, "waveform follows silence then tone");
+        Check(!FfmpegWaveform(ffmpeg_exe, dir + L"\\missing.wv", stop, [](const std::vector<float>&, float, float) {}),
+              "missing file has no waveform");
+        DeleteFileW(wave.c_str());
     }
     FfmpegMediaInfo none;
     Check(!ProbeFfmpegMedia(ffmpeg_exe, dir + L"\\missing.mkv", none), "missing file does not probe");
