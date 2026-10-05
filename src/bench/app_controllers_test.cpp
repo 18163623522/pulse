@@ -646,6 +646,35 @@ int wmain(int argc, wchar_t** argv) {
         settings.ToggleUi(101);
         passed &= Report("enabling a system item also enables its parent group",
             context.GroupEnabled(pulse::ipc::CtxMenuGroup::System));
+        {
+            // Handler rows are keyed "h:{CLSID}" and texts are free-form: a
+            // brace or quote inside them must not end "items" or "seen" early.
+            pulse::app::ContextMenuPrefs handlers;
+            handlers.persist = false;
+            handlers.ResetToDefaults();
+            const std::wstring first = pulse::ipc::HandlerCatalogKey(L"{11111111-2222-3333-4444-555555555555}");
+            const std::wstring second = pulse::ipc::HandlerCatalogKey(L"{66666666-7777-8888-9999-AAAAAAAAAAAA}");
+            handlers.RecordSeen(first, L"Ext } menu \"one\"", true, pulse::ipc::CtxMenuCategory::Software, true);
+            handlers.RecordSeen(second, L"Ext ] two", false, pulse::ipc::CtxMenuCategory::Software, true);
+            handlers.SetItemEnabled(first, false);
+            handlers.slow_ext[L"{11111111-2222-3333-4444-555555555555}"].deferred = true;
+            pulse::app::ContextMenuPrefs reloaded;
+            reloaded.persist = false;
+            reloaded.FromJson(handlers.ToJson());
+            auto has_seen = [&](const std::wstring& key) {
+                for (const auto& item : reloaded.seen)
+                    if (item.key == key) return true;
+                return false;
+            };
+            passed &= Report("handler catalog rows with brace keys survive reload",
+                has_seen(first) && has_seen(second));
+            const auto off = reloaded.item_enabled.find(first);
+            passed &= Report("handler item switches survive reload",
+                off != reloaded.item_enabled.end() && !off->second);
+            const auto slow = reloaded.slow_ext.find(L"{11111111-2222-3333-4444-555555555555}");
+            passed &= Report("slow extension state keyed by CLSID survives reload",
+                slow != reloaded.slow_ext.end() && slow->second.deferred);
+        }
         return passed ? 0 : 1;
     }
     if (argc == 2 && std::wstring(argv[1]) == L"--layout-search-prefs") {
