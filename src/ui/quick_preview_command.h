@@ -17,9 +17,11 @@ struct QuickPreviewItem {
 enum class QuickPreviewAction : int {
     None = 0, Open, Cut, Copy, CopyPath, ToggleStar, Rename, Delete, Properties,
     InstallMediaPack,   // start (or cancel) the FFmpeg preview pack download
+    InstallImagePack,   // start (or cancel) the image preview pack download
 };
 
-// The FFmpeg preview pack as offered on Quick Look's "can't decode" cards.
+// A preview pack (FFmpeg or images) as offered on Quick Look's "can't decode"
+// cards.
 struct MediaPackOffer {
     bool installable = false;   // published for this build and not on this PC
     bool installing = false;

@@ -567,6 +567,9 @@ enum class PackAction : int {
     UseDetected,        // take the ffmpeg.exe found on PATH
     OpenFolder,         // %LOCALAPPDATA%\Pulse\packs
     RemoveOnUninstall,  // delete the packs with Pulse
+    ImagesInstall,      // image pack: download and install (or cancel)
+    ImagesRemove,       // image pack: uninstall
+    ImagesEnable,       // image pack: on / off
 };
 
 struct WindowViewModel {
@@ -684,6 +687,12 @@ struct WindowViewModel {
     std::wstring settings_pack_notice;          // last action's message, empty when none
     bool settings_pack_installing = false;      // the FFmpeg pack is downloading
     float settings_pack_progress = 0.0f;        // 0..1 while downloading
+    bool settings_pack_images_installed = false; // the image pack (现代图像格式) is on disk
+    bool settings_pack_images_enabled = true;
+    bool settings_pack_images_installing = false;
+    float settings_pack_images_progress = 0.0f;
+    std::wstring settings_pack_images_version;
+    std::wstring settings_pack_images_notice;
     int settings_theme = 0; // system, light, dark
     bool settings_open = false;
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates

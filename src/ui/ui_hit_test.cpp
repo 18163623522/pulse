@@ -530,6 +530,9 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     {&lay.pack_primary, vm.settings_pack_media_installed && !vm.settings_pack_installing
                                             ? PackAction::Remove : PackAction::Install},
                     {&lay.pack_enable, PackAction::Enable},
+                    {&lay.pack_images_primary, vm.settings_pack_images_installed && !vm.settings_pack_images_installing
+                                                   ? PackAction::ImagesRemove : PackAction::ImagesInstall},
+                    {&lay.pack_images_enable, PackAction::ImagesEnable},
                     {&lay.pack_detect, PackAction::UseDetected},
                     {&lay.pack_browse, PackAction::Browse},
                     {&lay.pack_custom_row, PackAction::UseCustom},

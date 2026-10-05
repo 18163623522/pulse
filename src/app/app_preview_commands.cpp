@@ -12,6 +12,11 @@ void HandleQuickPreviewCommand(AppState& s, const ui::QuickPreviewCommand& comma
         InvalidateRect(s.hwnd, nullptr, FALSE);
         return;
     }
+    if (command.action == ui::QuickPreviewAction::InstallImagePack) {
+        s.settings.InstallImagePack(s.hwnd);
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return;
+    }
     const auto& target = command.target;
     const auto action = command.action;
     if (target.read_only && (action == ui::QuickPreviewAction::Cut ||

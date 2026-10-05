@@ -434,12 +434,19 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 vm.settings_pack_notice = packs.notice;
                 vm.settings_pack_installing = packs.installing;
                 vm.settings_pack_progress = packs.progress;
+                vm.settings_pack_images_installed = packs.images_installed;
+                vm.settings_pack_images_enabled = packs.images_enabled;
+                vm.settings_pack_images_version = packs.images_version;
+                vm.settings_pack_images_notice = packs.images_notice;
+                vm.settings_pack_images_installing = packs.images_installing;
+                vm.settings_pack_images_progress = packs.images_progress;
                 // Screenshot fixture for the downloading state (percent).
                 wchar_t fake_progress[8]{};
                 if (s.shot.active && s.isolatedTest &&
                     GetEnvironmentVariableW(L"PULSE_TEST_PACK_PROGRESS", fake_progress, ARRAYSIZE(fake_progress))) {
-                    vm.settings_pack_installing = true;
-                    vm.settings_pack_progress = static_cast<float>(_wtoi(fake_progress)) / 100.0f;
+                    vm.settings_pack_installing = vm.settings_pack_images_installing = true;
+                    vm.settings_pack_progress = vm.settings_pack_images_progress =
+                        static_cast<float>(_wtoi(fake_progress)) / 100.0f;
                 }
             }
             vm.settings_theme = s.themeOverride == ui::ThemeMode::Light ? 1 : s.themeOverride == ui::ThemeMode::Dark ? 2 : 0;
@@ -1796,20 +1803,27 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         s.renderer.EvictThumbnails();
         s.quickPreview.OnMediaPackInstalled();
     }
+    if (s.settings.TakeImagePackResult()) {
+        s.renderer.EvictThumbnails();
+        s.quickPreview.OnImagePackInstalled();
+    }
     if (s.quickPreview.visible()) {
-        ui::MediaPackOffer offer;
+        ui::MediaPackOffer offer, image_offer;
         s.settings.FillMediaPackOffer(offer);
-        // Fixture for the Quick Look offer while no pack is published.
+        s.settings.FillImagePackOffer(image_offer);
+        // Fixture for the Quick Look offers while no pack is published.
         wchar_t fake[8]{};
         if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_PACK_OFFER", fake, ARRAYSIZE(fake))) {
-            offer.installable = true;
+            offer.installable = image_offer.installable = true;
             if (!offer.download_bytes) offer.download_bytes = uint64_t{28} << 20;
+            if (!image_offer.download_bytes) image_offer.download_bytes = uint64_t{9} << 20;
             if (GetEnvironmentVariableW(L"PULSE_TEST_PACK_PROGRESS", fake, ARRAYSIZE(fake))) {
-                offer.installing = true;
-                offer.progress = static_cast<float>(_wtoi(fake)) / 100.0f;
+                offer.installing = image_offer.installing = true;
+                offer.progress = image_offer.progress = static_cast<float>(_wtoi(fake)) / 100.0f;
             }
         }
         s.quickPreview.SetMediaPackOffer(offer);
+        s.quickPreview.SetImagePackOffer(image_offer);
     }
     UpdateFolderCompare(s);
     s.changes.visible_paths.clear();

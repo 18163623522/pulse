@@ -1857,7 +1857,10 @@ void QuickPreviewWindow::Render() {
             }
         }
         if (result != PreviewDrawResult::Pending) {
-            const auto notice = PreviewNotice(error, text, integrity);
+            // The picture cards explain these failures themselves.
+            const bool codec_card = kImageExtras && result == PreviewDrawResult::Failed &&
+                (error.rfind(L"image-codec-missing:", 0) == 0 || error == L"image-pack-missing");
+            const auto notice = codec_card ? std::wstring{} : PreviewNotice(error, text, integrity);
             if (notice != preview_notice_) {
                 preview_notice_ = notice;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2097,6 +2100,9 @@ void QuickPreviewWindow::Render() {
                    error.rfind(L"image-codec-missing:", 0) == 0) {
             native_kind_ = NativeKind::None;
             DrawImageCodecCard(dc, content, error.substr(20), text_brush.get());
+        } else if (result == PreviewDrawResult::Failed && kImageExtras && error == L"image-pack-missing") {
+            native_kind_ = NativeKind::None;
+            DrawImageCodecCard(dc, content, L"pack", text_brush.get());
         } else if (result == PreviewDrawResult::Failed) {
             native_kind_ = NativeKind::None;
             status = pulse::l10n::Get(error == L"path-unavailable"

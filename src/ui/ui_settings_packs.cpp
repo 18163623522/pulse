@@ -72,49 +72,75 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
         button(lay.pack_open, pack_text::OpenFolder(), PackAction::OpenFolder);
     }
 
-    // Media: the FFmpeg pack.
-    text(pack_text::Media(), lay.pack_media_section);
-    {
-        const auto& r = lay.pack_card;
+    // One pack card (geometry from LayoutSettingsPacks' card_layout).
+    struct CardSpec {
+        D2D1_RECT_F card, badge, enable, primary, notice_box;
+        const wchar_t* icon;
+        std::wstring_view title, desc, meta;
+        pack_text::Badge badge_text;
+        bool shows_enable, enabled, installed, installing;
+        float progress;
+        std::wstring_view primary_label;
+        PackAction enable_action, install_action, remove_action;
+        const std::wstring& notice;
+    };
+    auto draw_card = [&](const CardSpec& c) {
+        const auto& r = c.card;
         card(r);
         const float text_left = r.left + 54*s, inner_right = r.right - 16*s;
-        DrawIconText(r.left + 16*s, r.top + 18*s, 24*s, 24*s, L"\xE714", L"", theme.accent, 0.9f);
-        text(pack_text::MediaTitle(), D2D1::RectF(text_left, r.top + 12*s, lay.pack_badge.left - 12*s, r.top + 36*s));
-        const auto badge = pack_text::MediaBadge(vm);
+        DrawIconText(r.left + 16*s, r.top + 18*s, 24*s, 24*s, c.icon, L"", theme.accent, 0.9f);
+        text(c.title, D2D1::RectF(text_left, r.top + 12*s, c.badge.left - 12*s, r.top + 36*s));
         fluent::BadgeSpec spec{};
-        spec.bounds = lay.pack_badge;
-        spec.text = badge.text;
-        spec.kind = badge.kind;
+        spec.bounds = c.badge;
+        spec.text = c.badge_text.text;
+        spec.kind = c.badge_text.kind;
         painter_.DrawBadge(spec);
-        if (pack_text::ShowsEnable(vm)) toggle(lay.pack_enable, vm.settings_pack_ffmpeg_enabled, PackAction::Enable);
-        painter_.DrawWrappedCaption(pack_text::MediaDesc(), D2D1::Point2F(text_left, r.top + 40*s),
+        if (c.shows_enable) toggle(c.enable, c.enabled, c.enable_action);
+        painter_.DrawWrappedCaption(c.desc, D2D1::Point2F(text_left, r.top + 40*s),
                                     inner_right - text_left, theme.text_secondary);
-        const float meta_right = lay.pack_primary.left - 12*s;
-        if (vm.settings_pack_installing) {
+        const float meta_right = c.primary.left - 12*s;
+        if (c.installing) {
             // Status above a thin bar, both centred on the button's row.
-            const float cy = (lay.pack_primary.top + lay.pack_primary.bottom) * 0.5f;
-            text(pack_text::Downloading(vm), D2D1::RectF(text_left, cy - 16*s, meta_right, cy + 2*s), true);
+            const float cy = (c.primary.top + c.primary.bottom) * 0.5f;
+            text(pack_text::Downloading(c.progress), D2D1::RectF(text_left, cy - 16*s, meta_right, cy + 2*s), true);
             fluent::ProgressSpec bar;
             bar.bounds = D2D1::RectF(text_left, cy + 6*s, (std::min)(meta_right, text_left + 320*s), cy + 10*s);
-            bar.value = vm.settings_pack_progress;
+            bar.value = c.progress;
             painter_.DrawProgressBar(bar);
         } else {
-            text(pack_text::MediaMeta(), D2D1::RectF(text_left, lay.pack_primary.top + 6*s,
-                 meta_right, lay.pack_primary.bottom - 6*s), true);
+            text(c.meta, D2D1::RectF(text_left, c.primary.top + 6*s, meta_right, c.primary.bottom - 6*s), true);
         }
-        const bool installed = vm.settings_pack_media_installed && !vm.settings_pack_installing;
-        button(lay.pack_primary, pack_text::Primary(vm), installed ? PackAction::Remove : PackAction::Install,
-               installed || vm.settings_pack_installing ? fluent::ButtonKind::Standard : fluent::ButtonKind::Primary);
-        if (lay.pack_notice.bottom > lay.pack_notice.top) {
-            const auto& n = lay.pack_notice;
+        const bool installed = c.installed && !c.installing;
+        button(c.primary, c.primary_label, installed ? c.remove_action : c.install_action,
+               installed || c.installing ? fluent::ButtonKind::Standard : fluent::ButtonKind::Primary);
+        if (c.notice_box.bottom > c.notice_box.top) {
+            const auto& n = c.notice_box;
             MakeBrush(dc, theme.fill_hover, brFillHover_);
             FillRoundedRect(dc, brFillHover_.get(), n.left, n.top, n.right - n.left, n.bottom - n.top, 6*s);
             MakeBrush(dc, theme.accent, brFillSelected_);
             FillRoundedRect(dc, brFillSelected_.get(), n.left, n.top + 6*s, 3*s, n.bottom - n.top - 12*s, 1.5f*s);
-            painter_.DrawWrappedCaption(vm.settings_pack_notice, D2D1::Point2F(n.left + 12*s, n.top + 6*s),
+            painter_.DrawWrappedCaption(c.notice, D2D1::Point2F(n.left + 12*s, n.top + 6*s),
                                         n.right - n.left - 12*s, theme.text);
         }
-    }
+    };
+
+    // Media: the FFmpeg pack.
+    text(pack_text::Media(), lay.pack_media_section);
+    draw_card({lay.pack_card, lay.pack_badge, lay.pack_enable, lay.pack_primary, lay.pack_notice, L"\xE714",
+               pack_text::MediaTitle(), pack_text::MediaDesc(), pack_text::MediaMeta(), pack_text::MediaBadge(vm),
+               pack_text::ShowsEnable(vm), vm.settings_pack_ffmpeg_enabled, vm.settings_pack_media_installed,
+               vm.settings_pack_installing, vm.settings_pack_progress, pack_text::Primary(vm),
+               PackAction::Enable, PackAction::Install, PackAction::Remove, vm.settings_pack_notice});
+
+    // Images: the image pack.
+    text(pack_text::Images(), lay.pack_images_section);
+    draw_card({lay.pack_images_card, lay.pack_images_badge, lay.pack_images_enable, lay.pack_images_primary,
+               lay.pack_images_notice, L"\xE91B",
+               pack_text::ImagesTitle(), pack_text::ImagesDesc(), pack_text::ImagesMeta(), pack_text::ImagesBadge(vm),
+               pack_text::ShowsImagesEnable(vm), vm.settings_pack_images_enabled, vm.settings_pack_images_installed,
+               vm.settings_pack_images_installing, vm.settings_pack_images_progress, pack_text::ImagesPrimary(vm),
+               PackAction::ImagesEnable, PackAction::ImagesInstall, PackAction::ImagesRemove,
+               vm.settings_pack_images_notice});
 
     // Advanced: an FFmpeg of the user's own; what uninstalling Pulse does.
     text(pack_text::Advanced(), lay.pack_advanced_section);

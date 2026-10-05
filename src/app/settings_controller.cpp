@@ -93,17 +93,21 @@ void SettingsController::RefreshPacks() {
     using packs::PackId;
     PackState state;
     state.notice = std::move(packs_.notice);
+    state.images_notice = std::move(packs_.images_notice);
     state.root = packs::PacksRoot();
     const packs::PackSettings settings = packs::LoadPackSettings();
     state.enabled = settings.enabled[static_cast<uint32_t>(PackId::Media)];
+    state.images_enabled = settings.enabled[static_cast<uint32_t>(PackId::Images)];
     state.use_custom = settings.use_custom_ffmpeg;
     state.custom_path = settings.custom_ffmpeg;
     state.remove_on_uninstall = settings.remove_on_uninstall;
     const packs::InstalledPack media = packs::ReadInstalledPack(PackId::Media);
     state.media_installed = media.present;
     state.version = media.version;
-    state.installed = media.present ? 1u : 0u;
-    if (packs::ReadInstalledPack(PackId::Images).present) ++state.installed;
+    const packs::InstalledPack images = packs::ReadInstalledPack(PackId::Images);
+    state.images_installed = images.present;
+    state.images_version = images.version;
+    state.installed = (media.present ? 1u : 0u) + (images.present ? 1u : 0u);
     // What the preview host would use, ignoring the on/off switch so the card
     // can still say which FFmpeg it is switching.
     if (state.use_custom && packs::IsRegularFile(state.custom_path)) state.ffmpeg = 2;
@@ -115,7 +119,16 @@ void SettingsController::RefreshPacks() {
     packs_ = std::move(state);
     packs_checked_ = GetTickCount64();
     offer_checked_ = 0;
+    image_offer_checked_ = 0;
 }
+
+namespace {
+uint64_t DownloadBytes(const PackRelease& release) {
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < release.file_count; ++i) bytes += release.files[i].packed_size;
+    return bytes;
+}
+} // namespace
 
 void SettingsController::FillMediaPackOffer(ui::MediaPackOffer& offer) {
     const ULONGLONG now = GetTickCount64();
@@ -129,80 +142,127 @@ void SettingsController::FillMediaPackOffer(ui::MediaPackOffer& offer) {
     offer.installing = media_installer_.running();
     offer.installable = offer_missing_ || offer.installing;
     offer.progress = offer.installing ? media_installer_.progress() : 0.0f;
-    offer.download_bytes = 0;
-    for (size_t i = 0; i < kMediaPackRelease.file_count; ++i)
-        offer.download_bytes += kMediaPackRelease.files[i].packed_size;
+    offer.download_bytes = DownloadBytes(kMediaPackRelease);
     offer.notice = offer.installing ? std::wstring{} : packs_.notice;
+}
+
+void SettingsController::FillImagePackOffer(ui::MediaPackOffer& offer) {
+    const ULONGLONG now = GetTickCount64();
+    if (!image_offer_checked_ || now - image_offer_checked_ >= 2000) {
+        image_offer_missing_ = kImagePackRelease.file_count &&
+            !packs::ReadInstalledPack(packs::PackId::Images).present;
+        image_offer_checked_ = now ? now : 1;
+    }
+    offer.installing = image_installer_.running();
+    offer.installable = image_offer_missing_ || offer.installing;
+    offer.progress = offer.installing ? image_installer_.progress() : 0.0f;
+    offer.download_bytes = DownloadBytes(kImagePackRelease);
+    offer.notice = offer.installing ? std::wstring{} : packs_.images_notice;
 }
 
 const SettingsController::PackState& SettingsController::Packs() {
     if (!packs_checked_ || GetTickCount64() - packs_checked_ >= 2000) RefreshPacks();
     packs_.installing = media_installer_.running();
     packs_.progress = packs_.installing ? media_installer_.progress() : 0.0f;
+    packs_.images_installing = image_installer_.running();
+    packs_.images_progress = packs_.images_installing ? image_installer_.progress() : 0.0f;
     return packs_;
 }
 
-bool SettingsController::InstallMediaPack(HWND notify) {
-    if (media_installer_.running()) {
-        media_installer_.Cancel();
+bool SettingsController::InstallPack(packs::PackId id, HWND notify) {
+    const bool images = id == packs::PackId::Images;
+    PackInstaller& installer = images ? image_installer_ : media_installer_;
+    const PackRelease& release = images ? kImagePackRelease : kMediaPackRelease;
+    std::wstring& notice = images ? packs_.images_notice : packs_.notice;
+    if (installer.running()) {
+        installer.Cancel();
         return false;
     }
-    packs_.notice.clear();
-    if (!kMediaPackRelease.file_count) {
+    notice.clear();
+    if (!release.file_count) {
         // Nothing is published for this build yet; point at what works today.
-        packs_.notice = l10n::Pick(
-            L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
-            L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
+        notice = images
+            ? l10n::Pick(L"“现代图像格式”预览增强包的下载即将提供。",
+                         L"The modern image formats pack is coming soon.")
+            : l10n::Pick(
+                L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
+                L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
         return false;
     }
-    if (!media_installer_.Start(kMediaPackRelease, notify)) return false;
-    packs_.installing = true;
-    packs_.progress = 0.0f;
+    if (!installer.Start(release, notify)) return false;
+    if (images) {
+        packs_.images_installing = true;
+        packs_.images_progress = 0.0f;
+    } else {
+        packs_.installing = true;
+        packs_.progress = 0.0f;
+    }
     return false;
 }
 
-bool SettingsController::TakeMediaPackResult() {
+bool SettingsController::InstallMediaPack(HWND notify) { return InstallPack(packs::PackId::Media, notify); }
+bool SettingsController::InstallImagePack(HWND notify) { return InstallPack(packs::PackId::Images, notify); }
+
+bool SettingsController::TakePackResult(packs::PackId id) {
+    const bool images = id == packs::PackId::Images;
     DWORD error = ERROR_SUCCESS;
-    const PackInstallOutcome outcome = media_installer_.TakeOutcome(error);
+    const PackInstallOutcome outcome = (images ? image_installer_ : media_installer_).TakeOutcome(error);
     if (outcome == PackInstallOutcome::None) return false;
     RefreshPacks();
+    std::wstring& notice = images ? packs_.images_notice : packs_.notice;
     switch (outcome) {
     case PackInstallOutcome::Installed:
-        packs_.notice.clear();
+        notice.clear();
         return true;
     case PackInstallOutcome::Cancelled:
-        packs_.notice = l10n::Pick(L"已取消下载。", L"Download cancelled.");
+        notice = l10n::Pick(L"已取消下载。", L"Download cancelled.");
         break;
     default:
         if (error == ERROR_INVALID_DATA) {
-            packs_.notice = l10n::Pick(L"下载的文件校验失败，已丢弃。请稍后重试。",
-                                       L"The download did not pass verification and was discarded. Try again later.");
+            notice = l10n::Pick(L"下载的文件校验失败，已丢弃。请稍后重试。",
+                                L"The download did not pass verification and was discarded. Try again later.");
         } else if (error == ERROR_SHARING_VIOLATION) {
-            packs_.notice = l10n::Pick(L"旧版本的文件正在使用。关闭正在播放的视频后再试一次。",
-                                       L"Files of the old version are in use. Close playing videos and try again.");
+            notice = images
+                ? l10n::Pick(L"旧版本的文件正在使用，请稍后再试一次。",
+                             L"Files of the old version are in use. Try again in a moment.")
+                : l10n::Pick(L"旧版本的文件正在使用。关闭正在播放的视频后再试一次。",
+                             L"Files of the old version are in use. Close playing videos and try again.");
         } else if (error == ERROR_NOT_SUPPORTED) {
-            packs_.notice = l10n::Pick(L"这台电脑缺少解压所需的系统组件，无法安装。",
-                                       L"This PC lacks the Windows component needed to unpack the download.");
+            notice = l10n::Pick(L"这台电脑缺少解压所需的系统组件，无法安装。",
+                                L"This PC lacks the Windows component needed to unpack the download.");
         } else {
-            packs_.notice = l10n::Pick(L"下载失败，请检查网络后重试。",
-                                       L"The download failed. Check the connection and try again.");
+            notice = l10n::Pick(L"下载失败，请检查网络后重试。",
+                                L"The download failed. Check the connection and try again.");
         }
         break;
     }
     return false;
 }
 
-bool SettingsController::RemoveMediaPack() {
-    if (media_installer_.running()) return false;
+bool SettingsController::TakeMediaPackResult() { return TakePackResult(packs::PackId::Media); }
+bool SettingsController::TakeImagePackResult() { return TakePackResult(packs::PackId::Images); }
+
+bool SettingsController::RemovePack(packs::PackId id) {
+    const bool images = id == packs::PackId::Images;
+    if ((images ? image_installer_ : media_installer_).running()) return false;
     const std::wstring root = packs::PacksRoot();
     if (root.empty()) return false;
-    const bool removed = RemovePackTree(root + L"\\" + packs::PackKey(packs::PackId::Media));
-    packs_.notice = removed ? std::wstring{} : std::wstring(l10n::Pick(
-        L"有文件正在使用，未能全部删除。关闭正在播放的视频后再试一次。",
-        L"Some files are in use and were not removed. Close playing videos and try again."));
+    const bool removed = RemovePackTree(root + L"\\" + packs::PackKey(id));
+    std::wstring message;
+    if (!removed) {
+        message = images
+            ? l10n::Pick(L"有文件正在使用，未能全部删除。请稍后再试一次。",
+                         L"Some files are in use and were not removed. Try again in a moment.")
+            : l10n::Pick(L"有文件正在使用，未能全部删除。关闭正在播放的视频后再试一次。",
+                         L"Some files are in use and were not removed. Close playing videos and try again.");
+    }
+    (images ? packs_.images_notice : packs_.notice) = std::move(message);
     RefreshPacks();
     return true;
 }
+
+bool SettingsController::RemoveMediaPack() { return RemovePack(packs::PackId::Media); }
+bool SettingsController::RemoveImagePack() { return RemovePack(packs::PackId::Images); }
 
 namespace {
 bool UpdatePackSettings(const std::function<void(packs::PackSettings&)>& change) {
@@ -215,6 +275,14 @@ bool UpdatePackSettings(const std::function<void(packs::PackSettings&)>& change)
 bool SettingsController::ToggleMediaPack() {
     const bool saved = UpdatePackSettings([](packs::PackSettings& s) { s.enabled[0] = !s.enabled[0]; });
     packs_.notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
+bool SettingsController::ToggleImagePack() {
+    constexpr uint32_t kImages = static_cast<uint32_t>(packs::PackId::Images);
+    const bool saved = UpdatePackSettings([](packs::PackSettings& s) { s.enabled[kImages] = !s.enabled[kImages]; });
+    packs_.images_notice.clear();
     RefreshPacks();
     return saved;
 }

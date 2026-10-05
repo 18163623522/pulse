@@ -1740,6 +1740,10 @@ struct SettingsLayout {
         pack_primary{}, pack_notice{}, pack_advanced_section{}, pack_custom_row{}, pack_path_row{},
         pack_detect{}, pack_browse{}, pack_remove_row{}, pack_group{}, pack_note{};
     float pack_desc_h = 0.0f;
+    // The image pack card (same parts as the FFmpeg one).
+    D2D1_RECT_F pack_images_section{}, pack_images_card{}, pack_images_badge{}, pack_images_enable{},
+        pack_images_primary{}, pack_images_notice{};
+    float pack_images_desc_h = 0.0f;
     D2D1_RECT_F content_header{}, content_types{}, content_pause{}, content_options{}, content_rebuild{}, content_empty{};
     D2D1_RECT_F body{};
     D2D1_RECT_F nav{};

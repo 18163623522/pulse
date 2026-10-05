@@ -264,6 +264,12 @@ inline const wchar_t* MediaDesc() { return l10n::Pick(
     L"系统缺少解码器的视频也能生成缩略图、显示时长和媒体信息：HEVC、AV1、VP9、ProRes、FLV、RMVB、MPEG-TS 等。",
     L"Thumbnails, playing time and media details for videos Windows has no decoder for: HEVC, AV1, VP9, ProRes, FLV, RMVB, MPEG-TS and more."); }
 inline const wchar_t* MediaMeta() { return l10n::Pick(L"LGPL-2.1 · 仅解码构建，不含 GPL 组件", L"LGPL-2.1 · decode-only build, no GPL parts"); }
+inline const wchar_t* Images() { return l10n::Pick(L"图像", L"Images"); }
+inline const wchar_t* ImagesTitle() { return l10n::Pick(L"现代图像格式", L"Modern image formats"); }
+inline const wchar_t* ImagesDesc() { return l10n::Pick(
+    L"不依赖微软商店扩展，直接预览 iPhone 照片（HEIC）、AVIF、JPEG XL 和 HDR / EXR 图像，文件夹里也能看到缩略图。",
+    L"Preview iPhone photos (HEIC), AVIF, JPEG XL and HDR / EXR pictures without the Microsoft Store extensions, thumbnails included."); }
+inline const wchar_t* ImagesMeta() { return l10n::Pick(L"libheif · dav1d · libjxl · OpenEXR · LGPL-3.0 / BSD", L"libheif · dav1d · libjxl · OpenEXR · LGPL-3.0 / BSD"); }
 inline const wchar_t* Install() { return l10n::Pick(L"安装", L"Install"); }
 inline const wchar_t* Remove() { return l10n::Pick(L"卸载", L"Remove"); }
 inline const wchar_t* CustomTitle() { return l10n::Pick(L"使用已安装的 FFmpeg", L"Use an installed FFmpeg"); }
@@ -311,12 +317,25 @@ inline const wchar_t* Primary(const WindowViewModel& vm) {
     if (vm.settings_pack_installing) return l10n::Pick(L"取消", L"Cancel");
     return vm.settings_pack_media_installed ? Remove() : Install();
 }
-// "正在下载… 42%" while the pack downloads.
-inline std::wstring Downloading(const WindowViewModel& vm) {
-    const int percent = static_cast<int>(vm.settings_pack_progress * 100.0f + 0.5f);
+// "正在下载… 42%" while a pack downloads.
+inline std::wstring Downloading(float progress) {
+    const int percent = static_cast<int>(progress * 100.0f + 0.5f);
     return std::wstring(l10n::Pick(L"正在下载… ", L"Downloading… ")) +
            std::to_wstring(percent < 0 ? 0 : percent > 100 ? 100 : percent) + L"%";
 }
+inline std::wstring Downloading(const WindowViewModel& vm) { return Downloading(vm.settings_pack_progress); }
+inline Badge ImagesBadge(const WindowViewModel& vm) {
+    if (!vm.settings_pack_images_installed) return {l10n::Pick(L"未安装", L"Not installed"), fluent::BadgeKind::Neutral};
+    if (!vm.settings_pack_images_enabled) return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
+    std::wstring text = l10n::Pick(L"已安装", L"Installed");
+    if (!vm.settings_pack_images_version.empty()) text += L" " + vm.settings_pack_images_version;
+    return {text, fluent::BadgeKind::Success};
+}
+inline const wchar_t* ImagesPrimary(const WindowViewModel& vm) {
+    if (vm.settings_pack_images_installing) return l10n::Pick(L"取消", L"Cancel");
+    return vm.settings_pack_images_installed ? Remove() : Install();
+}
+inline bool ShowsImagesEnable(const WindowViewModel& vm) { return vm.settings_pack_images_installed; }
 // Switch and path rows exist once there is something to switch.
 inline bool ShowsEnable(const WindowViewModel& vm) { return vm.settings_pack_ffmpeg != 0; }
 inline bool ShowsPath(const WindowViewModel& vm) {
@@ -344,29 +363,46 @@ float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float sc
     l.pack_open = D2D1::RectF(right - 16*scale - open_w, l.pack_summary.top + 20*scale,
                               right - 16*scale, l.pack_summary.top + 52*scale);
 
+    // One pack card: icon, title + badge (+ switch), description, meta line
+    // with the primary button, and the last action's message.
+    const float text_left = left + 54*scale, inner_right = right - 16*scale;
+    struct CardRects { D2D1_RECT_F *card, *badge, *enable, *primary, *notice; float* desc_h; };
+    auto card_layout = [&](const CardRects& out, bool shows_enable, const pack_text::Badge& badge,
+                           std::wstring_view desc, std::wstring_view primary, const std::wstring& notice) {
+        const float top = y;
+        float badge_right = inner_right;
+        if (shows_enable) {
+            *out.enable = D2D1::RectF(inner_right - 42*scale, top + 14*scale, inner_right, top + 46*scale);
+            badge_right = out.enable->left - 12*scale;
+        }
+        const float badge_w = painter ? painter->MeasureBadgeWidth(badge.text) : 96*scale;
+        *out.badge = D2D1::RectF(badge_right - badge_w, top + 19*scale, badge_right, top + 41*scale);
+        *out.desc_h = caption_h(desc, inner_right - text_left);
+        const float footer = top + 40*scale + *out.desc_h + 12*scale;
+        const float primary_w = button_w(primary);
+        *out.primary = D2D1::RectF(inner_right - primary_w, footer, inner_right, footer + 32*scale);
+        float bottom = footer + 32*scale + 14*scale;
+        if (!notice.empty()) {
+            const float notice_h = caption_h(notice, inner_right - text_left - 12*scale);
+            *out.notice = D2D1::RectF(text_left - 8*scale, bottom - 4*scale, inner_right, bottom + notice_h + 12*scale);
+            bottom = out.notice->bottom + 12*scale;
+        }
+        *out.card = D2D1::RectF(left, top, right, bottom);
+        y = bottom;
+    };
+
     // Media: the FFmpeg pack card.
     y += 24*scale; l.pack_media_section = row(28);
-    const float top = y, text_left = left + 54*scale, inner_right = right - 16*scale;
-    float badge_right = inner_right;
-    if (pack_text::ShowsEnable(vm)) {
-        l.pack_enable = D2D1::RectF(inner_right - 42*scale, top + 14*scale, inner_right, top + 46*scale);
-        badge_right = l.pack_enable.left - 12*scale;
-    }
-    const auto badge = pack_text::MediaBadge(vm);
-    const float badge_w = painter ? painter->MeasureBadgeWidth(badge.text) : 96*scale;
-    l.pack_badge = D2D1::RectF(badge_right - badge_w, top + 19*scale, badge_right, top + 41*scale);
-    l.pack_desc_h = caption_h(pack_text::MediaDesc(), inner_right - text_left);
-    float footer = top + 40*scale + l.pack_desc_h + 12*scale;
-    const float primary_w = button_w(pack_text::Primary(vm));
-    l.pack_primary = D2D1::RectF(inner_right - primary_w, footer, inner_right, footer + 32*scale);
-    float bottom = footer + 32*scale + 14*scale;
-    if (!vm.settings_pack_notice.empty()) {
-        const float notice_h = caption_h(vm.settings_pack_notice, inner_right - text_left - 12*scale);
-        l.pack_notice = D2D1::RectF(text_left - 8*scale, bottom - 4*scale, inner_right, bottom + notice_h + 12*scale);
-        bottom = l.pack_notice.bottom + 12*scale;
-    }
-    l.pack_card = D2D1::RectF(left, top, right, bottom);
-    y = bottom;
+    card_layout({&l.pack_card, &l.pack_badge, &l.pack_enable, &l.pack_primary, &l.pack_notice, &l.pack_desc_h},
+                pack_text::ShowsEnable(vm), pack_text::MediaBadge(vm), pack_text::MediaDesc(),
+                pack_text::Primary(vm), vm.settings_pack_notice);
+
+    // Images: the image pack card.
+    y += 24*scale; l.pack_images_section = row(28);
+    card_layout({&l.pack_images_card, &l.pack_images_badge, &l.pack_images_enable, &l.pack_images_primary,
+                 &l.pack_images_notice, &l.pack_images_desc_h},
+                pack_text::ShowsImagesEnable(vm), pack_text::ImagesBadge(vm), pack_text::ImagesDesc(),
+                pack_text::ImagesPrimary(vm), vm.settings_pack_images_notice);
 
     // Advanced: an FFmpeg of the user's own, and what uninstall does.
     y += 24*scale; l.pack_advanced_section = row(28);

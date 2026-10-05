@@ -27,4 +27,8 @@ struct PackRelease {
 // FFmpeg preview pack (decode-only LGPL build, packs/ffmpeg/build.sh).
 inline constexpr PackRelease kMediaPackRelease{L"ffmpeg", L"", L"", nullptr, 0};
 
+// Image preview pack: HEIC / AVIF / JPEG XL / OpenEXR / Radiance HDR / QOI
+// (pulse-imgpack.exe + LGPL libheif / libde265, packs/images/build.ps1).
+inline constexpr PackRelease kImagePackRelease{L"images", L"", L"", nullptr, 0};
+
 } // namespace pulse::app

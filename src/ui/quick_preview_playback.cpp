@@ -3,6 +3,7 @@
 #include "typography.h"
 #include "ffmpeg_playback.h"
 #include "../common/localization.h"
+#include "../common/image_pack_protocol.h"
 #include <d2d1helper.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -737,7 +738,7 @@ bool QuickPreviewWindow::OverCodecButton(POINT point) const {
 bool QuickPreviewWindow::CodecCardClick(POINT point) {
     if (Contains(codec_pack_rect_, point)) {
         // The app starts the download, or cancels the running one.
-        PostAction(QuickPreviewAction::InstallMediaPack);
+        PostAction(codec_pack_image_ ? QuickPreviewAction::InstallImagePack : QuickPreviewAction::InstallMediaPack);
         return true;
     }
     if (Contains(codec_store_rect_, point) && !codec_store_id_.empty()) {
@@ -755,6 +756,19 @@ void QuickPreviewWindow::SetMediaPackOffer(const MediaPackOffer& offer) {
     if (offer == pack_offer_) return;
     pack_offer_ = offer;
     if (hwnd_ && visible() && video_.active()) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void QuickPreviewWindow::SetImagePackOffer(const MediaPackOffer& offer) {
+    if (offer == image_offer_) return;
+    image_offer_ = offer;
+    if (hwnd_ && visible()) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+void QuickPreviewWindow::OnImagePackInstalled() {
+    if (!hwnd_ || !visible()) return;
+    // The picture card (or a text / hex view of an EXR) becomes the picture.
+    const size_t dot = item_.path.find_last_of(L'.');
+    if (dot == std::wstring::npos || !imgpack::IsImagePackExtension(std::wstring_view(item_.path).substr(dot))) return;
+    const QuickPreviewItem item = item_;
+    Update(item);
 }
 void QuickPreviewWindow::OnMediaPackInstalled() {
     if (!hwnd_ || !visible()) return;
@@ -791,15 +805,27 @@ void QuickPreviewWindow::DrawCodecCard(ID2D1DeviceContext* dc, const D2D1_RECT_F
     DrawCodecCardText(dc, content, t, brush);
 }
 
-// HEIF / HEIC / AVIF without the Store extension that decodes them (mockup ⑥).
+// HEIF / HEIC / AVIF without the Store extension that decodes them (mockup ⑥),
+// and ("pack") pictures Windows never reads: OpenEXR, Radiance HDR, QOI and
+// JPEG XL without its extension. Both offer the image preview pack.
 void QuickPreviewWindow::DrawImageCodecCard(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
                                             const std::wstring& codec, ID2D1SolidColorBrush* brush) {
     CodecCardText t;
     t.picture = true;
+    t.image_pack = true;
+    t.pack = image_offer_.installable || image_offer_.installing;
     t.title = l10n::Pick(L"这台电脑无法显示此图片", L"Can't show this picture on this PC");
     t.lead = l10n::Pick(L"图片使用 ", L"It uses ");
     t.tail = l10n::Pick(L" 格式，系统中没有对应的解码器。", L" and no decoder for it is installed.");
-    if (codec == L"av1") {
+    if (codec == L"pack") {
+        const size_t dot = item_.path.find_last_of(L'.');
+        std::wstring extension = dot == std::wstring::npos ? std::wstring{} : item_.path.substr(dot);
+        for (wchar_t& c : extension) c = static_cast<wchar_t>(towlower(c));
+        t.name = extension == L".exr" ? L"OpenEXR" : extension == L".hdr" ? L"Radiance HDR"
+               : extension == L".qoi" ? L"QOI" : extension == L".jxl" ? L"JPEG XL" : L"";
+        if (t.name.empty()) t.name = extension.size() > 1 ? extension.substr(1) : extension;
+        t.tail = l10n::Pick(L" 格式，Windows 无法直接读取。", L", which Windows cannot read by itself.");
+    } else if (codec == L"av1") {
         t.name = L"AVIF";
         t.store_id = L"9MVZQVXJBQ9V";
         t.get = l10n::Pick(L"获取 AV1 视频扩展", L"Get AV1 Video Extension");
@@ -927,15 +953,20 @@ void QuickPreviewWindow::DrawCodecCardText(ID2D1DeviceContext* dc, const D2D1_RE
                       D2D1_DRAW_TEXT_OPTIONS_CLIP);
     };
     codec_pack_rect_ = {};
+    codec_pack_image_ = text.image_pack;
+    const MediaPackOffer& offer = text.image_pack ? image_offer_ : pack_offer_;
     if (text.pack) {
-        const MediaPackOffer& offer = pack_offer_;
         std::wstring label;
         if (offer.installing) {
             const int percent = static_cast<int>(std::clamp(offer.progress, 0.0f, 1.0f) * 100.0f + 0.5f);
-            label = l10n::Pick(L"正在下载 FFmpeg 预览增强包 ", L"Downloading the FFmpeg preview pack ") +
+            label = (text.image_pack
+                ? l10n::Pick(L"正在下载图像预览增强包 ", L"Downloading the image preview pack ")
+                : l10n::Pick(L"正在下载 FFmpeg 预览增强包 ", L"Downloading the FFmpeg preview pack ")) +
                     std::to_wstring(percent) + l10n::Pick(L"% · 点击取消", L"% · Click to cancel");
         } else {
-            label = l10n::Pick(L"安装 FFmpeg 预览增强包", L"Install the FFmpeg preview pack");
+            label = text.image_pack
+                ? l10n::Pick(L"安装图像预览增强包", L"Install the image preview pack")
+                : l10n::Pick(L"安装 FFmpeg 预览增强包", L"Install the FFmpeg preview pack");
             if (offer.download_bytes) {
                 const uint64_t mb = (std::max)(uint64_t{1}, (offer.download_bytes + 512 * 1024) / (1024 * 1024));
                 label += L" \x00B7 " + std::to_wstring(mb) + L" MB";
@@ -976,8 +1007,8 @@ void QuickPreviewWindow::DrawCodecCardText(ID2D1DeviceContext* dc, const D2D1_RE
     y += bh + 10.0f * s;
     std::wstring footnote;
     if (text.pack) {
-        if (!pack_offer_.notice.empty()) footnote = pack_offer_.notice;
-        else if (pack_offer_.installing)
+        if (!offer.notice.empty()) footnote = offer.notice;
+        else if (offer.installing)
             footnote = l10n::Pick(L"安装完成后会自动重新打开预览", L"The preview reopens by itself once installed");
         else footnote = l10n::Pick(L"预览增强包可随时在“设置 › 预览增强包”中卸载",
                                    L"Remove it any time in Settings › Preview packs");

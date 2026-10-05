@@ -14,6 +14,7 @@
 #include <vector>
 
 namespace pulse::ui { struct MediaPackOffer; }
+namespace pulse::packs { enum class PackId : uint32_t; }
 
 namespace pulse::index { class IndexClient; class NetworkAgentClient; }
 
@@ -130,6 +131,11 @@ public:
         std::wstring version, custom_path, detected_path, root, notice;
         bool installing = false;          // a download is running
         float progress = 0.0f;            // 0..1 while installing
+        // The image pack (现代图像格式): its own card, download and message.
+        bool images_installed = false, images_enabled = true;
+        bool images_installing = false;
+        float images_progress = 0.0f;
+        std::wstring images_version, images_notice;
     };
     const PackState& Packs();
     // Each returns true when thumbnails have to be decoded again.
@@ -142,6 +148,12 @@ public:
     void FillMediaPackOffer(ui::MediaPackOffer& offer);
     bool RemoveMediaPack();
     bool ToggleMediaPack();
+    // The same for the image pack.
+    bool InstallImagePack(HWND notify);
+    bool TakeImagePackResult();
+    void FillImagePackOffer(ui::MediaPackOffer& offer);
+    bool RemoveImagePack();
+    bool ToggleImagePack();
     bool ToggleCustomFfmpeg();
     bool SetCustomFfmpeg(const std::wstring& path);
     bool UseDetectedFfmpeg();
@@ -234,6 +246,12 @@ private:
     bool offer_missing_ = false;   // published, not installed, no own FFmpeg
     void RefreshPacks();
     PackInstaller media_installer_;
+    uint64_t image_offer_checked_ = 0;
+    bool image_offer_missing_ = false;   // published, not installed
+    PackInstaller image_installer_;
+    bool InstallPack(packs::PackId id, HWND notify);
+    bool TakePackResult(packs::PackId id);
+    bool RemovePack(packs::PackId id);
     std::shared_ptr<TaskState> task_state_ = std::make_shared<TaskState>();
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;

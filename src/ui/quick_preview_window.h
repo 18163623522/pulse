@@ -37,6 +37,9 @@ public:
     void SetMediaPackOffer(const MediaPackOffer& offer);
     // A pack was installed: a file it can play now is opened again.
     void OnMediaPackInstalled();
+    // The image preview pack offer on the picture cards, and its install.
+    void SetImagePackOffer(const MediaPackOffer& offer);
+    void OnImagePackInstalled();
     void Close();
     bool visible() const noexcept;
     HWND hwnd() const noexcept { return hwnd_; }
@@ -104,7 +107,8 @@ private:
         std::wstring title, lead, name, tail, get, hint;
         const wchar_t* store_id = nullptr;
         bool picture = false;
-        bool pack = false;   // offer the FFmpeg preview pack above the Store button
+        bool pack = false;   // offer a preview pack above the Store button
+        bool image_pack = false;   // ...the image pack rather than FFmpeg
     };
     void DrawCodecCardText(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
                            const CodecCardText& text, ID2D1SolidColorBrush* brush);
@@ -239,6 +243,8 @@ private:
     uint64_t ffmpeg_serial_ = 0;
     bool ffmpeg_noted_ = false;               // the "FFmpeg" chip note was shown
     MediaPackOffer pack_offer_;
+    MediaPackOffer image_offer_;
+    bool codec_pack_image_ = false;   // codec_pack_rect_ installs the image pack
     std::wstring codec_store_id_;
     ComPtr<IDWriteTextFormat> close_format_;
     ComPtr<IDWriteTextFormat> preview_text_format_;
