@@ -11,6 +11,7 @@
 #include "notebook_document.h"
 #include "font_raster.h"
 #include "image_frames.h"
+#include "media_pack.h"
 #include "metafile_raster.h"
 #include "office_doc_model.h"
 #include "office_sketch.h"
@@ -1091,6 +1092,44 @@ static DecodeStep RunRtf(const DecodeRequest& q, DecodeResult& r) {
     return RtfInto(q, r) ? DecodeStep::Made : DecodeStep::Next;
 }
 
+// Videos Windows cannot decode itself - HEVC / AV1 / VP9 without the Store
+// extensions, FLV, RMVB, MPEG-TS, ProRes - once the FFmpeg preview pack is
+// installed. The native path still runs first and is unchanged: Explorer's
+// thumbnail cache and provider answer every file they can, and ffmpeg only
+// starts for the ones they could not. Without the pack accepts() is false and
+// the table behaves exactly as before.
+static bool AcceptsMediaPack(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline && preview::IsMediaPackVideoExtension(q.extension) &&
+        preview::MediaPackAvailable();
+}
+static DecodeStep RunMediaPack(const DecodeRequest& q, DecodeResult& r) {
+    const bool shell_known = IsKnownShellPreview(q.extension);
+    uint32_t known_duration_ms = 0;
+    if (shell_known || HasShellThumbnailHandler(q.extension)) {
+        if (ShellThumbnailInto(q, r)) return MadeBitmap(r);
+        ClearBitmap(r);
+        // Windows may still know the playing time (the property handler
+        // parses the container even when no decoder is installed).
+        known_duration_ms = preview::ReadMediaDurationMs(q.path);
+    }
+    preview::MediaFrame frame;
+    if (preview::MediaPackFrame(q.path, q.cap, q.grid, known_duration_ms, frame)) {
+        r.pixels = std::move(frame.pixels);
+        r.width = frame.width; r.height = frame.height; r.stride = frame.stride;
+        r.source_width = frame.source_width; r.source_height = frame.source_height;
+        r.duration_ms = frame.duration_ms ? frame.duration_ms : known_duration_ms;
+        return MadeBitmap(r);
+    }
+    // What the shell-preview entry would have reported for a video, without
+    // asking the provider a second time; other containers keep the old
+    // content-sniff / text / hex chain.
+    if (shell_known) {
+        r.error = L"provider-failed";
+        return DecodeStep::Failed;
+    }
+    return DecodeStep::Next;
+}
+
 // Folders and the formats Windows previews well (Office, video, CAD).
 static bool AcceptsShellPreview(const DecodeRequest& q) {
     return q.is_directory || IsKnownShellPreview(q.extension);
@@ -1420,6 +1459,7 @@ static const preview::DecoderEntry kDecoders[] = {
     { "psd",             AcceptsPsd,          RunPsd },
     { "font",            AcceptsFont,         RunFont },
     { "rtf",             AcceptsRtf,          RunRtf },
+    { "media-pack",      AcceptsMediaPack,    RunMediaPack },
     { "shell-preview",   AcceptsShellPreview, RunShellPreview },
     { "content-sniff",   AcceptsSniffed,      RunSniffed },
     { "shell-thumbnail", AcceptsShellHandler, RunShellHandler },

@@ -109,6 +109,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             errorText = std::move(result.error);
             response.kind = result.kind;
             response.frame_count = result.frame_count;
+            const uint32_t decoded_duration_ms = result.duration_ms;
             response.frame_delay_ms = result.frame_delay_ms;
             response.loop_count = result.loop_count;
             response.flags |= (static_cast<uint32_t>(result.text_encoding) <<
@@ -129,7 +130,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             // Grid thumbnails mark videos with their playing time.
             if (made && response.kind == ipc::PreviewContentKind::Bitmap &&
                 (req.flags & ipc::kPreviewRequestFlagGrid) != 0 && !IsOfflinePlaceholder(req.attrs))
-                response.duration_ms = ReadMediaDurationMs(path);
+                response.duration_ms = decoded_duration_ms ? decoded_duration_ms : ReadMediaDurationMs(path);
         }
         response.width=w; response.height=h; response.stride=stride;
         response.source_width = source_w;

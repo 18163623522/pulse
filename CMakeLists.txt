@@ -551,6 +551,7 @@ endif()
 
 # ---- Pulse.Preview.exe: thumbnail decoding / Shell provider isolation ----
 add_executable(pulse_preview WIN32 src/preview_host/main.cpp src/preview_host/video_codec.cpp
+    src/preview_host/media_pack.cpp
     src/preview_host/folder_thumbnail.cpp
     src/preview_host/svg_raster.cpp src/preview_host/metafile_raster.cpp
     src/preview_host/pdf_raster.cpp src/preview_host/dwg_thumb.cpp
@@ -589,6 +590,13 @@ add_executable(pulse_preview_test src/bench/preview_test_main.cpp src/bench/prev
     src/preview_host/content_sniff.cpp)
 target_link_libraries(pulse_preview_test PRIVATE ole32 gdi32 gdiplus shlwapi shell32 advapi32 uuid)
 add_dependencies(pulse_preview_test pulse_preview)
+
+# FFmpeg preview pack: parsing units and an end-to-end run through
+# Pulse.Preview.exe. A real FFmpeg stands in for the pack (PULSE_TEST_FFMPEG or
+# C:\ffmpeg\bin); without one the integration part is skipped.
+add_executable(pulse_media_pack_test src/bench/media_pack_test.cpp src/preview_host/media_pack.cpp)
+target_link_libraries(pulse_media_pack_test PRIVATE pulse_runtime_log ole32 shell32 advapi32)
+add_dependencies(pulse_media_pack_test pulse_preview)
 
 add_executable(pulse_preview_regression_test src/bench/preview_regression_test.cpp
     src/preview_host/doc_payload.cpp src/preview_host/archive_listing.cpp src/preview_host/udf_listing.cpp)

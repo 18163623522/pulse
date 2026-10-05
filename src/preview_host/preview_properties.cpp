@@ -1,6 +1,7 @@
 #include "preview_properties.h"
 #include "preview_file_utils.h"
 #include "video_codec.h"
+#include "media_pack.h"
 #include "../common/preview_extensions.h"
 #include <windows.h>
 #include <shobjidl.h>
@@ -54,7 +55,7 @@ bool ReadUintProperty(IPropertyStore* store, REFPROPERTYKEY key, uint32_t& value
 
 namespace pulse::preview {
 
-std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
+static std::vector<PreviewPropertyValue> ReadShellProperties(const std::wstring& path) {
     std::vector<PreviewPropertyValue> out;
     const std::wstring shell_path = ShellPath(path);
     ComPtr<IPropertyStore> store;
@@ -89,6 +90,23 @@ std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
         AddProperty(store.Get(), PKEY_Title, L"标题", out);
         AddProperty(store.Get(), PKEY_Author, L"作者", out);
         AddProperty(store.Get(), PKEY_Document_PageCount, L"页数", out);
+    }
+    return out;
+}
+
+std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
+    std::vector<PreviewPropertyValue> out = ReadShellProperties(path);
+    // FFmpeg preview pack: fill in what Windows could not read - containers
+    // it has no property handler for (FLV, RMVB, APE...) or streams it has no
+    // decoder for. Files the shell describes fully never start ffprobe.
+    constexpr size_t kMaxRows = 6;
+    const std::wstring extension = ExtensionOf(path);
+    const bool video = IsMediaPackVideoExtension(extension);
+    if (out.size() < kMaxRows && (video || IsMediaPackAudioExtension(extension)) && MediaPackAvailable()) {
+        auto has = [&](const wchar_t* label) {
+            return std::any_of(out.begin(), out.end(), [&](const PreviewPropertyValue& row) { return row.label == label; });
+        };
+        if (!has(L"时长") || (video && !has(L"编码格式"))) MediaPackProperties(path, out, kMaxRows);
     }
     return out;
 }
