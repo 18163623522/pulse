@@ -94,8 +94,22 @@ void SettingsController::RefreshPacks() {
     PackState state;
     state.notice = std::move(packs_.notice);
     state.images_notice = std::move(packs_.images_notice);
+    state.raw_notice = std::move(packs_.raw_notice);
+    const auto raw = packs::ReadInstalledPack(PackId::Raw);
+    state.raw_installed = raw.present;
+    state.raw_version = raw.version;
+    state.archive_notice = std::move(packs_.archive_notice);
+    const auto archive = packs::ReadInstalledPack(PackId::Archives);
+    state.archive_installed = archive.present;
+    state.archive_version = archive.version;
     state.root = packs::PacksRoot();
     const packs::PackSettings settings = packs::LoadPackSettings();
+    state.raw_enabled = settings.enabled[static_cast<uint32_t>(PackId::Raw)];
+    state.archive_enabled = settings.enabled[static_cast<uint32_t>(PackId::Archives)];
+    state.media_available = kMediaPackRelease.file_count != 0;
+    state.images_available = kImagePackRelease.file_count != 0;
+    state.raw_available = kRawPackRelease.file_count != 0;
+    state.archive_available = kArchivePackRelease.file_count != 0;
     state.enabled = settings.enabled[static_cast<uint32_t>(PackId::Media)];
     state.images_enabled = settings.enabled[static_cast<uint32_t>(PackId::Images)];
     state.use_custom = settings.use_custom_ffmpeg;
@@ -107,11 +121,12 @@ void SettingsController::RefreshPacks() {
     const packs::InstalledPack images = packs::ReadInstalledPack(PackId::Images);
     state.images_installed = images.present;
     state.images_version = images.version;
-    state.installed = (media.present ? 1u : 0u) + (images.present ? 1u : 0u);
+    state.installed = (media.present ? 1u : 0u) + (images.present ? 1u : 0u) + (raw.present ? 1u : 0u) + (archive.present ? 1u : 0u);
     // What the preview host would use, ignoring the on/off switch so the card
     // can still say which FFmpeg it is switching.
-    if (state.use_custom && packs::IsRegularFile(state.custom_path)) state.ffmpeg = 2;
-    else if (media.present) state.ffmpeg = 1;
+    if (state.use_custom) {
+        if (IsFfmpegExe(state.custom_path)) state.ffmpeg = 2;
+    } else if (media.present) state.ffmpeg = 1;
     wchar_t found[MAX_PATH]{};
     if (SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, found, nullptr) && IsFfmpegExe(found))
         state.detected_path = found;
@@ -166,37 +181,50 @@ const SettingsController::PackState& SettingsController::Packs() {
     packs_.progress = packs_.installing ? media_installer_.progress() : 0.0f;
     packs_.images_installing = image_installer_.running();
     packs_.images_progress = packs_.images_installing ? image_installer_.progress() : 0.0f;
+    packs_.raw_installing = raw_installer_.running();
+    packs_.raw_progress = packs_.raw_installing ? raw_installer_.progress() : 0.0f;
+    packs_.archive_installing = archive_installer_.running();
+    packs_.archive_progress = packs_.archive_installing ? archive_installer_.progress() : 0.0f;
     return packs_;
+}
+
+PackInstaller& SettingsController::InstallerFor(packs::PackId id) {
+    switch (id) {
+    case packs::PackId::Images: return image_installer_;
+    case packs::PackId::Raw: return raw_installer_;
+    case packs::PackId::Archives: return archive_installer_;
+    default: return media_installer_;
+    }
+}
+
+std::wstring& SettingsController::NoticeFor(packs::PackId id) {
+    switch (id) {
+    case packs::PackId::Images: return packs_.images_notice;
+    case packs::PackId::Raw: return packs_.raw_notice;
+    case packs::PackId::Archives: return packs_.archive_notice;
+    default: return packs_.notice;
+    }
 }
 
 bool SettingsController::InstallPack(packs::PackId id, HWND notify) {
     const bool images = id == packs::PackId::Images;
-    PackInstaller& installer = images ? image_installer_ : media_installer_;
-    const PackRelease& release = images ? kImagePackRelease : kMediaPackRelease;
-    std::wstring& notice = images ? packs_.images_notice : packs_.notice;
+    PackInstaller& installer = InstallerFor(id);
+    const PackRelease& release = id == packs::PackId::Raw ? kRawPackRelease :
+        id == packs::PackId::Archives ? kArchivePackRelease : images ? kImagePackRelease : kMediaPackRelease;
+    std::wstring& notice = NoticeFor(id);
     if (installer.running()) {
         installer.Cancel();
         return false;
     }
     notice.clear();
     if (!release.file_count) {
-        // Nothing is published for this build yet; point at what works today.
-        notice = images
-            ? l10n::Pick(L"“现代图像格式”预览增强包的下载即将提供。",
-                         L"The modern image formats pack is coming soon.")
-            : l10n::Pick(
-                L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
-                L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
+        // No release is advertised until its downloadable files are published.
+        notice = l10n::Pick(L"此预览增强包尚未发布下载。",
+                            L"This preview pack has not been published for download.");
         return false;
     }
     if (!installer.Start(release, notify)) return false;
-    if (images) {
-        packs_.images_installing = true;
-        packs_.images_progress = 0.0f;
-    } else {
-        packs_.installing = true;
-        packs_.progress = 0.0f;
-    }
+    Packs();
     return false;
 }
 
@@ -204,16 +232,26 @@ bool SettingsController::InstallMediaPack(HWND notify) { return InstallPack(pack
 bool SettingsController::InstallImagePack(HWND notify) { return InstallPack(packs::PackId::Images, notify); }
 
 bool SettingsController::TakePackResult(packs::PackId id) {
-    const bool images = id == packs::PackId::Images;
     DWORD error = ERROR_SUCCESS;
-    const PackInstallOutcome outcome = (images ? image_installer_ : media_installer_).TakeOutcome(error);
+    const PackInstallOutcome outcome = InstallerFor(id).TakeOutcome(error);
     if (outcome == PackInstallOutcome::None) return false;
     RefreshPacks();
-    std::wstring& notice = images ? packs_.images_notice : packs_.notice;
+    std::wstring& notice = NoticeFor(id);
     switch (outcome) {
-    case PackInstallOutcome::Installed:
+    case PackInstallOutcome::Installed: {
         notice.clear();
+        if (id == packs::PackId::Media) {
+            auto settings = packs::LoadPackSettings();
+            settings.use_custom_ffmpeg = false;
+            settings.enabled[0] = true;
+            if (!packs::SavePackSettings(settings)) {
+                notice = l10n::Pick(L"增强包已安装，但未能保存来源设置。请关闭“使用已有 FFmpeg”以切换到增强包。",
+                    L"Pack installed, but the source setting could not be saved. Turn off Use existing FFmpeg to select the pack.");
+            }
+            RefreshPacks();
+        }
         return true;
+    }
     case PackInstallOutcome::Cancelled:
         notice = l10n::Pick(L"已取消下载。", L"Download cancelled.");
         break;
@@ -222,7 +260,7 @@ bool SettingsController::TakePackResult(packs::PackId id) {
             notice = l10n::Pick(L"下载的文件校验失败，已丢弃。请稍后重试。",
                                 L"The download did not pass verification and was discarded. Try again later.");
         } else if (error == ERROR_SHARING_VIOLATION) {
-            notice = images
+            notice = id != packs::PackId::Media
                 ? l10n::Pick(L"旧版本的文件正在使用，请稍后再试一次。",
                              L"Files of the old version are in use. Try again in a moment.")
                 : l10n::Pick(L"旧版本的文件正在使用。关闭正在播放的视频后再试一次。",
@@ -243,20 +281,19 @@ bool SettingsController::TakeMediaPackResult() { return TakePackResult(packs::Pa
 bool SettingsController::TakeImagePackResult() { return TakePackResult(packs::PackId::Images); }
 
 bool SettingsController::RemovePack(packs::PackId id) {
-    const bool images = id == packs::PackId::Images;
-    if ((images ? image_installer_ : media_installer_).running()) return false;
+    if (InstallerFor(id).running()) return false;
     const std::wstring root = packs::PacksRoot();
     if (root.empty()) return false;
     const bool removed = RemovePackTree(root + L"\\" + packs::PackKey(id));
     std::wstring message;
     if (!removed) {
-        message = images
+        message = id != packs::PackId::Media
             ? l10n::Pick(L"有文件正在使用，未能全部删除。请稍后再试一次。",
                          L"Some files are in use and were not removed. Try again in a moment.")
             : l10n::Pick(L"有文件正在使用，未能全部删除。关闭正在播放的视频后再试一次。",
                          L"Some files are in use and were not removed. Close playing videos and try again.");
     }
-    (images ? packs_.images_notice : packs_.notice) = std::move(message);
+    NoticeFor(id) = std::move(message);
     RefreshPacks();
     return true;
 }
@@ -287,14 +324,38 @@ bool SettingsController::ToggleImagePack() {
     return saved;
 }
 
+bool SettingsController::InstallRawPack(HWND notify) { return InstallPack(packs::PackId::Raw, notify); }
+bool SettingsController::TakeRawPackResult() { return TakePackResult(packs::PackId::Raw); }
+bool SettingsController::RemoveRawPack() { return RemovePack(packs::PackId::Raw); }
+bool SettingsController::ToggleRawPack() {
+    constexpr uint32_t index = static_cast<uint32_t>(packs::PackId::Raw);
+    const bool saved = UpdatePackSettings([](packs::PackSettings& s) { s.enabled[index] = !s.enabled[index]; });
+    packs_.raw_notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
+bool SettingsController::InstallArchivePack(HWND notify) { return InstallPack(packs::PackId::Archives, notify); }
+bool SettingsController::TakeArchivePackResult() { return TakePackResult(packs::PackId::Archives); }
+bool SettingsController::RemoveArchivePack() { return RemovePack(packs::PackId::Archives); }
+bool SettingsController::ToggleArchivePack() {
+    constexpr uint32_t index = static_cast<uint32_t>(packs::PackId::Archives);
+    const bool saved = UpdatePackSettings([](packs::PackSettings& s) { s.enabled[index] = !s.enabled[index]; });
+    packs_.archive_notice.clear();
+    RefreshPacks();
+    return saved;
+}
+
 bool SettingsController::ToggleCustomFfmpeg() {
     const std::wstring detected = Packs().detected_path;
     const bool saved = UpdatePackSettings([&](packs::PackSettings& s) {
         s.use_custom_ffmpeg = !s.use_custom_ffmpeg;
+        if (s.use_custom_ffmpeg) s.enabled[0] = true;
         if (s.use_custom_ffmpeg && !packs::IsRegularFile(s.custom_ffmpeg) && !detected.empty())
             s.custom_ffmpeg = detected;
     });
-    packs_.notice.clear();
+    packs_.notice = saved ? std::wstring{} : l10n::Pick(L"无法保存 FFmpeg 来源设置，请重试。",
+        L"Could not save the FFmpeg source setting. Try again.");
     RefreshPacks();
     return saved;
 }
@@ -307,8 +368,10 @@ bool SettingsController::SetCustomFfmpeg(const std::wstring& path) {
     const bool saved = UpdatePackSettings([&](packs::PackSettings& s) {
         s.custom_ffmpeg = path;
         s.use_custom_ffmpeg = true;
+        s.enabled[0] = true;
     });
-    packs_.notice.clear();
+    packs_.notice = saved ? std::wstring{} : l10n::Pick(L"无法保存 FFmpeg 来源设置，请重试。",
+        L"Could not save the FFmpeg source setting. Try again.");
     RefreshPacks();
     return saved;
 }

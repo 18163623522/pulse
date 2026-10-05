@@ -270,12 +270,23 @@ inline const wchar_t* ImagesDesc() { return l10n::Pick(
     L"不依赖微软商店扩展，直接预览 iPhone 照片（HEIC）、AVIF、JPEG XL 和 HDR / EXR 图像，文件夹里也能看到缩略图。",
     L"Preview iPhone photos (HEIC), AVIF, JPEG XL and HDR / EXR pictures without the Microsoft Store extensions, thumbnails included."); }
 inline const wchar_t* ImagesMeta() { return l10n::Pick(L"libheif · dav1d · libjxl · OpenEXR · LGPL-3.0 / BSD", L"libheif · dav1d · libjxl · OpenEXR · LGPL-3.0 / BSD"); }
-inline const wchar_t* Install() { return l10n::Pick(L"安装", L"Install"); }
+inline const wchar_t* RawTitle() { return l10n::Pick(L"RAW 相机照片", L"RAW camera photos"); }
+inline const wchar_t* RawDesc() { return l10n::Pick(
+    L"通过 LibRaw 为 CR2、CR3、NEF、ARW、DNG、RAF 等相机原片提供预览和缩略图。",
+    L"Use LibRaw for previews and thumbnails of camera originals such as CR2, CR3, NEF, ARW, DNG and RAF."); }
+inline const wchar_t* RawMeta() { return L"LibRaw · LGPL-2.1 / CDDL"; }
+inline const wchar_t* Archive() { return l10n::Pick(L"压缩包", L"Archives"); }
+inline const wchar_t* ArchiveTitle() { return l10n::Pick(L"7-Zip 压缩包增强", L"7-Zip archives"); }
+inline const wchar_t* ArchiveDesc() { return l10n::Pick(
+    L"通过 7-Zip 扩展压缩包内容列表预览，支持 7z、RAR、ISO、CAB、WIM 等格式。",
+    L"Use 7-Zip to preview archive contents, including 7z, RAR, ISO, CAB and WIM."); }
+inline const wchar_t* ArchiveMeta() { return L"7-Zip · LGPL-2.1 + unRAR"; }
+inline const wchar_t* Install() { return l10n::Pick(L"下载并安装", L"Download and install"); }
 inline const wchar_t* Remove() { return l10n::Pick(L"卸载", L"Remove"); }
-inline const wchar_t* CustomTitle() { return l10n::Pick(L"使用已安装的 FFmpeg", L"Use an installed FFmpeg"); }
+inline const wchar_t* CustomTitle() { return l10n::Pick(L"使用已有 FFmpeg", L"Use existing FFmpeg"); }
 inline const wchar_t* CustomDesc() { return l10n::Pick(
-    L"改用这台电脑上已有的 FFmpeg 代替预览增强包（不做完整性校验）",
-    L"Use an FFmpeg already on this PC instead of the pack (not verified)"); }
+    L"可选来源；关闭后使用 Pulse 管理的增强包",
+    L"Optional source; turn off to use the Pulse-managed pack"); }
 inline const wchar_t* NoCustom() { return l10n::Pick(L"尚未选择 ffmpeg.exe", L"No ffmpeg.exe chosen"); }
 inline const wchar_t* Browse() { return l10n::Pick(L"浏览…", L"Browse…"); }
 inline const wchar_t* UseDetected() { return l10n::Pick(L"使用检测到的", L"Use found"); }
@@ -302,20 +313,44 @@ inline std::wstring Found(const std::wstring& path) {
     return std::wstring(l10n::Pick(L"检测到：", L"Found: ")) + path;
 }
 struct Badge { std::wstring text; fluent::BadgeKind kind = fluent::BadgeKind::Neutral; };
+inline const wchar_t* PrimaryLabel(bool available, bool installed, bool installing) {
+    if (installing) return l10n::Pick(L"取消", L"Cancel");
+    if (installed) return Remove();
+    return available ? Install() : l10n::Pick(L"尚未发布", L"Not published");
+}
+inline bool PrimaryEnabled(bool available, bool installed, bool installing) {
+    return available || installed || installing;
+}
+inline Badge PackBadge(bool available, bool installed, bool installing, bool enabled, const std::wstring& version) {
+    if (installing) return {l10n::Pick(L"正在安装", L"Installing"), fluent::BadgeKind::Accent};
+    if (!installed) return {l10n::Pick(available ? L"未安装" : L"尚未发布", available ? L"Not installed" : L"Not published"), fluent::BadgeKind::Neutral};
+    if (!enabled) return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
+    std::wstring text = l10n::Pick(L"已安装", L"Installed");
+    if (!version.empty()) text += L" " + version;
+    return {text, fluent::BadgeKind::Success};
+}
 inline Badge MediaBadge(const WindowViewModel& vm) {
-    if (vm.settings_pack_ffmpeg && !vm.settings_pack_ffmpeg_enabled)
-        return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
-    if (vm.settings_pack_ffmpeg == 2) return {l10n::Pick(L"使用你的 FFmpeg", L"Using your FFmpeg"), fluent::BadgeKind::Accent};
-    if (vm.settings_pack_ffmpeg == 1) {
-        std::wstring text = l10n::Pick(L"已安装", L"Installed");
-        if (!vm.settings_pack_version.empty()) text += L" " + vm.settings_pack_version;
-        return {text, fluent::BadgeKind::Success};
-    }
-    return {l10n::Pick(L"未安装", L"Not installed"), fluent::BadgeKind::Neutral};
+    return PackBadge(vm.settings_pack_media_available, vm.settings_pack_media_installed,
+        vm.settings_pack_installing, true, vm.settings_pack_version);
 }
 inline const wchar_t* Primary(const WindowViewModel& vm) {
-    if (vm.settings_pack_installing) return l10n::Pick(L"取消", L"Cancel");
-    return vm.settings_pack_media_installed ? Remove() : Install();
+    return PrimaryLabel(vm.settings_pack_media_available, vm.settings_pack_media_installed, vm.settings_pack_installing);
+}
+inline const wchar_t* SourceTitle() { return l10n::Pick(L"启用媒体增强", L"Enable media enhancement"); }
+inline const wchar_t* SourceStatus(const WindowViewModel& vm) {
+    if (!vm.settings_pack_use_custom && !vm.settings_pack_media_installed)
+        return vm.settings_pack_media_available
+            ? l10n::Pick(L"尚无可用媒体来源；可下载增强包或选择已有 FFmpeg", L"No media source available; download a pack or choose existing FFmpeg")
+            : l10n::Pick(L"尚无可用媒体来源；可选择已有 FFmpeg", L"No media source available; choose existing FFmpeg");
+    if (vm.settings_pack_use_custom && vm.settings_pack_ffmpeg != 2)
+        return l10n::Pick(L"当前来源：已有 FFmpeg（路径无效，请重新选择）", L"Source: existing FFmpeg (invalid path; choose again)");
+    if (!vm.settings_pack_ffmpeg_enabled)
+        return vm.settings_pack_use_custom
+            ? l10n::Pick(L"已停用；所选来源：已有 FFmpeg", L"Off; selected source: existing FFmpeg")
+            : l10n::Pick(L"已停用；所选来源：Pulse 管理的增强包", L"Off; selected source: Pulse-managed pack");
+    if (vm.settings_pack_use_custom)
+        return l10n::Pick(L"当前来源：已有 FFmpeg（用户文件，不做完整性校验）", L"Source: existing FFmpeg (user file, not verified)");
+    return l10n::Pick(L"当前来源：Pulse 管理的增强包", L"Source: Pulse-managed pack");
 }
 // "正在下载… 42%" while a pack downloads.
 inline std::wstring Downloading(float progress) {
@@ -325,21 +360,33 @@ inline std::wstring Downloading(float progress) {
 }
 inline std::wstring Downloading(const WindowViewModel& vm) { return Downloading(vm.settings_pack_progress); }
 inline Badge ImagesBadge(const WindowViewModel& vm) {
-    if (!vm.settings_pack_images_installed) return {l10n::Pick(L"未安装", L"Not installed"), fluent::BadgeKind::Neutral};
-    if (!vm.settings_pack_images_enabled) return {l10n::Pick(L"已停用", L"Off"), fluent::BadgeKind::Neutral};
-    std::wstring text = l10n::Pick(L"已安装", L"Installed");
-    if (!vm.settings_pack_images_version.empty()) text += L" " + vm.settings_pack_images_version;
-    return {text, fluent::BadgeKind::Success};
+    return PackBadge(vm.settings_pack_images_available, vm.settings_pack_images_installed,
+        vm.settings_pack_images_installing, vm.settings_pack_images_enabled, vm.settings_pack_images_version);
 }
 inline const wchar_t* ImagesPrimary(const WindowViewModel& vm) {
-    if (vm.settings_pack_images_installing) return l10n::Pick(L"取消", L"Cancel");
-    return vm.settings_pack_images_installed ? Remove() : Install();
+    return PrimaryLabel(vm.settings_pack_images_available, vm.settings_pack_images_installed, vm.settings_pack_images_installing);
 }
 inline bool ShowsImagesEnable(const WindowViewModel& vm) { return vm.settings_pack_images_installed; }
+inline Badge RawBadge(const WindowViewModel& vm) {
+    return PackBadge(vm.settings_pack_raw_available, vm.settings_pack_raw_installed,
+        vm.settings_pack_raw_installing, vm.settings_pack_raw_enabled, vm.settings_pack_raw_version);
+}
+inline const wchar_t* RawPrimary(const WindowViewModel& vm) {
+    return PrimaryLabel(vm.settings_pack_raw_available, vm.settings_pack_raw_installed, vm.settings_pack_raw_installing);
+}
+inline bool ShowsRawEnable(const WindowViewModel& vm) { return vm.settings_pack_raw_installed; }
+inline Badge ArchiveBadge(const WindowViewModel& vm) {
+    return PackBadge(vm.settings_pack_archive_available, vm.settings_pack_archive_installed,
+        vm.settings_pack_archive_installing, vm.settings_pack_archive_enabled, vm.settings_pack_archive_version);
+}
+inline const wchar_t* ArchivePrimary(const WindowViewModel& vm) {
+    return PrimaryLabel(vm.settings_pack_archive_available, vm.settings_pack_archive_installed, vm.settings_pack_archive_installing);
+}
+inline bool ShowsArchiveEnable(const WindowViewModel& vm) { return vm.settings_pack_archive_installed; }
 // Switch and path rows exist once there is something to switch.
-inline bool ShowsEnable(const WindowViewModel& vm) { return vm.settings_pack_ffmpeg != 0; }
-inline bool ShowsPath(const WindowViewModel& vm) {
-    return vm.settings_pack_use_custom || !vm.settings_pack_detected_path.empty();
+inline bool ShowsEnable(const WindowViewModel& vm) { return vm.settings_pack_ffmpeg != 0 || vm.settings_pack_use_custom; }
+inline bool ShowsPath(const WindowViewModel&) {
+    return true;
 }
 inline bool ShowsDetect(const WindowViewModel& vm) {
     return !vm.settings_pack_detected_path.empty() &&
@@ -394,8 +441,32 @@ float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float sc
     // Media: the FFmpeg pack card.
     y += 24*scale; l.pack_media_section = row(28);
     card_layout({&l.pack_card, &l.pack_badge, &l.pack_enable, &l.pack_primary, &l.pack_notice, &l.pack_desc_h},
-                pack_text::ShowsEnable(vm), pack_text::MediaBadge(vm), pack_text::MediaDesc(),
+                false, pack_text::MediaBadge(vm), pack_text::MediaDesc(),
                 pack_text::Primary(vm), vm.settings_pack_notice);
+
+    // Optional existing FFmpeg is adjacent to the independently installable media pack.
+    y += 12*scale;
+    const float source_top = y;
+    const bool source_switch = pack_text::ShowsEnable(vm);
+    const float source_text_width = right - left - (source_switch ? 88 : 32)*scale;
+    l.pack_source_status = row((caption_h(pack_text::SourceStatus(vm), source_text_width) + 47*scale) / scale);
+    if (source_switch) {
+        const float cy = (l.pack_source_status.top + l.pack_source_status.bottom) * 0.5f;
+        l.pack_enable = D2D1::RectF(inner_right - 42*scale, cy - 16*scale, inner_right, cy + 16*scale);
+    }
+    l.pack_custom_row = row((caption_h(pack_text::CustomDesc(), right - left - 126*scale) + 47*scale) / scale);
+    if (pack_text::ShowsPath(vm)) {
+        l.pack_path_row = row(pack_text::ShowsDetect(vm) ? 110.0f : 90.0f);
+        const float browse_w = button_w(pack_text::Browse());
+        const float button_top = l.pack_path_row.bottom - 44*scale;
+        l.pack_browse = D2D1::RectF(inner_right - browse_w, button_top, inner_right, button_top + 32*scale);
+        if (pack_text::ShowsDetect(vm)) {
+            const float detect_w = button_w(pack_text::UseDetected());
+            l.pack_detect = D2D1::RectF(l.pack_browse.left - 8*scale - detect_w, button_top,
+                                        l.pack_browse.left - 8*scale, button_top + 32*scale);
+        }
+    }
+    l.pack_source_group = D2D1::RectF(left, source_top, right, y);
 
     // Images: the image pack card.
     y += 24*scale; l.pack_images_section = row(28);
@@ -404,22 +475,24 @@ float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float sc
                 pack_text::ShowsImagesEnable(vm), pack_text::ImagesBadge(vm), pack_text::ImagesDesc(),
                 pack_text::ImagesPrimary(vm), vm.settings_pack_images_notice);
 
-    // Advanced: an FFmpeg of the user's own, and what uninstall does.
+    // RAW camera photos card.
+    y += 12*scale;
+    card_layout({&l.pack_raw_card, &l.pack_raw_badge, &l.pack_raw_enable, &l.pack_raw_primary,
+                 &l.pack_raw_notice, &l.pack_raw_desc_h},
+                pack_text::ShowsRawEnable(vm), pack_text::RawBadge(vm), pack_text::RawDesc(),
+                pack_text::RawPrimary(vm), vm.settings_pack_raw_notice);
+
+    // 7-Zip archive contents card.
+    y += 24*scale; l.pack_archive_section = row(28);
+    card_layout({&l.pack_archive_card, &l.pack_archive_badge, &l.pack_archive_enable, &l.pack_archive_primary,
+                 &l.pack_archive_notice, &l.pack_archive_desc_h},
+                pack_text::ShowsArchiveEnable(vm), pack_text::ArchiveBadge(vm), pack_text::ArchiveDesc(),
+                pack_text::ArchivePrimary(vm), vm.settings_pack_archive_notice);
+
+    // Uninstall preferences remain separate from the media source.
     y += 24*scale; l.pack_advanced_section = row(28);
     const float group_top = y;
-    l.pack_custom_row = row(64);
-    if (pack_text::ShowsPath(vm)) {
-        l.pack_path_row = row(vm.settings_pack_detected_path.empty() ? 52.0f : 66.0f);
-        const float browse_w = button_w(pack_text::Browse());
-        const float button_top = l.pack_path_row.top + (l.pack_path_row.bottom - l.pack_path_row.top - 32*scale) / 2;
-        l.pack_browse = D2D1::RectF(inner_right - browse_w, button_top, inner_right, button_top + 32*scale);
-        if (pack_text::ShowsDetect(vm)) {
-            const float detect_w = button_w(pack_text::UseDetected());
-            l.pack_detect = D2D1::RectF(l.pack_browse.left - 8*scale - detect_w, button_top,
-                                        l.pack_browse.left - 8*scale, button_top + 32*scale);
-        }
-    }
-    l.pack_remove_row = row(64);
+    l.pack_remove_row = row((caption_h(pack_text::RemoveDesc(), right - left - 126*scale) + 47*scale) / scale);
     l.pack_group = D2D1::RectF(left, group_top, right, y);
     y += 12*scale;
     l.pack_note = D2D1::RectF(left, y, right, y + caption_h(pack_text::Note(), right - left - 8*scale) + 4*scale);

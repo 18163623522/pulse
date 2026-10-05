@@ -40,6 +40,7 @@ public:
     // The image preview pack offer on the picture cards, and its install.
     void SetImagePackOffer(const MediaPackOffer& offer);
     void OnImagePackInstalled();
+    void OnExtraPackInstalled();
     void Close();
     bool visible() const noexcept;
     HWND hwnd() const noexcept { return hwnd_; }

@@ -570,6 +570,8 @@ enum class PackAction : int {
     ImagesInstall,      // image pack: download and install (or cancel)
     ImagesRemove,       // image pack: uninstall
     ImagesEnable,       // image pack: on / off
+    RawInstall, RawRemove, RawEnable,
+    ArchiveInstall, ArchiveRemove, ArchiveEnable,
 };
 
 struct WindowViewModel {
@@ -678,6 +680,7 @@ struct WindowViewModel {
     bool settings_pack_use_custom = false;
     bool settings_pack_remove_on_uninstall = true;
     uint32_t settings_pack_installed = 0;       // installed pack count
+    bool settings_pack_media_available = false, settings_pack_images_available = false;
     bool settings_pack_media_installed = false; // the FFmpeg pack itself is on disk
     uint64_t settings_pack_bytes = 0;           // disk use of the packs folder
     std::wstring settings_pack_version;         // installed FFmpeg pack version
@@ -693,6 +696,14 @@ struct WindowViewModel {
     float settings_pack_images_progress = 0.0f;
     std::wstring settings_pack_images_version;
     std::wstring settings_pack_images_notice;
+    bool settings_pack_raw_installed = false, settings_pack_raw_enabled = true, settings_pack_raw_installing = false;
+    bool settings_pack_raw_available = false;
+    float settings_pack_raw_progress = 0.0f;
+    std::wstring settings_pack_raw_version, settings_pack_raw_notice;
+    bool settings_pack_archive_installed = false, settings_pack_archive_enabled = true, settings_pack_archive_installing = false;
+    bool settings_pack_archive_available = false;
+    float settings_pack_archive_progress = 0.0f;
+    std::wstring settings_pack_archive_version, settings_pack_archive_notice;
     int settings_theme = 0; // system, light, dark
     bool settings_open = false;
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates

@@ -56,6 +56,13 @@ std::vector<PreviewFormatGroup> BuildGroups() {
         L"Animation has preview limits; TIFF supports pages; SVG uses system rendering; unsupported content shows source; HEIC / AVIF need system extensions",
         std::move(images));
 
+    std::vector<std::wstring> raw;
+    AppendTable(raw, f::kRaw);
+    add(L"RAW 相机照片", L"Camera RAW",
+        L"优先使用系统解码；RAW 增强包补充支持，列表只读取内嵌预览，兼容性取决于相机型号",
+        L"System codecs first; the RAW pack adds support. Grid previews use embedded images; compatibility depends on the camera model",
+        std::move(raw));
+
     std::vector<std::wstring> documents;
     AppendTable(documents, f::kPdfRaster);
     for (const wchar_t* extension : {L"md", L"docx", L"epub", L"ipynb"}) documents.emplace_back(extension);
@@ -90,7 +97,7 @@ std::vector<PreviewFormatGroup> BuildGroups() {
 
     std::vector<std::wstring> archives;
     AppendTable(archives, f::kArchive);
-    add(L"压缩包与镜像", L"Archives & images", L"浏览已加载条目；压缩流按实际内容识别；UDF 无法完整读取时明确提示",
+    add(L"压缩包与镜像", L"Archives & images", L"内置读取优先；7-Zip 增强包补充格式支持；加密、分卷缺失或读取不完整时明确提示",
         L"Browse loaded entries; compressed streams are detected by content; incomplete UDF previews are explicitly marked",
         std::move(archives));
 

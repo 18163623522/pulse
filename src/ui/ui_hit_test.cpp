@@ -533,12 +533,26 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                     {&lay.pack_images_primary, vm.settings_pack_images_installed && !vm.settings_pack_images_installing
                                                    ? PackAction::ImagesRemove : PackAction::ImagesInstall},
                     {&lay.pack_images_enable, PackAction::ImagesEnable},
+                    {&lay.pack_raw_primary, vm.settings_pack_raw_installed && !vm.settings_pack_raw_installing
+                        ? PackAction::RawRemove : PackAction::RawInstall},
+                    {&lay.pack_raw_enable, PackAction::RawEnable},
+                    {&lay.pack_archive_primary, vm.settings_pack_archive_installed && !vm.settings_pack_archive_installing
+                        ? PackAction::ArchiveRemove : PackAction::ArchiveInstall},
+                    {&lay.pack_archive_enable, PackAction::ArchiveEnable},
                     {&lay.pack_detect, PackAction::UseDetected},
                     {&lay.pack_browse, PackAction::Browse},
                     {&lay.pack_custom_row, PackAction::UseCustom},
                     {&lay.pack_remove_row, PackAction::RemoveOnUninstall},
                 };
                 for (const auto& [bounds, action] : pack_targets) {
+                    if (action == PackAction::Install && !pack_text::PrimaryEnabled(vm.settings_pack_media_available,
+                        vm.settings_pack_media_installed, vm.settings_pack_installing)) continue;
+                    if (action == PackAction::ImagesInstall && !pack_text::PrimaryEnabled(vm.settings_pack_images_available,
+                        vm.settings_pack_images_installed, vm.settings_pack_images_installing)) continue;
+                    if (action == PackAction::RawInstall && !pack_text::PrimaryEnabled(vm.settings_pack_raw_available,
+                        vm.settings_pack_raw_installed, vm.settings_pack_raw_installing)) continue;
+                    if (action == PackAction::ArchiveInstall && !pack_text::PrimaryEnabled(vm.settings_pack_archive_available,
+                        vm.settings_pack_archive_installed, vm.settings_pack_archive_installing)) continue;
                     if (bounds->right > bounds->left && ContainsPt(*bounds, x, y)) {
                         r.region = HitTestResult::SettingsPackAction;
                         r.index = static_cast<int>(action);

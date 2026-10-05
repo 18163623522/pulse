@@ -12,6 +12,8 @@
 #include "font_raster.h"
 #include "image_frames.h"
 #include "image_pack.h"
+#include "raw_pack.h"
+#include "archive_pack.h"
 #include "media_pack.h"
 #include "metafile_raster.h"
 #include "office_doc_model.h"
@@ -1002,6 +1004,40 @@ static DecodeStep RunImagePack(const DecodeRequest& q, DecodeResult& r) {
     return DecodeStep::Failed;
 }
 
+// RAW grid requests never develop sensor data; only an explicit Quick Look
+// request may use the slower full decoder when there is no embedded preview.
+static bool AcceptsRawPack(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline &&
+        preview::IsFamilyExtension(preview::PreviewFamily::Raw, q.extension);
+}
+static DecodeStep RunRawPack(const DecodeRequest& q, DecodeResult& r) {
+    ClearBitmap(r);
+    if (DecodeImage(q.path, q.request.attrs, q.cap, r.pixels, r.width, r.height, r.stride,
+                    r.source_width, r.source_height)) return MadeBitmap(r);
+    ClearBitmap(r);
+    preview::ImagePackFrame frame;
+    const bool full = !q.grid && (q.request.flags & ipc::kPreviewRequestFlagRichText);
+    if (preview::RawPackDecode(q.path, q.cap, full, frame)) {
+        r.pixels = std::move(frame.pixels);
+        r.width = frame.width; r.height = frame.height; r.stride = frame.stride;
+        r.source_width = frame.source_width; r.source_height = frame.source_height;
+        return MadeBitmap(r);
+    }
+    // An installed shell provider may still have a cached embedded preview.
+    return DecodeStep::Next;
+}
+
+static bool MakeEnhancedArchiveListing(const std::wstring& path, std::wstring& text,
+                                       uint32_t& bytes_read, std::wstring* error, bool allow_pack) {
+    if (preview::MakeArchiveListing(path, text, bytes_read, error)) return true;
+    // Preserve deliberate native limits/cancellation rather than retrying work.
+    if (error && (error->find(L"cancel") != std::wstring::npos ||
+                  error->find(L"limit") != std::wstring::npos)) return false;
+    // Archive contents are useful in the preview pane, not in grid thumbnails.
+    if (!allow_pack || !preview::ArchivePackAvailable()) return false;
+    return preview::ArchivePackListing(path, text, bytes_read, error);
+}
+
 // SVG through Direct2D; markup that does not render is shown as text.
 static bool AcceptsVector(const DecodeRequest& q) {
     return preview::IsVectorExtension(q.extension);
@@ -1070,7 +1106,7 @@ static bool AcceptsArchive(const DecodeRequest& q) {
     return !q.is_directory && preview::IsArchiveExtension(q.extension) && !q.offline;
 }
 static DecodeStep RunArchive(const DecodeRequest& q, DecodeResult& r) {
-    if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, &r.error))
+    if (!MakeEnhancedArchiveListing(q.path, r.text, r.bytes_read, &r.error, !q.grid))
         return DecodeStep::Next;
     r.kind = ipc::PreviewContentKind::Archive;
     return DecodeStep::Made;
@@ -1291,7 +1327,7 @@ static DecodeStep RunSniffed(const DecodeRequest& q, DecodeResult& r) {
         if (!made && r.error == L"pdf-thumbnail-budget") return DecodeStep::Failed;
         break;
     case preview::SniffedFormat::Archive:
-        if (!preview::MakeArchiveListing(q.path, r.text, r.bytes_read, &r.error)) {
+        if (!MakeEnhancedArchiveListing(q.path, r.text, r.bytes_read, &r.error, !q.grid)) {
             r.text.clear();
             r.bytes_read = 0;
             return DecodeStep::Next;
@@ -1498,6 +1534,7 @@ static const preview::DecoderEntry kDecoders[] = {
     { "shortcut",        AcceptsShortcut,     RunShortcut },
     { "image",           AcceptsImage,        RunImage },
     { "image-pack",      AcceptsImagePack,    RunImagePack },
+    { "raw-pack",        AcceptsRawPack,      RunRawPack },
     { "svg",             AcceptsVector,       RunVector },
     { "metafile",        AcceptsMetaFile,     RunMetaFile },
     { "pdf",             AcceptsPdf,          RunPdf },

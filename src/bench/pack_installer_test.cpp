@@ -2,9 +2,12 @@
 // with an in-memory "server" in place of WinHTTP.
 #include "../app/pack_installer.h"
 #include "../common/utf8_file.h"
+#include "../common/preview_packs.h"
 #include <bcrypt.h>
 #include <compressapi.h>
 #include <cstdio>
+#include <cwchar>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -119,11 +122,110 @@ std::wstring MakeRoot() {
     CreateDirectoryW(root.c_str(), nullptr);
     return root;
 }
+
+int OnlineInstall(const wchar_t* requested_root) {
+    // Only own a newly created directory, never delete or reuse caller data.
+    wchar_t absolute[32768]{};
+    const DWORD length = GetFullPathNameW(requested_root, 32768, absolute, nullptr);
+    if (!length || length >= 32768 || !CreateDirectoryW(absolute, nullptr)) {
+        std::printf("FAIL: online root must be a new directory with an existing parent (error %lu)\n", GetLastError());
+        return 1;
+    }
+    const std::wstring root = absolute;
+    const PackRelease* releases[] = {&kMediaPackRelease, &kImagePackRelease, &kRawPackRelease, &kArchivePackRelease};
+    const packs::PackId ids[] = {packs::PackId::Media, packs::PackId::Images, packs::PackId::Raw, packs::PackId::Archives};
+    for (size_t p = 0; p < std::size(releases); ++p) {
+        const auto& release = *releases[p];
+        std::printf("Installing online: %ls %ls\n", release.key, release.version);
+        std::fflush(stdout);
+        PackInstallProgress progress;
+        DWORD error = 0;
+        // Use the real WinHTTP update transport and its mirror fallback.
+        const auto outcome = InstallPack(release, root, progress, error);
+        Check(outcome == PackInstallOutcome::Installed && error == ERROR_SUCCESS, "online pack installs");
+        if (outcome != PackInstallOutcome::Installed) {
+            std::printf("FAIL: online install %ls returned error %lu\n", release.key, error);
+            break;
+        }
+        const std::wstring base = root + L"\\" + release.key;
+        const std::wstring directory = base + L"\\" + release.version;
+        uint64_t total = 0;
+        for (size_t i = 0; i < release.file_count; ++i) {
+            const auto& file = release.files[i];
+            const auto bytes = ReadAll(directory + L"\\" + file.name);
+            const bool valid = bytes.size() == file.size && Sha256Hex(bytes) == file.sha256;
+            Check(valid, "online installed file size and SHA-256 match catalog");
+            if (!valid) std::printf("FAIL: installed file %ls/%ls\n", release.key, file.name);
+            total += file.packed_size;
+        }
+        std::wstring manifest;
+        const std::wstring expected = L"{\"version\":\"" + std::wstring(release.version) +
+            L"\",\"dir\":\"" + release.version + L"\"}\n";
+        Check(ReadUtf8File(base + L"\\installed.json", manifest) && manifest == expected,
+              "online manifest identifies the installed version and directory");
+        const DWORD tool_attributes = GetFileAttributesW((directory + L"\\" + packs::PackMainTool(ids[p])).c_str());
+        Check(tool_attributes != INVALID_FILE_ATTRIBUTES && !(tool_attributes & FILE_ATTRIBUTE_DIRECTORY),
+              "online main tool exists as a file");
+        Check(!Exists(directory + L".partial"), "online install leaves no staging directory");
+        Check(total > 0 && progress.total.load() == total && progress.received.load() == total,
+              "online compressed byte count matches catalog");
+        if (g_failed) break;
+    }
+    if (g_failed) Check(RemovePackTree(root) && !Exists(root), "failed online test directory cleaned up");
+    else std::printf("Verified online packs retained at %ls\n", root.c_str());
+    std::printf("pack_installer_test online: %d passed, %d failed\n", g_passed, g_failed);
+    return g_failed ? 1 : 0;
+}
 } // namespace
 
-int main() {
+int wmain(int argc, wchar_t** argv) {
+    if (argc == 3 && !wcscmp(argv[1], L"--online")) return OnlineInstall(argv[2]);
+    if (argc != 1) {
+        std::printf("Usage: pulse_pack_installer_test [--online <new-isolated-root>]\n");
+        return 2;
+    }
+    const auto defaults = packs::ParsePackSettings(L"{}");
+    Check(defaults.enabled[2] && defaults.enabled[3], "new packs default enabled for existing settings");
+    auto settings = defaults;
+    settings.enabled[2] = false;
+    settings.enabled[3] = false;
+    const auto roundtrip = packs::ParsePackSettings(packs::SerializePackSettings(settings));
+    Check(!roundtrip.enabled[2] && !roundtrip.enabled[3] && roundtrip.enabled[0] && roundtrip.enabled[1],
+          "RAW and archive enable states round-trip independently");
+    Check(std::wstring(packs::PackMainTool(packs::PackId::Raw)) == L"pulse-rawpack.exe" &&
+          std::wstring(packs::PackMainTool(packs::PackId::Archives)) == L"7z.exe", "new pack tool routing");
+
     const std::wstring root = MakeRoot();
     const std::wstring base = root + L"\\ffmpeg";
+
+    {   // A chosen local source never silently falls back to an installed pack.
+        wchar_t previous[32768]{};
+        GetEnvironmentVariableW(L"LOCALAPPDATA", previous, 32768);
+        const std::wstring profile = root + L"\\source-profile";
+        SetEnvironmentVariableW(L"LOCALAPPDATA", profile.c_str());
+        const std::wstring managed = packs::PacksRoot() + L"\\ffmpeg";
+        Check(packs::CreateDirectoryChain(managed + L"\\test"), "isolated source profile created");
+        WriteUtf8FileAtomic(managed + L"\\test\\ffmpeg.exe", L"fixture");
+        WriteUtf8FileAtomic(managed + L"\\installed.json", L"{\"version\":\"test\",\"dir\":\"test\"}");
+        packs::PackSettings source;
+        Check(packs::SavePackSettings(source) && packs::ResolvePackUncached(packs::PackId::Media).source == packs::ToolSource::Pack,
+              "downloaded pack works without a local FFmpeg");
+        source.custom_ffmpeg = profile + L"\\ffmpeg.exe";
+        WriteUtf8FileAtomic(source.custom_ffmpeg, L"local fixture");
+        source.use_custom_ffmpeg = true;
+        Check(packs::SavePackSettings(source) && packs::ResolvePackUncached(packs::PackId::Media).source == packs::ToolSource::Custom,
+              "explicit local FFmpeg has priority");
+        DeleteFileW(source.custom_ffmpeg.c_str());
+        Check(packs::ResolvePackUncached(packs::PackId::Media).source == packs::ToolSource::None,
+              "missing local source does not silently select managed pack");
+        source.use_custom_ffmpeg = false;
+        Check(packs::SavePackSettings(source) && packs::ResolvePackUncached(packs::PackId::Media).source == packs::ToolSource::Pack,
+              "turning off local source restores downloaded pack");
+        source.enabled[0] = false;
+        Check(packs::SavePackSettings(source) && packs::ResolvePackUncached(packs::PackId::Media).source == packs::ToolSource::None,
+              "media enable switch applies to selected source");
+        SetEnvironmentVariableW(L"LOCALAPPDATA", previous[0] ? previous : nullptr);
+    }
 
     {   // Happy path, with an older version and a stale staging folder around.
         Fixture fx(L"7.1.1");
@@ -156,6 +258,42 @@ int main() {
         Check(InstallPack(fx.release, root, again, error, fx.Reader(65536)) == PackInstallOutcome::Installed,
               "same version reinstalls");
         Check(ReadAll(base + L"\\7.1.1\\ffmpeg.exe") == fx.plain[0], "reinstalled file intact");
+    }
+
+    {   // Shared release assets can be prefixed without changing installed names.
+        Fixture fx(L"renamed");
+        fx.files[0].download_name = L"media-ffmpeg.exe.lzms";
+        const std::wstring original = L"https://packs.example.invalid/v/ffmpeg.exe.lzms";
+        fx.server[L"https://packs.example.invalid/v/media-ffmpeg.exe.lzms"] = fx.server.at(original);
+        fx.server.erase(original);
+        PackInstallProgress progress;
+        DWORD error = 0;
+        const std::wstring isolated = root + L"\\renamed-test";
+        Check(InstallPack(fx.release, isolated, progress, error, fx.Reader()) == PackInstallOutcome::Installed,
+              "renamed release asset downloads successfully");
+        const std::wstring target = isolated + L"\\ffmpeg\\renamed";
+        Check(ReadAll(target + L"\\ffmpeg.exe") == fx.plain[0] && !Exists(target + L"\\media-ffmpeg.exe.lzms"),
+              "renamed asset preserves original installed filename and bytes");
+        Check(fx.files[1].download_name == nullptr && ReadAll(target + L"\\SOURCE.txt") == fx.plain[1],
+              "legacy five-field catalog entry still uses original download name");
+    }
+
+    {   // Invalid asset names must fail before making a network request or directory.
+        Fixture fx(L"invalid-asset");
+        const wchar_t* invalid[] = {L"", L".", L"..", L"../evil.lzms", L"..\\evil.lzms",
+                                    L"https://evil.invalid/a", L"file?query", L"file#fragment", L"file%2fevil", L"C:evil"};
+        bool requested = false;
+        const UpdateResponseReader reader = [&](std::wstring_view, uint64_t, const std::atomic<bool>&,
+            const std::function<bool(const void*, DWORD)>&, UpdateError&, DWORD&) { requested = true; return false; };
+        for (const wchar_t* name : invalid) {
+            fx.files[0].download_name = name;
+            PackInstallProgress progress;
+            DWORD error = 0;
+            Check(InstallPack(fx.release, root, progress, error, reader) == PackInstallOutcome::Failed &&
+                  error == ERROR_INVALID_PARAMETER, "unsafe download asset name rejected");
+        }
+        Check(!requested && !Exists(base + L"\\invalid-asset.partial") && !Exists(base + L"\\invalid-asset"),
+              "unsafe assets cause no downloads or staging changes");
     }
 
     {   // A tampered download is discarded and the installed pack stays.

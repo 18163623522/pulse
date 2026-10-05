@@ -124,6 +124,7 @@ public:
     // the page is shown; actions write packs.json and re-read at once.
     struct PackState {
         uint32_t ffmpeg = 0;              // packs::ToolSource: 0 none, 1 pack, 2 own FFmpeg
+        bool media_available = false, images_available = false;
         bool media_installed = false;     // the FFmpeg pack itself is on disk
         bool enabled = true, use_custom = false, remove_on_uninstall = true;
         uint32_t installed = 0;
@@ -136,6 +137,14 @@ public:
         bool images_installing = false;
         float images_progress = 0.0f;
         std::wstring images_version, images_notice;
+        bool raw_installed = false, raw_enabled = true, raw_installing = false;
+        bool raw_available = false;
+        float raw_progress = 0.0f;
+        std::wstring raw_version, raw_notice;
+        bool archive_installed = false, archive_enabled = true, archive_installing = false;
+        bool archive_available = false;
+        float archive_progress = 0.0f;
+        std::wstring archive_version, archive_notice;
     };
     const PackState& Packs();
     // Each returns true when thumbnails have to be decoded again.
@@ -154,6 +163,14 @@ public:
     void FillImagePackOffer(ui::MediaPackOffer& offer);
     bool RemoveImagePack();
     bool ToggleImagePack();
+    bool InstallRawPack(HWND notify);
+    bool TakeRawPackResult();
+    bool RemoveRawPack();
+    bool ToggleRawPack();
+    bool InstallArchivePack(HWND notify);
+    bool TakeArchivePackResult();
+    bool RemoveArchivePack();
+    bool ToggleArchivePack();
     bool ToggleCustomFfmpeg();
     bool SetCustomFfmpeg(const std::wstring& path);
     bool UseDetectedFfmpeg();
@@ -249,6 +266,9 @@ private:
     uint64_t image_offer_checked_ = 0;
     bool image_offer_missing_ = false;   // published, not installed
     PackInstaller image_installer_;
+    PackInstaller raw_installer_, archive_installer_;
+    PackInstaller& InstallerFor(packs::PackId id);
+    std::wstring& NoticeFor(packs::PackId id);
     bool InstallPack(packs::PackId id, HWND notify);
     bool TakePackResult(packs::PackId id);
     bool RemovePack(packs::PackId id);

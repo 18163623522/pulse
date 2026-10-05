@@ -80,6 +80,7 @@ bool ValidRelease(const PackRelease& release) {
     if (!url || release.base_url[url - 1] != L'/') return false;
     for (size_t i = 0; i < release.file_count; ++i) {
         const PackFile& f = release.files[i];
+        if (f.download_name && !SafeComponent(f.download_name)) return false;
         if (!SafeComponent(f.name) || !f.sha256 || wcslen(f.sha256) != 64 || !f.packed_sha256 ||
             wcslen(f.packed_sha256) != 64 || !f.size || f.size > kMaximumPackFileBytes ||
             !f.packed_size || f.packed_size > kMaximumPackFileBytes) return false;
@@ -141,7 +142,8 @@ DWORD InstallFile(const PackRelease& release, const PackFile& file, const std::w
             progress.received.store(done_before + received, std::memory_order_relaxed);
             return true;
         };
-        const std::wstring url = std::wstring(release.base_url) + file.name + L".lzms";
+        const std::wstring download_name = file.download_name ? file.download_name : std::wstring(file.name) + L".lzms";
+        const std::wstring url = std::wstring(release.base_url) + download_name;
         UpdateError category = UpdateError::None;
         DWORD error = ERROR_SUCCESS;
         if (!ReadUpdateWithFallback(url, file.packed_size, progress.cancelled, reset, consume, category, error, read))

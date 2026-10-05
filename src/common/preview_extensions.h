@@ -28,6 +28,7 @@ enum class PreviewFamily {
     Archive,
     Psd,
     Font,
+    Raw,
 };
 
 namespace formats {
@@ -45,6 +46,11 @@ inline constexpr std::wstring_view kText[] = {
 inline constexpr std::wstring_view kImage[] = {
     L".jpg", L".jpeg", L".png", L".gif", L".bmp", L".tif", L".tiff",
     L".webp", L".heic", L".heif", L".hif", L".avif", L".ico", L".cur"
+};
+
+inline constexpr std::wstring_view kRaw[] = {
+    L".cr2", L".cr3", L".crw", L".nef", L".nrw", L".arw", L".sr2",
+    L".dng", L".raf", L".orf", L".rw2", L".pef", L".srw", L".rwl"
 };
 
 // Vector documents WIC cannot decode but Direct2D renders natively. They are
@@ -67,7 +73,8 @@ inline constexpr std::wstring_view kPdfRaster[] = { L".pdf", L".ai" };
 // directory, the rest through the system's libarchive (archiveint.dll).
 inline constexpr std::wstring_view kArchive[] = {
     L".zip", L".7z", L".rar", L".tar", L".tgz", L".gz", L".txz", L".xz",
-    L".tbz2", L".bz2", L".cab", L".iso"
+    L".tbz2", L".bz2", L".cab", L".iso", L".wim", L".swm", L".esd", L".001", L".zipx", L".vhd", L".vhdx", L".vdi", L".vmdk",
+    L".dmg", L".xar", L".rpm", L".deb", L".arj", L".lzh", L".lha", L".chm", L".udf"
 };
 
 // Photoshop documents: the merged composite (or the embedded JPEG thumbnail)
@@ -93,6 +100,7 @@ inline constexpr PreviewFormat kPreviewFormats[] = {
     { PreviewFamily::PdfRaster, formats::kPdfRaster, std::size(formats::kPdfRaster) },
     { PreviewFamily::Archive,   formats::kArchive,   std::size(formats::kArchive) },
     { PreviewFamily::Psd,       formats::kPsd,       std::size(formats::kPsd) },
+    { PreviewFamily::Raw,       formats::kRaw,       std::size(formats::kRaw) },
     { PreviewFamily::Font,      formats::kFont,      std::size(formats::kFont) },
 };
 

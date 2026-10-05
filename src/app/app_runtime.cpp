@@ -421,6 +421,8 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 // Cached in the controller: the disk is read at most every 2 s.
                 const auto& packs = s.settings.Packs();
                 vm.settings_pack_ffmpeg = packs.ffmpeg;
+                vm.settings_pack_media_available = packs.media_available;
+                vm.settings_pack_images_available = packs.images_available;
                 vm.settings_pack_media_installed = packs.media_installed;
                 vm.settings_pack_ffmpeg_enabled = packs.enabled;
                 vm.settings_pack_use_custom = packs.use_custom;
@@ -440,12 +442,28 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 vm.settings_pack_images_notice = packs.images_notice;
                 vm.settings_pack_images_installing = packs.images_installing;
                 vm.settings_pack_images_progress = packs.images_progress;
+                vm.settings_pack_raw_available = packs.raw_available;
+                vm.settings_pack_raw_installed = packs.raw_installed;
+                vm.settings_pack_raw_enabled = packs.raw_enabled;
+                vm.settings_pack_raw_version = packs.raw_version;
+                vm.settings_pack_raw_notice = packs.raw_notice;
+                vm.settings_pack_raw_installing = packs.raw_installing;
+                vm.settings_pack_raw_progress = packs.raw_progress;
+                vm.settings_pack_archive_available = packs.archive_available;
+                vm.settings_pack_archive_installed = packs.archive_installed;
+                vm.settings_pack_archive_enabled = packs.archive_enabled;
+                vm.settings_pack_archive_version = packs.archive_version;
+                vm.settings_pack_archive_notice = packs.archive_notice;
+                vm.settings_pack_archive_installing = packs.archive_installing;
+                vm.settings_pack_archive_progress = packs.archive_progress;
                 // Screenshot fixture for the downloading state (percent).
                 wchar_t fake_progress[8]{};
                 if (s.shot.active && s.isolatedTest &&
                     GetEnvironmentVariableW(L"PULSE_TEST_PACK_PROGRESS", fake_progress, ARRAYSIZE(fake_progress))) {
-                    vm.settings_pack_installing = vm.settings_pack_images_installing = true;
+                    vm.settings_pack_installing = vm.settings_pack_images_installing =
+                        vm.settings_pack_raw_installing = vm.settings_pack_archive_installing = true;
                     vm.settings_pack_progress = vm.settings_pack_images_progress =
+                        vm.settings_pack_raw_progress = vm.settings_pack_archive_progress =
                         static_cast<float>(_wtoi(fake_progress)) / 100.0f;
                 }
             }
@@ -1806,6 +1824,12 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     if (s.settings.TakeImagePackResult()) {
         s.renderer.EvictThumbnails();
         s.quickPreview.OnImagePackInstalled();
+    }
+    const bool raw_installed = s.settings.TakeRawPackResult();
+    const bool archive_installed = s.settings.TakeArchivePackResult();
+    if (raw_installed || archive_installed) {
+        s.renderer.EvictThumbnails();
+        s.quickPreview.OnExtraPackInstalled();
     }
     if (s.quickPreview.visible()) {
         ui::MediaPackOffer offer, image_offer;

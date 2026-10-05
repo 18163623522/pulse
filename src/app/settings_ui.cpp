@@ -134,6 +134,12 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
         case ui::PackAction::ImagesInstall: refresh=s.settings.InstallImagePack(s.hwnd);break;
         case ui::PackAction::ImagesRemove: refresh=s.settings.RemoveImagePack();break;
         case ui::PackAction::ImagesEnable: refresh=s.settings.ToggleImagePack();break;
+        case ui::PackAction::RawInstall: refresh=s.settings.InstallRawPack(s.hwnd);break;
+        case ui::PackAction::RawRemove: refresh=s.settings.RemoveRawPack();break;
+        case ui::PackAction::RawEnable: refresh=s.settings.ToggleRawPack();break;
+        case ui::PackAction::ArchiveInstall: refresh=s.settings.InstallArchivePack(s.hwnd);break;
+        case ui::PackAction::ArchiveRemove: refresh=s.settings.RemoveArchivePack();break;
+        case ui::PackAction::ArchiveEnable: refresh=s.settings.ToggleArchivePack();break;
         case ui::PackAction::UseCustom: refresh=s.settings.ToggleCustomFfmpeg();break;
         case ui::PackAction::UseDetected: refresh=s.settings.UseDetectedFfmpeg();break;
         case ui::PackAction::RemoveOnUninstall: s.settings.ToggleRemovePacksOnUninstall();break;

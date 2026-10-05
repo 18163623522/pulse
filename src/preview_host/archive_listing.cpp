@@ -17,15 +17,7 @@ namespace {
 
 // ---- common model ---------------------------------------------------------
 
-struct Entry {
-    std::wstring path;
-    uint64_t size = 0;
-    uint64_t packed = 0;
-    SYSTEMTIME time{};
-    bool has_time = false;
-    bool dir = false;
-    bool encrypted = false;
-};
+using Entry = ArchiveListingEntry;
 
 struct Listing {
     std::wstring format;
@@ -600,6 +592,15 @@ bool MakeArchiveListing(const std::wstring& path, std::wstring& text,
     }
     text = Serialize(listing);
     return true;
+}
+
+std::wstring SerializeArchiveEntries(std::vector<ArchiveListingEntry> entries,
+    const std::wstring& format, bool incomplete) {
+    Listing listing;
+    listing.entries = std::move(entries);
+    listing.format = format;
+    listing.incomplete = incomplete;
+    return Serialize(listing);
 }
 
 } // namespace pulse::preview

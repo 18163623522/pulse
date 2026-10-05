@@ -25,14 +25,16 @@
 
 namespace pulse::packs {
 
-enum class PackId : uint32_t { Media = 0, Images = 1 };
-inline constexpr uint32_t kPackCount = 2;
+enum class PackId : uint32_t { Media = 0, Images = 1, Raw = 2, Archives = 3 };
+inline constexpr uint32_t kPackCount = 4;
 
 // Directory and settings-key name of a pack.
 inline const wchar_t* PackKey(PackId id) {
     switch (id) {
     case PackId::Media: return L"ffmpeg";
     case PackId::Images: return L"images";
+    case PackId::Raw: return L"raw";
+    case PackId::Archives: return L"archive";
     }
     return L"";
 }
@@ -42,6 +44,8 @@ inline const wchar_t* PackMainTool(PackId id) {
     switch (id) {
     case PackId::Media: return L"ffmpeg.exe";
     case PackId::Images: return L"pulse-imgpack.exe";
+    case PackId::Raw: return L"pulse-rawpack.exe";
+    case PackId::Archives: return L"7z.exe";
     }
     return L"";
 }
@@ -72,7 +76,7 @@ inline std::wstring DirectoryOf(const std::wstring& file) {
 
 // User settings (packs.json). Flat keys so json_utils' key search is exact.
 struct PackSettings {
-    bool enabled[kPackCount] = {true, true};
+    bool enabled[kPackCount] = {true, true, true, true};
     // Media pack only: an FFmpeg the user already has (path to ffmpeg.exe).
     bool use_custom_ffmpeg = false;
     std::wstring custom_ffmpeg;
@@ -85,6 +89,8 @@ inline PackSettings ParsePackSettings(const std::wstring& text) {
     PackSettings s;
     s.enabled[0] = json::ExtractBool(text, L"ffmpeg_enabled", true);
     s.enabled[1] = json::ExtractBool(text, L"images_enabled", true);
+    s.enabled[2] = json::ExtractBool(text, L"raw_enabled", true);
+    s.enabled[3] = json::ExtractBool(text, L"archive_enabled", true);
     s.use_custom_ffmpeg = json::ExtractBool(text, L"ffmpeg_use_custom", false);
     s.custom_ffmpeg = json::ExtractString(text, L"ffmpeg_custom_path");
     s.auto_update = json::ExtractBool(text, L"auto_update", true);
@@ -100,6 +106,8 @@ inline std::wstring SerializePackSettings(const PackSettings& s) {
     std::wstring out = L"{\n";
     out += L"  \"ffmpeg_enabled\": " + std::wstring(s.enabled[0] ? L"true" : L"false") + L",\n";
     out += L"  \"images_enabled\": " + std::wstring(s.enabled[1] ? L"true" : L"false") + L",\n";
+    out += L"  \"raw_enabled\": " + std::wstring(s.enabled[2] ? L"true" : L"false") + L",\n";
+    out += L"  \"archive_enabled\": " + std::wstring(s.enabled[3] ? L"true" : L"false") + L",\n";
     out += L"  \"ffmpeg_use_custom\": " + std::wstring(s.use_custom_ffmpeg ? L"true" : L"false") + L",\n";
     out += L"  \"ffmpeg_custom_path\": \"" + path + L"\",\n";
     out += L"  \"auto_update\": " + std::wstring(s.auto_update ? L"true" : L"false") + L",\n";
@@ -171,9 +179,12 @@ inline ResolvedPack ResolvePackUncached(PackId id) {
     ResolvedPack out;
     const PackSettings settings = LoadPackSettings();
     if (!settings.enabled[static_cast<uint32_t>(id)]) return out;
-    if (id == PackId::Media && settings.use_custom_ffmpeg && IsRegularFile(settings.custom_ffmpeg)) {
-        out.source = ToolSource::Custom;
-        out.directory = DirectoryOf(settings.custom_ffmpeg);
+    if (id == PackId::Media && settings.use_custom_ffmpeg) {
+        if (IsRegularFile(settings.custom_ffmpeg)) {
+            out.source = ToolSource::Custom;
+            out.directory = DirectoryOf(settings.custom_ffmpeg);
+        }
+        // An explicitly chosen source must not silently change if its file moves.
         return out;
     }
     const InstalledPack pack = ReadInstalledPack(id);

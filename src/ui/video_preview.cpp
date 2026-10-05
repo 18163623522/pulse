@@ -162,6 +162,9 @@ bool MissingVideoDecoder(const std::wstring& path, CodecInfo& info) {
 } // namespace
 
 struct VideoPreview::Shared {
+    HANDLE wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    ~Shared() { if (wake) CloseHandle(wake); }
+    void Wake() { if (wake) SetEvent(wake); }
     std::mutex mutex;
     State snapshot;
     std::atomic<bool> stop{false};
@@ -231,6 +234,7 @@ LRESULT CALLBACK VideoPreview::VideoProc(HWND hwnd, UINT message, WPARAM wparam,
     }
     if (message == WM_NCDESTROY && holder) {
         (*holder)->stop.store(true);
+        (*holder)->Wake();
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         delete holder;
     }
@@ -281,7 +285,7 @@ void VideoPreview::Open(HWND owner, const std::wstring& path) {
 }
 
 void VideoPreview::Reset() {
-    if (state_) state_->stop.store(true);
+    if (state_) { state_->stop.store(true); state_->Wake(); }
     if (child_) {
         ShowWindow(child_, SW_HIDE);
         // Retire the render target only after MFPlay has released it. The child
@@ -301,6 +305,7 @@ void VideoPreview::Layout(const RECT& bounds, bool visible, int corner_radius) {
     SetWindowPos(child_, nullptr, bounds.left, bounds.top, width, height,
         SWP_NOACTIVATE | SWP_NOZORDER | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     if (width != region_size_.cx || height != region_size_.cy || corner_radius != region_radius_) {
+        if (state_) state_->Wake();
         region_size_ = SIZE{width, height};
         region_radius_ = corner_radius;
         // The window owns the region after SetWindowRgn.
@@ -325,6 +330,7 @@ VideoPreview::State VideoPreview::Snapshot() const {
 }
 void VideoPreview::Play(bool playing) {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     state_->playing = playing;
     state_->snapshot.playing = playing;
@@ -337,6 +343,7 @@ void VideoPreview::Play(bool playing) {
 }
 void VideoPreview::Seek(double fraction) {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     if (!state_->snapshot.can_seek || state_->snapshot.duration <= 0) return;
     state_->seek_fraction = std::clamp(fraction, 0.0, 1.0);
@@ -346,24 +353,28 @@ void VideoPreview::Seek(double fraction) {
 }
 void VideoPreview::SetVolume(float volume) {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     state_->snapshot.volume = std::clamp(volume, 0.0f, 1.0f);
     state_->audio_dirty = true;
 }
 void VideoPreview::SetMuted(bool muted) {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     state_->snapshot.muted = muted;
     state_->audio_dirty = true;
 }
 void VideoPreview::SetRate(float rate) {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     state_->snapshot.rate = std::clamp(rate, 0.25f, 4.0f);
     state_->audio_dirty = true;
 }
 void VideoPreview::Step() {
     if (!state_) return;
+    struct Notify { Shared* state; ~Notify() { state->Wake(); } } notify{state_.get()};
     std::lock_guard lock(state_->mutex);
     if (!state_->snapshot.ready || state_->snapshot.ended) return;
     state_->playing = false;
@@ -607,7 +618,7 @@ bool VideoPreview::RunFfmpeg(const std::shared_ptr<Shared>& state, const std::ws
                              const std::wstring& ffmpeg_exe) {
     FfmpegMediaInfo info;
     const std::wstring media_path = pulse::path::StripExtendedPathPrefix(path);
-    if (state->stop.load() || !ProbeFfmpegMedia(ffmpeg_exe, media_path, info) || state->stop.load()) return false;
+    if (state->stop.load() || !ProbeFfmpegMedia(ffmpeg_exe, media_path, info, &state->stop) || state->stop.load()) return false;
     const bool audio_file = IsAudio(path);
     if (audio_file ? !info.audio : !info.video) return false;
     if (audio_file) info.video = false;   // cover art is drawn by the Quick Look itself
@@ -644,7 +655,7 @@ bool VideoPreview::RunFfmpeg(const std::shared_ptr<Shared>& state, const std::ws
         GetClientRect(GetParent(state->child), &client);
         return SIZE{(std::max)(client.right - client.left, 320L), (std::max)(client.bottom - client.top, 180L)};
     };
-    FfmpegPlayback player(ffmpeg_exe, media_path, info);
+    FfmpegPlayback player(ffmpeg_exe, media_path, info, [state] { state->Wake(); });
     player.SetVolume(volume, muted);
     bool playing = false;
     {
@@ -728,6 +739,8 @@ bool VideoPreview::RunFfmpeg(const std::shared_ptr<Shared>& state, const std::ws
                     player.Start(player.Position(), rate, now_box, want_play);
                     grown_box = {};
                 }
+            } else {
+                grown_box = {};
             }
         }
         if (auto frame = player.Pump()) {
@@ -756,10 +769,18 @@ bool VideoPreview::RunFfmpeg(const std::shared_ptr<Shared>& state, const std::ws
             s.rate = rate;
             if (failed) s.error = HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         }
-        if (failed) break;
+        if (failed) {
+            const std::string diagnostic = player.Diagnostic();
+            OutputDebugStringA(diagnostic.c_str());
+            break;
+        }
         const bool pacing = want_play && !ended;
         resolution.Set(pacing && info.video);
-        Sleep(pacing ? 4 : 15);
+        // Paused/ended playback sleeps until a command, resize or decoded frame.
+        // A pending resize gets one delayed wake to finish its debounce.
+        const DWORD delay = pacing ? 4 : grown_box.cx ? 400 : INFINITE;
+        if (state->wake) WaitForSingleObject(state->wake, delay);
+        else Sleep(100);
     }
     return true;
 }

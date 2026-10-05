@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,7 +32,8 @@ struct FfmpegMediaInfo {
 };
 
 // Runs "ffmpeg -i" once (at most 8 s). False when ffmpeg cannot read the file.
-bool ProbeFfmpegMedia(const std::wstring& ffmpeg, const std::wstring& path, FfmpegMediaInfo& info);
+bool ProbeFfmpegMedia(const std::wstring& ffmpeg, const std::wstring& path, FfmpegMediaInfo& info,
+                      const std::atomic<bool>* stop = nullptr);
 // From ffmpeg's input description; exposed for tests.
 bool ParseFfmpegMediaInfo(std::string_view log, FfmpegMediaInfo& info);
 
@@ -50,7 +52,8 @@ std::wstring FfmpegTempoFilter(float rate);
 
 class FfmpegPlayback {
 public:
-    FfmpegPlayback(std::wstring ffmpeg, std::wstring path, const FfmpegMediaInfo& info);
+    FfmpegPlayback(std::wstring ffmpeg, std::wstring path, const FfmpegMediaInfo& info,
+                   std::function<void()> wake = {});
     FfmpegPlayback(const FfmpegPlayback&) = delete;
     FfmpegPlayback& operator=(const FfmpegPlayback&) = delete;
     ~FfmpegPlayback();
@@ -67,6 +70,7 @@ public:
     int64_t Position();
     bool Ended();
     bool Failed() const noexcept { return failed_; }
+    std::string Diagnostic();
     bool playing() const noexcept { return playing_; }
     float rate() const noexcept { return rate_; }
     bool audio_open() const noexcept { return wave_ != nullptr; }
@@ -77,6 +81,8 @@ private:
     void Stop();
     void ReadVideo();
     void WriteAudio();
+    void CheckDecoderExit(ffmpeg::Process& process);
+    void DrainError(ffmpeg::Process& process);
     int64_t Clock();
     bool AudioDrained();
 
@@ -88,7 +94,8 @@ private:
     int64_t start_ = 0;
     float rate_ = 1.0f;
     bool playing_ = false;
-    bool failed_ = false;
+    std::atomic<bool> failed_{false};
+    std::function<void()> wake_;
     bool first_shown_ = false;
     bool stepped_ = false;
     SIZE frame_size_{};
@@ -103,6 +110,9 @@ private:
     // Video reader.
     std::unique_ptr<ffmpeg::Process> video_;
     std::thread video_reader_;
+    std::thread video_errors_, audio_errors_;
+    std::mutex error_mutex_;
+    std::string diagnostic_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
     std::deque<std::shared_ptr<const FfmpegFrame>> queue_;

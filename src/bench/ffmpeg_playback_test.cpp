@@ -121,14 +121,14 @@ void PureHelpers() {
     Check(!ParseFfmpegMediaInfo("Invalid data found when processing input\n", info), "garbage is no media");
 }
 
-void Integration(const std::wstring& ffmpeg_exe) {
+void Integration(const std::wstring& fixture_exe, const std::wstring& ffmpeg_exe) {
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     const std::wstring dir = std::wstring(tmp) + L"pulse_ffmpeg_playback_" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(dir.c_str(), nullptr);
     const std::wstring video = dir + L"\\clip hevc.mkv";
     const std::wstring audio = dir + L"\\tone.wv";
-    const std::wstring q = ffmpeg::QuoteArgument(ffmpeg_exe);
+    const std::wstring q = ffmpeg::QuoteArgument(fixture_exe);
     const bool made_video = RunWait(q + L" -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=320x240:rate=30:duration=4"
         L" -f lavfi -i sine=frequency=440:duration=4 -c:v libx265 -preset ultrafast -x265-params log-level=none"
         L" -c:a aac -shortest " + ffmpeg::QuoteArgument(video));
@@ -146,7 +146,17 @@ void Integration(const std::wstring& ffmpeg_exe) {
     Check(info.video && info.audio && info.width == 320 && info.height == 240 && Near(info.fps, 30, 0.01),
           "probe streams, size and rate");
     {
-        FfmpegPlayback player(ffmpeg_exe, video, info);
+        FfmpegPlayback broken(ffmpeg_exe, dir + L"\\missing.mkv", info);
+        Check(broken.Start(0, 1.0f, {320, 240}, true), "decoder process starts for invalid input");
+        const ULONGLONG until = GetTickCount64() + 5000;
+        while (!broken.Failed() && GetTickCount64() < until) Sleep(10);
+        Check(broken.Failed() && !broken.Ended(), "decoder failure is not normal EOF");
+        for (int i = 0; i < 100 && broken.Diagnostic().empty(); ++i) Sleep(10);
+        Check(!broken.Diagnostic().empty(), "decoder error text retained");
+    }
+    {
+        std::atomic<unsigned> wakes{0};
+        FfmpegPlayback player(ffmpeg_exe, video, info, [&] { ++wakes; });
         t0 = GetTickCount64();
         Check(player.Start(0, 1.0f, {1920, 1080}, false), "paused start");
         auto first = FirstFrame(player);
@@ -154,6 +164,11 @@ void Integration(const std::wstring& ffmpeg_exe) {
         Check(first && first->width == 320 && first->height == 240 && first->time == 0, "first frame, not enlarged");
         Check(first && first->pixels.size() == 320u * 240 * 4, "BGRA frame bytes");
         Check(PumpFor(player, 300) == 0 && player.Position() == 0, "paused: no frames, position held");
+        Check(wakes.load() > 0, "decoded frames wake the waiting player");
+        Sleep(200);
+        const unsigned idle_wakes = wakes.load();
+        Sleep(200);
+        Check(wakes.load() == idle_wakes, "paused queue stops producing wakeups");
         Check(player.Step(), "step while paused");
         auto stepped = player.Pump();
         Check(stepped && Near(Sec(stepped->time), 1.0 / 30, 0.002), "step shows the next frame");
@@ -255,14 +270,32 @@ void LevelsMath() {
     Check(s[0] == 0.0f && s[1] == 0.0f && s[2] == 0.0f, "silence stays flat");
 }
 
-int main() {
+void ProbeCancellation() {
+    wchar_t self[32768];
+    GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
+    std::atomic<bool> stop{false};
+    std::thread cancel([&] { Sleep(100); stop = true; });
+    FfmpegMediaInfo info;
+    const ULONGLONG start = GetTickCount64();
+    Check(!ProbeFfmpegMedia(self, L"cancel-test", info, &stop), "cancelled probe produces no result");
+    cancel.join();
+    Check(GetTickCount64() - start < 1500, "probe cancels without eight-second timeout");
+}
+
+int main(int argc, char**) {
+    // Deterministic stalled decoder used by ProbeCancellation.
+    if (argc > 1) { Sleep(30000); return 1; }
+    ProbeCancellation();
     PureHelpers();
     LevelsMath();
     std::wstring ffmpeg_exe = Env(L"PULSE_TEST_FFMPEG");
     if (ffmpeg_exe.empty() && GetFileAttributesW(L"C:\\ffmpeg\\bin\\ffmpeg.exe") != INVALID_FILE_ATTRIBUTES)
         ffmpeg_exe = L"C:\\ffmpeg\\bin\\ffmpeg.exe";
     if (ffmpeg_exe.empty()) std::printf("  (no FFmpeg: integration part skipped)\n");
-    else Integration(ffmpeg_exe);
+    else {
+        const std::wstring pack_exe = Env(L"PULSE_TEST_PACK_FFMPEG");
+        Integration(ffmpeg_exe, pack_exe.empty() ? ffmpeg_exe : pack_exe);
+    }
     std::printf("ffmpeg_playback_test: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

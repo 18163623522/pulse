@@ -1,7 +1,7 @@
 #pragma once
 // Downloads, verifies and installs a preview pack on a worker thread.
 //
-// Each pack file is fetched as <name>.lzms (Windows Compression API, LZMS,
+// Each pack file is fetched as download_name or <name>.lzms (Compression API, LZMS,
 // available since Windows 8) through the update transport, so mirrors and
 // cancellation behave like updates. Both the download and the decompressed
 // file have to match the hashes pinned in pack_catalog.h. Files land in

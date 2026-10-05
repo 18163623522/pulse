@@ -43,8 +43,15 @@ bool ParseFfmpegMediaInfo(std::string_view log, FfmpegMediaInfo& info) {
     return info.video || info.audio;
 }
 
-bool ProbeFfmpegMedia(const std::wstring& ffmpeg_exe, const std::wstring& path, FfmpegMediaInfo& info) {
+bool ProbeFfmpegMedia(const std::wstring& ffmpeg_exe, const std::wstring& path, FfmpegMediaInfo& info,
+                      const std::atomic<bool>* stop) {
     info = {};
+    static std::timed_mutex probe_slot;
+    auto cancelled = [&] { return stop && stop->load(); };
+    std::unique_lock<std::timed_mutex> slot(probe_slot, std::defer_lock);
+    while (!slot.try_lock_for(std::chrono::milliseconds(25)))
+        if (cancelled()) return false;
+    if (cancelled()) return false;
     ffmpeg::Process process;
     ffmpeg::LaunchOptions options;
     options.priority = NORMAL_PRIORITY_CLASS;
@@ -58,9 +65,13 @@ bool ProbeFfmpegMedia(const std::wstring& ffmpeg_exe, const std::wstring& path, 
         for (DWORD got; (got = process.ReadErr(buffer, sizeof(buffer))) > 0;)
             if (log.size() < 256 * 1024) log.append(buffer, got);
     });
-    if (!process.Wait(8000)) process.Terminate(ERROR_TIMEOUT);
+    const ULONGLONG deadline = GetTickCount64() + 8000;
+    bool finished = false;
+    while (!cancelled() && GetTickCount64() < deadline)
+        if (process.Wait(25)) { finished = true; break; }
+    if (!finished) process.Terminate(cancelled() ? ERROR_CANCELLED : ERROR_TIMEOUT);
     reader.join();
-    return ParseFfmpegMediaInfo(log, info);
+    return finished && !cancelled() && ParseFfmpegMediaInfo(log, info);
 }
 
 SIZE FfmpegFrameSize(uint32_t width, uint32_t height, SIZE box) {
@@ -121,8 +132,9 @@ struct FfmpegPlayback::Pool {
     }
 };
 
-FfmpegPlayback::FfmpegPlayback(std::wstring ffmpeg, std::wstring path, const FfmpegMediaInfo& info)
-    : ffmpeg_(std::move(ffmpeg)), path_(std::move(path)), info_(info), pool_(std::make_shared<Pool>()) {}
+FfmpegPlayback::FfmpegPlayback(std::wstring ffmpeg, std::wstring path, const FfmpegMediaInfo& info,
+                               std::function<void()> wake)
+    : ffmpeg_(std::move(ffmpeg)), path_(std::move(path)), info_(info), pool_(std::make_shared<Pool>()), wake_(std::move(wake)) {}
 
 FfmpegPlayback::~FfmpegPlayback() { Stop(); }
 
@@ -135,6 +147,8 @@ void FfmpegPlayback::Stop() {
     if (wave_event_) SetEvent(wave_event_);
     if (video_reader_.joinable()) video_reader_.join();
     if (audio_writer_.joinable()) audio_writer_.join();
+    if (video_errors_.joinable()) video_errors_.join();
+    if (audio_errors_.joinable()) audio_errors_.join();
     video_.reset();
     audio_.reset();
     if (wave_) {
@@ -157,6 +171,7 @@ bool FfmpegPlayback::Start(int64_t position, float rate, SIZE box, bool playing)
     Stop();
     stop_.store(false);
     failed_ = false;
+    { std::lock_guard lock(error_mutex_); diagnostic_.clear(); }
     first_shown_ = false;
     stepped_ = false;
     rate_ = std::clamp(rate, 0.25f, 4.0f);
@@ -181,13 +196,15 @@ bool FfmpegPlayback::Start(int64_t position, float rate, SIZE box, bool playing)
         options.priority = NORMAL_PRIORITY_CLASS;
         options.memory_limit = static_cast<SIZE_T>(2048) * 1024 * 1024;
         options.stdout_buffer = 4u << 20;
-        options.discard_stderr = true;
+        options.discard_stderr = false;
         video_ = std::make_unique<ffmpeg::Process>();
         if (video_->Start(ffmpeg_, args, options)) {
             any = true;
+            video_errors_ = std::thread([this] { DrainError(*video_); });
             video_reader_ = std::thread(&FfmpegPlayback::ReadVideo, this);
         } else {
             video_.reset();
+            failed_ = true;
             std::lock_guard lock(queue_mutex_);
             video_eof_ = true;
         }
@@ -217,14 +234,16 @@ bool FfmpegPlayback::Start(int64_t position, float rate, SIZE box, bool playing)
             options.priority = NORMAL_PRIORITY_CLASS;
             options.memory_limit = static_cast<SIZE_T>(512) * 1024 * 1024;
             options.stdout_buffer = 256u * 1024;
-            options.discard_stderr = true;
+            options.discard_stderr = false;
             audio_ = std::make_unique<ffmpeg::Process>();
             if (audio_->Start(ffmpeg_, args, options)) {
                 any = true;
                 for (int i = 0; i < kWaveBuffers; ++i) wave_data_[i].resize(kWaveBufferBytes);
+                audio_errors_ = std::thread([this] { DrainError(*audio_); });
                 audio_writer_ = std::thread(&FfmpegPlayback::WriteAudio, this);
             } else {
                 audio_.reset();
+                failed_ = true;
             }
         }
         if (!audio_ && wave_) {
@@ -234,7 +253,7 @@ bool FfmpegPlayback::Start(int64_t position, float rate, SIZE box, bool playing)
     }
     // Without an audio device the frames follow the wall clock.
     wall_clock_ = wave_ == nullptr;
-    failed_ = !any;
+    if (!any) failed_ = true;
     return any;
 }
 
@@ -254,9 +273,12 @@ void FfmpegPlayback::ReadVideo() {
         frame->time = start_ + static_cast<int64_t>(std::llround(index * interval));
         std::lock_guard lock(queue_mutex_);
         queue_.push_back(std::move(frame));
+        if (wake_) wake_();
     }
+    CheckDecoderExit(*video_);
     std::lock_guard lock(queue_mutex_);
     video_eof_ = true;
+    if (wake_) wake_();
 }
 
 void FfmpegPlayback::WriteAudio() {
@@ -264,7 +286,7 @@ void FfmpegPlayback::WriteAudio() {
         WAVEHDR& header = headers_[next];
         // Wait for this buffer to come back from the device.
         while ((header.dwFlags & WHDR_PREPARED) && !(header.dwFlags & WHDR_DONE) && !stop_.load())
-            WaitForSingleObject(wave_event_, 100);
+            WaitForSingleObject(wave_event_, INFINITE);
         if (stop_.load()) break;
         if (header.dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(wave_, &header, sizeof(header));
         auto& data = wave_data_[next];
@@ -287,13 +309,35 @@ void FfmpegPlayback::WriteAudio() {
             header.dwBufferLength = filled;
             if (waveOutPrepareHeader(wave_, &header, sizeof(header)) != MMSYSERR_NOERROR ||
                 waveOutWrite(wave_, &header, sizeof(header)) != MMSYSERR_NOERROR) {
-                header = {};
+                failed_ = true;
+                audio_->Terminate();
                 break;
             }
         }
         if (filled < data.size()) break;   // end of stream
     }
+    CheckDecoderExit(*audio_);
     audio_eof_.store(true);
+    if (wake_) wake_();
+}
+
+void FfmpegPlayback::CheckDecoderExit(ffmpeg::Process& process) {
+    while (!stop_.load() && !process.Wait(25)) {}
+    if (!stop_.load() && process.ExitCode() != 0) failed_ = true;
+}
+
+void FfmpegPlayback::DrainError(ffmpeg::Process& process) {
+    char buffer[4096];
+    for (DWORD got; (got = process.ReadErr(buffer, sizeof(buffer))) > 0;) {
+        std::lock_guard lock(error_mutex_);
+        diagnostic_.append(buffer, got);
+        if (diagnostic_.size() > 16384) diagnostic_.erase(0, diagnostic_.size() - 16384);
+    }
+}
+
+std::string FfmpegPlayback::Diagnostic() {
+    std::lock_guard lock(error_mutex_);
+    return diagnostic_;
 }
 
 bool FfmpegPlayback::AudioDrained() {

@@ -4,8 +4,23 @@
 #include <windows.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace pulse::preview {
+
+struct ArchiveListingEntry {
+    std::wstring path;
+    uint64_t size = 0;
+    uint64_t packed = 0;
+    SYSTEMTIME time{};
+    bool has_time = false;
+    bool dir = false;
+    bool encrypted = false;
+};
+
+// Shared bounded tree serialization for native readers and optional tools.
+std::wstring SerializeArchiveEntries(std::vector<ArchiveListingEntry> entries,
+    const std::wstring& format, bool incomplete);
 
 // Builds the folder tree of the archive's contents as the payload of
 // ipc::PreviewContentKind::Archive (drawn by ui/archive_preview.cpp):

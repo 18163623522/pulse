@@ -4,6 +4,7 @@
 #include "ffmpeg_playback.h"
 #include "../common/localization.h"
 #include "../common/image_pack_protocol.h"
+#include "../common/preview_extensions.h"
 #include <d2d1helper.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -767,6 +768,17 @@ void QuickPreviewWindow::OnImagePackInstalled() {
     // The picture card (or a text / hex view of an EXR) becomes the picture.
     const size_t dot = item_.path.find_last_of(L'.');
     if (dot == std::wstring::npos || !imgpack::IsImagePackExtension(std::wstring_view(item_.path).substr(dot))) return;
+    const QuickPreviewItem item = item_;
+    Update(item);
+}
+void QuickPreviewWindow::OnExtraPackInstalled() {
+    if (!hwnd_ || !visible()) return;
+    const size_t dot = item_.path.find_last_of(L'.');
+    if (dot == std::wstring::npos) return;
+    std::wstring extension = item_.path.substr(dot);
+    for (auto& c : extension) c = static_cast<wchar_t>(towlower(c));
+    if (!preview::IsFamilyExtension(preview::PreviewFamily::Raw, extension) &&
+        !preview::IsArchiveExtension(extension)) return;
     const QuickPreviewItem item = item_;
     Update(item);
 }

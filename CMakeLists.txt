@@ -567,7 +567,8 @@ endif()
 
 # ---- Pulse.Preview.exe: thumbnail decoding / Shell provider isolation ----
 add_executable(pulse_preview WIN32 src/preview_host/main.cpp src/preview_host/video_codec.cpp
-    src/preview_host/media_pack.cpp src/preview_host/image_pack.cpp src/common/ffmpeg_tool.cpp
+    src/preview_host/media_pack.cpp src/preview_host/image_pack.cpp
+    src/preview_host/raw_pack.cpp src/preview_host/archive_pack.cpp src/common/ffmpeg_tool.cpp
     src/preview_host/folder_thumbnail.cpp
     src/preview_host/svg_raster.cpp src/preview_host/metafile_raster.cpp
     src/preview_host/pdf_raster.cpp src/preview_host/dwg_thumb.cpp
@@ -622,6 +623,24 @@ add_executable(pulse_image_pack_test src/bench/image_pack_test.cpp src/preview_h
     src/common/ffmpeg_tool.cpp)
 target_link_libraries(pulse_image_pack_test PRIVATE pulse_runtime_log ole32 shell32 advapi32)
 add_dependencies(pulse_image_pack_test pulse_preview)
+
+add_executable(pulse_raw_pack_test src/bench/raw_pack_test.cpp src/preview_host/raw_pack.cpp
+    src/preview_host/image_pack.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_raw_pack_test PRIVATE pulse_runtime_log ole32 shell32 advapi32)
+add_dependencies(pulse_raw_pack_test pulse_preview)
+
+add_executable(pulse_raw_pack_host_test src/bench/raw_pack_host_test.cpp)
+target_link_libraries(pulse_raw_pack_host_test PRIVATE user32)
+add_dependencies(pulse_raw_pack_host_test pulse_preview)
+
+add_executable(pulse_archive_pack_test src/bench/archive_pack_test.cpp src/preview_host/archive_pack.cpp
+    src/preview_host/archive_listing.cpp src/preview_host/udf_listing.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_archive_pack_test PRIVATE pulse_runtime_log ole32 shell32 shlwapi advapi32)
+add_dependencies(pulse_archive_pack_test pulse_preview)
+
+add_executable(pulse_archive_pack_host_test src/bench/archive_pack_host_test.cpp)
+target_link_libraries(pulse_archive_pack_host_test PRIVATE user32)
+add_dependencies(pulse_archive_pack_host_test pulse_preview)
 
 add_executable(pulse_preview_regression_test src/bench/preview_regression_test.cpp
     src/preview_host/doc_payload.cpp src/preview_host/archive_listing.cpp src/preview_host/udf_listing.cpp)
