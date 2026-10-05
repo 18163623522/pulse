@@ -417,7 +417,7 @@ if(PULSE_APP_SOURCES)
     if(PULSE_WITH_SELFTEST)
         target_compile_definitions(pulse PRIVATE PULSE_WITH_SELFTEST=1)
     endif()
-    target_sources(pulse PRIVATE src/app/pulse.rc)
+    target_sources(pulse PRIVATE src/app/pulse.rc src/common/ffmpeg_tool.cpp)
     include(cmake/release_notes.cmake)
     pulse_embed_release_notes(pulse)
     set_property(SOURCE src/app/pulse.rc APPEND PROPERTY OBJECT_DEPENDS
@@ -493,8 +493,15 @@ add_dependencies(pulse_index_caller_filter_test pulse_index)
 # ---- Stage 1B-1 ops self test (console; drives pulse_shell.exe over the pipe) ----
 add_executable(pulse_operation_presentation_test src/bench/operation_presentation_test.cpp)
 add_executable(pulse_column_strip_test src/bench/column_strip_test.cpp src/ui/column_strip_layout.cpp)
-add_executable(pulse_playback_controls_test src/bench/playback_controls_test.cpp src/ui/video_preview.cpp)
-target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mfuuid)
+add_executable(pulse_playback_controls_test src/bench/playback_controls_test.cpp src/ui/video_preview.cpp
+    src/ui/ffmpeg_playback.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_playback_controls_test PRIVATE user32 gdi32 ole32 mfuuid winmm)
+
+# Quick Look playback through the FFmpeg pack; a real FFmpeg stands in for the
+# pack (PULSE_TEST_FFMPEG or C:\ffmpeg\bin), else the integration part is skipped.
+add_executable(pulse_ffmpeg_playback_test src/bench/ffmpeg_playback_test.cpp
+    src/ui/ffmpeg_playback.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_ffmpeg_playback_test PRIVATE user32 winmm)
 
 add_executable(pulse_ops_test
     src/bench/ops_test_main.cpp
@@ -559,7 +566,7 @@ endif()
 
 # ---- Pulse.Preview.exe: thumbnail decoding / Shell provider isolation ----
 add_executable(pulse_preview WIN32 src/preview_host/main.cpp src/preview_host/video_codec.cpp
-    src/preview_host/media_pack.cpp
+    src/preview_host/media_pack.cpp src/common/ffmpeg_tool.cpp
     src/preview_host/folder_thumbnail.cpp
     src/preview_host/svg_raster.cpp src/preview_host/metafile_raster.cpp
     src/preview_host/pdf_raster.cpp src/preview_host/dwg_thumb.cpp
@@ -602,7 +609,8 @@ add_dependencies(pulse_preview_test pulse_preview)
 # FFmpeg preview pack: parsing units and an end-to-end run through
 # Pulse.Preview.exe. A real FFmpeg stands in for the pack (PULSE_TEST_FFMPEG or
 # C:\ffmpeg\bin); without one the integration part is skipped.
-add_executable(pulse_media_pack_test src/bench/media_pack_test.cpp src/preview_host/media_pack.cpp)
+add_executable(pulse_media_pack_test src/bench/media_pack_test.cpp src/preview_host/media_pack.cpp
+    src/common/ffmpeg_tool.cpp)
 target_link_libraries(pulse_media_pack_test PRIVATE pulse_runtime_log ole32 shell32 advapi32)
 add_dependencies(pulse_media_pack_test pulse_preview)
 

@@ -1,4 +1,5 @@
 #include "media_pack.h"
+#include "../common/ffmpeg_tool.h"
 #include "../common/preview_packs.h"
 #include "../common/path_utils.h"
 #include "../common/runtime_log.h"
@@ -10,10 +11,6 @@
 
 namespace pulse::preview {
 namespace {
-
-bool IsOneOf(std::wstring_view extension, std::initializer_list<std::wstring_view> values) {
-    return std::find(values.begin(), values.end(), extension) != values.end();
-}
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) return {};
@@ -40,12 +37,13 @@ std::atomic<ULONGLONG> g_backoff_until{0};
 constexpr uint32_t kLaunchFailureLimit = 3;
 constexpr ULONGLONG kLaunchBackoffMs = 60000;
 
-void DrainPipe(HANDLE pipe, size_t limit, std::vector<uint8_t>* bytes, std::string* text) {
+void DrainPipe(ffmpeg::Process& process, bool out, size_t limit, std::vector<uint8_t>* bytes,
+               std::string* text) {
     uint8_t buffer[64 * 1024];
     size_t total = 0;
     for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(pipe, buffer, sizeof(buffer), &got, nullptr) || got == 0) break;
+        const DWORD got = out ? process.ReadOut(buffer, sizeof(buffer)) : process.ReadErr(buffer, sizeof(buffer));
+        if (got == 0) break;
         const size_t keep = total >= limit ? 0 : (std::min)(static_cast<size_t>(got), limit - total);
         total += got;
         if (keep == 0) continue;   // keep reading so the child never blocks on a full pipe
@@ -59,108 +57,30 @@ ToolRun RunTool(const std::wstring& exe, const std::wstring& arguments, DWORD ti
     ToolRun run;
     const ULONGLONG now = GetTickCount64();
     if (now < g_backoff_until.load()) return run;
-
-    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
-    HANDLE out_read = nullptr, out_write = nullptr, err_read = nullptr, err_write = nullptr;
-    if (!CreatePipe(&out_read, &out_write, &inherit, 1 << 20)) return run;
-    if (!CreatePipe(&err_read, &err_write, &inherit, 64 * 1024)) {
-        CloseHandle(out_read); CloseHandle(out_write);
-        return run;
-    }
-    SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0);
-    HANDLE null_in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
-                                 OPEN_EXISTING, 0, nullptr);
-    if (null_in == INVALID_HANDLE_VALUE) {
-        CloseHandle(out_read); CloseHandle(out_write); CloseHandle(err_read); CloseHandle(err_write);
-        return run;
-    }
-
-    // Only the three standard handles are inherited, never the preview pipe.
-    HANDLE inherited[3] = {null_in, out_write, err_write};
-    SIZE_T attr_size = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
-    std::vector<uint8_t> attr_storage(attr_size);
-    auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_storage.data());
-    const bool attrs_ok = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) &&
-        UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
-                                  sizeof(inherited), nullptr, nullptr);
-
-    STARTUPINFOEXW si{};
-    si.StartupInfo.cb = sizeof(si);
-    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    si.StartupInfo.hStdInput = null_in;
-    si.StartupInfo.hStdOutput = out_write;
-    si.StartupInfo.hStdError = err_write;
-    si.lpAttributeList = attrs_ok ? attrs : nullptr;
-
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    if (job) {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
-            JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | JOB_OBJECT_LIMIT_PROCESS_MEMORY |
-            JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-        limits.BasicLimitInformation.ActiveProcessLimit = 1;
-        limits.ProcessMemoryLimit = static_cast<SIZE_T>(1024) * 1024 * 1024;   // 1 GB
-        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
-    }
-
-    std::wstring command = QuoteArgument(exe) + L" " + arguments;
-    PROCESS_INFORMATION pi{};
-    const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS |
-        CREATE_UNICODE_ENVIRONMENT | (attrs_ok ? EXTENDED_STARTUPINFO_PRESENT : 0);
-    const std::wstring directory = packs::DirectoryOf(exe);
-    run.started = CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE, flags, nullptr,
-                                 directory.empty() ? nullptr : directory.c_str(),
-                                 &si.StartupInfo, &pi) != FALSE;
-    if (attrs_ok) DeleteProcThreadAttributeList(attrs);
-    CloseHandle(out_write);
-    CloseHandle(err_write);
-    CloseHandle(null_in);
-
+    ffmpeg::Process process;
+    run.started = process.Start(exe, arguments);
     if (!run.started) {
         if (g_launch_failures.fetch_add(1) + 1 >= kLaunchFailureLimit) {
             g_backoff_until = GetTickCount64() + kLaunchBackoffMs;
             g_launch_failures = 0;
             diagnostics::runtime::Event("media_pack_backoff", {{"error", GetLastError()}});
         }
-        CloseHandle(out_read); CloseHandle(err_read);
-        if (job) CloseHandle(job);
         return run;
     }
     g_launch_failures = 0;
-    if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
-        // Nested-job restrictions on old systems: still bounded by the timeout.
-        CloseHandle(job);
-        job = nullptr;
-    }
-    ResumeThread(pi.hThread);
-    CloseHandle(pi.hThread);
-
-    std::thread err_reader([&] { DrainPipe(err_read, 256 * 1024, nullptr, &run.err); });
-    std::thread out_reader([&] { DrainPipe(out_read, max_stdout, &run.out, nullptr); });
-    if (WaitForSingleObject(pi.hProcess, timeout_ms) != WAIT_OBJECT_0) {
+    std::thread err_reader([&] { DrainPipe(process, false, 256 * 1024, nullptr, &run.err); });
+    std::thread out_reader([&] { DrainPipe(process, true, max_stdout, &run.out, nullptr); });
+    if (!process.Wait(timeout_ms)) {
         run.timed_out = true;
-        if (job) TerminateJobObject(job, ERROR_TIMEOUT);
-        else TerminateProcess(pi.hProcess, ERROR_TIMEOUT);
-        WaitForSingleObject(pi.hProcess, 2000);
+        process.Terminate(ERROR_TIMEOUT);
     }
-    GetExitCodeProcess(pi.hProcess, &run.exit_code);
+    run.exit_code = process.ExitCode();
     out_reader.join();
     err_reader.join();
-    CloseHandle(out_read);
-    CloseHandle(err_read);
-    CloseHandle(pi.hProcess);
-    if (job) CloseHandle(job);
     return run;
 }
 
-// ffmpeg's own path syntax: "file:" stops "C:..." or names containing ':'
-// from being read as protocols; \\?\ prefixes are dropped when not needed.
-std::wstring FfmpegInput(const std::wstring& path) {
-    std::wstring plain = path.size() < MAX_PATH ? path::StripExtendedPathPrefix(path) : path;
-    return L"file:" + plain;
-}
+std::wstring FfmpegInput(const std::wstring& path) { return ffmpeg::InputArgument(path); }
 
 std::wstring FormatDuration(uint32_t ms) {
     const uint32_t total = (ms + 500) / 1000;
@@ -201,63 +121,18 @@ std::wstring CodecDisplay(const std::string& name, const std::string& profile) {
 
 // ---- Public API ------------------------------------------------------------
 
-bool IsMediaPackVideoExtension(std::wstring_view e) {
-    return IsOneOf(e, {L".mp4", L".m4v", L".mov", L".mkv", L".webm", L".avi", L".wmv", L".flv",
-        L".f4v", L".mpg", L".mpeg", L".m2v", L".ts", L".m2t", L".mts", L".m2ts", L".vob",
-        L".3gp", L".3g2", L".asf", L".ogv", L".rm", L".rmvb", L".mxf", L".divx", L".dv",
-        L".y4m", L".mjpeg", L".hevc", L".h264", L".264", L".265"});
-}
+bool IsMediaPackVideoExtension(std::wstring_view e) { return ffmpeg::IsVideoExtension(e); }
 
-bool IsMediaPackAudioExtension(std::wstring_view e) {
-    return IsOneOf(e, {L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma", L".ogg", L".oga",
-        L".opus", L".aif", L".aiff", L".ape", L".wv", L".tta", L".dsf", L".dff", L".mka",
-        L".ac3", L".dts", L".amr", L".caf", L".mpc"});
-}
+bool IsMediaPackAudioExtension(std::wstring_view e) { return ffmpeg::IsAudioExtension(e); }
 
 bool MediaPackAvailable() {
     return packs::ResolvePack(packs::PackId::Media).source != packs::ToolSource::None;
 }
 
-uint32_t ParseFfmpegDurationMs(std::string_view log) {
-    const size_t at = log.find("Duration: ");
-    if (at == std::string_view::npos) return 0;
-    unsigned h = 0, m = 0, s = 0, frac = 0;
-    char buffer[24]{};
-    const std::string_view value = log.substr(at + 10, 16);
-    std::copy(value.begin(), value.end(), buffer);
-    int digits = 0;
-    if (sscanf_s(buffer, "%u:%u:%u.%n", &h, &m, &s, &digits) < 3) return 0;
-    // Fraction is hundredths in ffmpeg's log ("12.34").
-    const char* f = buffer + digits;
-    if (digits > 0 && f[0] >= '0' && f[0] <= '9') {
-        frac = (f[0] - '0') * 100u;
-        if (f[1] >= '0' && f[1] <= '9') frac += (f[1] - '0') * 10u;
-    }
-    if (m >= 60 || s >= 60) return 0;
-    const unsigned long long ms = ((h * 60ull + m) * 60ull + s) * 1000ull + frac;
-    return static_cast<uint32_t>((std::min)(ms, 0xFFFFFFFFull));
-}
+uint32_t ParseFfmpegDurationMs(std::string_view log) { return ffmpeg::ParseDurationMs(log); }
 
 bool ParseFfmpegVideoSize(std::string_view log, UINT& width, UINT& height) {
-    size_t at = log.find("Video: ");
-    while (at != std::string_view::npos) {
-        const size_t end = log.find('\n', at);
-        const std::string_view line = log.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
-        // The size token is digits 'x' digits, delimited by space/comma.
-        for (size_t i = 1; i + 2 < line.size(); ++i) {
-            if (line[i] != 'x' || !isdigit(static_cast<unsigned char>(line[i - 1])) ||
-                !isdigit(static_cast<unsigned char>(line[i + 1]))) continue;
-            size_t a = i; while (a > 0 && isdigit(static_cast<unsigned char>(line[a - 1]))) --a;
-            size_t b = i + 1; while (b < line.size() && isdigit(static_cast<unsigned char>(line[b]))) ++b;
-            if (a == 0 || line[a - 1] != ' ') continue;
-            if (b < line.size() && line[b] != ' ' && line[b] != ',') continue;
-            const UINT w = static_cast<UINT>(strtoul(std::string(line.substr(a, i - a)).c_str(), nullptr, 10));
-            const UINT h = static_cast<UINT>(strtoul(std::string(line.substr(i + 1, b - i - 1)).c_str(), nullptr, 10));
-            if (w > 0 && h > 0 && w <= 65535 && h <= 65535) { width = w; height = h; return true; }
-        }
-        at = log.find("Video: ", at + 7);
-    }
-    return false;
+    return ffmpeg::ParseVideoSize(log, width, height);
 }
 
 bool DecodeBmpToBgra(const std::vector<uint8_t>& bmp, std::vector<uint8_t>& out,
@@ -299,19 +174,7 @@ uint32_t ThumbnailSeekMs(uint32_t duration_ms) {
     return (std::min)(duration_ms / 10, 30000u);
 }
 
-std::wstring QuoteArgument(const std::wstring& argument) {
-    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) return argument;
-    std::wstring out = L"\"";
-    for (size_t i = 0;; ++i) {
-        size_t slashes = 0;
-        while (i < argument.size() && argument[i] == L'\\') { ++i; ++slashes; }
-        if (i == argument.size()) { out.append(slashes * 2, L'\\'); break; }
-        if (argument[i] == L'"') { out.append(slashes * 2 + 1, L'\\'); out += L'"'; }
-        else { out.append(slashes, L'\\'); out += argument[i]; }
-    }
-    out += L'"';
-    return out;
-}
+std::wstring QuoteArgument(const std::wstring& argument) { return ffmpeg::QuoteArgument(argument); }
 
 bool MediaPackFrame(const std::wstring& path, UINT cap, bool grid, uint32_t known_duration_ms,
                     MediaFrame& frame) {

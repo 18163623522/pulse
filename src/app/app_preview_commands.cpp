@@ -5,6 +5,13 @@
 namespace pulse {
 void HandleQuickPreviewCommand(AppState& s, const ui::QuickPreviewCommand& command) {
     if (!s.quickPreview.visible() || command.target.path.empty()) return;
+    if (command.action == ui::QuickPreviewAction::InstallMediaPack) {
+        // Same download as Settings > 预览增强包; BuildVm feeds its progress
+        // back to the card and reopens the preview once it is installed.
+        s.settings.InstallMediaPack(s.hwnd);
+        InvalidateRect(s.hwnd, nullptr, FALSE);
+        return;
+    }
     const auto& target = command.target;
     const auto action = command.action;
     if (target.read_only && (action == ui::QuickPreviewAction::Cut ||

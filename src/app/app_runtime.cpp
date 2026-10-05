@@ -1792,7 +1792,25 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     if (!s.pane) return {};
     // A finished pack download repaints the window once; drop the cached
     // failed thumbnails so the newly supported files are decoded again.
-    if (s.settings.TakeMediaPackResult()) s.renderer.EvictThumbnails();
+    if (s.settings.TakeMediaPackResult()) {
+        s.renderer.EvictThumbnails();
+        s.quickPreview.OnMediaPackInstalled();
+    }
+    if (s.quickPreview.visible()) {
+        ui::MediaPackOffer offer;
+        s.settings.FillMediaPackOffer(offer);
+        // Fixture for the Quick Look offer while no pack is published.
+        wchar_t fake[8]{};
+        if (s.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_PACK_OFFER", fake, ARRAYSIZE(fake))) {
+            offer.installable = true;
+            if (!offer.download_bytes) offer.download_bytes = uint64_t{28} << 20;
+            if (GetEnvironmentVariableW(L"PULSE_TEST_PACK_PROGRESS", fake, ARRAYSIZE(fake))) {
+                offer.installing = true;
+                offer.progress = static_cast<float>(_wtoi(fake)) / 100.0f;
+            }
+        }
+        s.quickPreview.SetMediaPackOffer(offer);
+    }
     UpdateFolderCompare(s);
     s.changes.visible_paths.clear();
     ForEachPane(s, [&](app::Pane& pane) {

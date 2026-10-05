@@ -8,6 +8,7 @@
 #include "../index/network_agent_client.h"
 #include "../common/preview_packs.h"
 #include "pack_catalog.h"
+#include "../ui/quick_preview_command.h"
 
 #include <algorithm>
 #include <array>
@@ -113,6 +114,25 @@ void SettingsController::RefreshPacks() {
     if (!state.root.empty()) state.bytes = DirectoryBytes(state.root);
     packs_ = std::move(state);
     packs_checked_ = GetTickCount64();
+    offer_checked_ = 0;
+}
+
+void SettingsController::FillMediaPackOffer(ui::MediaPackOffer& offer) {
+    const ULONGLONG now = GetTickCount64();
+    if (!offer_checked_ || now - offer_checked_ >= 2000) {
+        // An installed but switched-off pack is the user's choice: not offered.
+        offer_missing_ = kMediaPackRelease.file_count &&
+            !packs::ReadInstalledPack(packs::PackId::Media).present &&
+            packs::ResolvePack(packs::PackId::Media).source == packs::ToolSource::None;
+        offer_checked_ = now ? now : 1;
+    }
+    offer.installing = media_installer_.running();
+    offer.installable = offer_missing_ || offer.installing;
+    offer.progress = offer.installing ? media_installer_.progress() : 0.0f;
+    offer.download_bytes = 0;
+    for (size_t i = 0; i < kMediaPackRelease.file_count; ++i)
+        offer.download_bytes += kMediaPackRelease.files[i].packed_size;
+    offer.notice = offer.installing ? std::wstring{} : packs_.notice;
 }
 
 const SettingsController::PackState& SettingsController::Packs() {

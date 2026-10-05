@@ -1746,7 +1746,7 @@ void QuickPreviewWindow::Render() {
         markdown_shown_ = true;
         toggle_kind_ = ToggleKind::DocHandler;
     }
-    codec_store_rect_ = codec_open_rect_ = D2D1_RECT_F{};
+    codec_store_rect_ = codec_open_rect_ = codec_pack_rect_ = D2D1_RECT_F{};
     std::wstring status;
     if (offline) {
         native_kind_ = NativeKind::None;

@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 
+namespace pulse::ui { struct MediaPackOffer; }
+
 namespace pulse::index { class IndexClient; class NetworkAgentClient; }
 
 namespace pulse::app {
@@ -135,6 +137,9 @@ public:
     bool InstallMediaPack(HWND notify);
     // Once per finished download: true when a pack was installed.
     bool TakeMediaPackResult();
+    // What Quick Look's codec cards offer. Cheap enough for every repaint:
+    // the disk is read at most every 2 s and after each pack action.
+    void FillMediaPackOffer(ui::MediaPackOffer& offer);
     bool RemoveMediaPack();
     bool ToggleMediaPack();
     bool ToggleCustomFfmpeg();
@@ -225,6 +230,8 @@ private:
     float scroll_ = 0.0f;
     PackState packs_;
     uint64_t packs_checked_ = 0;
+    uint64_t offer_checked_ = 0;
+    bool offer_missing_ = false;   // published, not installed, no own FFmpeg
     void RefreshPacks();
     PackInstaller media_installer_;
     std::shared_ptr<TaskState> task_state_ = std::make_shared<TaskState>();

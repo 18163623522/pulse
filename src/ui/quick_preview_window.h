@@ -33,6 +33,10 @@ public:
               const POINT* zoom_from = nullptr);
     void Update(const QuickPreviewItem& item);
     void SetStarred(bool starred);
+    // The FFmpeg preview pack offer on the codec cards; repaints on change.
+    void SetMediaPackOffer(const MediaPackOffer& offer);
+    // A pack was installed: a file it can play now is opened again.
+    void OnMediaPackInstalled();
     void Close();
     bool visible() const noexcept;
     HWND hwnd() const noexcept { return hwnd_; }
@@ -85,6 +89,8 @@ private:
     // Aspect-fitted, rounded video window inside the content area (plus shadow).
     D2D1_RECT_F VideoFrameRect(const VideoPreview::State& state) const;
     void LayoutVideo(ID2D1DeviceContext* dc, const VideoPreview::State& state, bool show);
+    // FFmpeg playback is composed here, clipped like the video child.
+    void DrawFfmpegFrame(ID2D1DeviceContext* dc, const D2D1_RECT_F& frame, float radius);
     bool PlaybackHover(POINT client);             // true when hover state changed
     bool PlaybackWheel(POINT client, float steps);  // wheel over the volume button
     // Card shown instead of a black frame when no decoder handles the video track.
@@ -98,6 +104,7 @@ private:
         std::wstring title, lead, name, tail, get, hint;
         const wchar_t* store_id = nullptr;
         bool picture = false;
+        bool pack = false;   // offer the FFmpeg preview pack above the Store button
     };
     void DrawCodecCardText(ID2D1DeviceContext* dc, const D2D1_RECT_F& content,
                            const CodecCardText& text, ID2D1SolidColorBrush* brush);
@@ -223,6 +230,13 @@ private:
     ULONGLONG playback_note_until_ = 0;
     D2D1_RECT_F codec_store_rect_{};   // codec card buttons (this frame)
     D2D1_RECT_F codec_open_rect_{};
+    D2D1_RECT_F codec_pack_rect_{};
+    ComPtr<ID2D1Bitmap> ffmpeg_bitmap_;        // reused while the size stays
+    ComPtr<ID2D1BitmapBrush> ffmpeg_brush_;
+    ComPtr<ID2D1Device> ffmpeg_device_;        // the bitmap's device
+    uint64_t ffmpeg_serial_ = 0;
+    bool ffmpeg_noted_ = false;               // the "FFmpeg" chip note was shown
+    MediaPackOffer pack_offer_;
     std::wstring codec_store_id_;
     ComPtr<IDWriteTextFormat> close_format_;
     ComPtr<IDWriteTextFormat> preview_text_format_;
