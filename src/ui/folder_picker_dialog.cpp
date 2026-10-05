@@ -490,15 +490,7 @@ private:
 
     void CreateFonts() {
         if (font_) { DeleteObject(font_); font_ = nullptr; }
-        const int height = -std::max(1, static_cast<int>(std::lround(14.0f * scale_)));
-        font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                            DEFAULT_PITCH | FF_DONTCARE, typography::PreferredTextFamily());
-        if (!font_) {
-            font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        }
+        font_ = typography::CreateEditFont(scale_);
         for (HWND edit : {edit_, filename_edit_, search_edit_})
             if (edit && font_) SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
@@ -547,17 +539,7 @@ private:
         const int w = std::max(40, static_cast<int>(std::lround(cell.right - cell.left -
                                                                 20.0f * scale_)));
         const int cell_h = std::max(18, static_cast<int>(std::lround(cell.bottom - cell.top)));
-        int line_h = cell_h;
-        if (font_) {
-            HDC hdc = GetDC(edit);
-            HFONT old = static_cast<HFONT>(SelectObject(hdc, font_));
-            TEXTMETRICW tm{};
-            GetTextMetricsW(hdc, &tm);
-            SelectObject(hdc, old);
-            ReleaseDC(edit, hdc);
-            line_h = std::max(1, static_cast<int>(tm.tmHeight));
-        }
-        line_h = std::min(line_h, cell_h);
+        const int line_h = EditLineHeight(edit, font_, cell_h);
         const int y = static_cast<int>(std::lround(cell.top)) + std::max(0, (cell_h - line_h) / 2);
         SetWindowPos(edit, HWND_TOP, x, y, w, line_h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }

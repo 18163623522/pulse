@@ -1152,26 +1152,8 @@ void CreateBrushes(State& s) {
 }
 
 void CreateEdits(State& s) {
-    const int height = -std::lround(14.0f * s.scale);
-    s.font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                         ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                         typography::PreferredTextFamily());
-    if (!s.font) {
-        s.font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                             L"Segoe UI");
-    }
-    if (s.font) {
-        HDC hdc = GetDC(nullptr);
-        HFONT old = static_cast<HFONT>(SelectObject(hdc, s.font));
-        TEXTMETRICW tm{};
-        GetTextMetricsW(hdc, &tm);
-        SelectObject(hdc, old);
-        ReleaseDC(nullptr, hdc);
-        s.line_h = (std::max)(1, static_cast<int>(tm.tmHeight));
-    }
+    s.font = typography::CreateEditFont(s.scale);
+    if (s.font) s.line_h = EditLineHeight(s.hwnd, s.font, 1 << 16);
     for (int i = 0; i < 5; ++i) {
         HWND e = CreateChildEdit(s.hwnd, L"", i < 4 ? ES_NUMBER : 0);
         if (!e) continue;

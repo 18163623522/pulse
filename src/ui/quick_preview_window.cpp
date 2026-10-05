@@ -248,10 +248,7 @@ void QuickPreviewWindow::RecreateFormats() {
         DeleteObject(find_edit_font_);
         find_edit_font_ = nullptr;
     }
-    const int height = -std::max(1, static_cast<int>(std::lround(14.0f * scale_)));
-    find_edit_font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE, typography::PreferredTextFamily());
+    find_edit_font_ = typography::CreateEditFont(scale_);
     if (find_edit_ && find_edit_font_)
         SendMessageW(find_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(find_edit_font_), TRUE);
     if (find_edit_brush_) {
@@ -1016,17 +1013,7 @@ void QuickPreviewWindow::LayoutFindEdit() {
 
     const int w = (std::max)(40, static_cast<int>(std::lround(cell.right - cell.left)));
     const int cell_h = (std::max)(18, static_cast<int>(std::lround(cell.bottom - cell.top)));
-    int line_h = cell_h;
-    if (find_edit_font_) {
-        HDC hdc = GetDC(find_edit_);
-        HFONT old = static_cast<HFONT>(SelectObject(hdc, find_edit_font_));
-        TEXTMETRICW tm{};
-        GetTextMetricsW(hdc, &tm);
-        SelectObject(hdc, old);
-        ReleaseDC(find_edit_, hdc);
-        line_h = (std::max)(1, static_cast<int>(tm.tmHeight));
-    }
-    line_h = (std::min)(line_h, cell_h);
+    const int line_h = EditLineHeight(find_edit_, find_edit_font_, cell_h);
     const int y = pt.y + (std::max)(0, (cell_h - line_h) / 2);
     RECT cur{};
     GetWindowRect(find_edit_, &cur);

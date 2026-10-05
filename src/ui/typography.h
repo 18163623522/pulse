@@ -49,6 +49,14 @@ void SetUiFontScale(int percent) noexcept;
 int UiFontScalePercent() noexcept;
 float UiFontScale() noexcept;
 
+// Native EDIT controls hosted on Pulse surfaces (address bar and rename,
+// dialog fields, menu filters, Quick Look find) all use this font: the UI text
+// family at `dip` DIPs times the interface font size and the DPI scale, so the
+// editor matches the DirectWrite text around it. The caller owns the HFONT and
+// recreates it when Generation() changes.
+int EditFontPixels(float scale, float dip = 14.0f) noexcept;
+HFONT CreateEditFont(float scale, float dip = 14.0f);
+
 // Invalidate language-dependent fallback and measurement caches.
 void InvalidateCaches();
 std::uint64_t Generation() noexcept;

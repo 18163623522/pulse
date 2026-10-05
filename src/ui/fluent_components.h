@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 namespace pulse::ui::fluent {
@@ -510,6 +511,7 @@ private:
     bool high_contrast_ = false;
     bool dark_ = false;
     float format_scale_ = 0.0f;
+    std::uint64_t format_generation_ = 0;   // typography::Generation() of the formats
     std::array<ComPtr<ID2D1SolidColorBrush>, static_cast<size_t>(BrushId::Count)> brushes_{};
     ComPtr<ID2D1SolidColorBrush> scratch_brush_;
     ComPtr<ID2D1StrokeStyle> round_stroke_;
