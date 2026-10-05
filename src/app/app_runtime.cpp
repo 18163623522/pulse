@@ -622,7 +622,10 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 row.text = seen.key == ipc::CompressCatalogKey()
                     ? std::wstring(l10n::Cn(ipc::CompressCatalogText())) : seen.text;
                 row.group = static_cast<int>(ipc::GroupOf(seen.category));
-                row.on = s.ctxMenuPrefs.ItemEnabled(seen.key, seen.category, seen.from_com);
+                row.on = s.ctxMenuPrefs.RowEnabled(seen.key, seen.category, seen.from_com);
+                // A row the slow-extension auto-disable turned off (#77) shows
+                // why it is missing from the menu; toggling it recovers.
+                row.slow_disabled = s.ctxMenuPrefs.ComDisabled(seen.key);
                 vm.settings_items.push_back(std::move(row));
             }
             // Pulse's own commands: card 5, after the seen catalog (see

@@ -454,8 +454,14 @@ HRESULT QueryOneHandler(const CtxHandlerDesc& handler, const CtxBind& bind,
             }
             HMENU native_popup = native ? CreatePopupMenu() : nullptr;
             if (native_popup) {
+                // No CMF_SYNCCASCADEMENU: synchronously initializing every
+                // cascade turns this worker into a serial shadow query of the
+                // whole default menu, making it structurally the slowest
+                // worker on machines with legacy extensions (#77 regression).
+                // CollectHandlerItems fills the Send to flyout through
+                // InitMenuPopup with its own budget instead.
                 native_hr = SafeQueryContextMenu(native, native_popup, 0, id_first, id_last,
-                                                 qcm_flags | CMF_SYNCCASCADEMENU);
+                                                 qcm_flags);
                 if (SUCCEEDED(native_hr)) {
                     ReleaseHandlerSlot(slot);
                     slot.menu = native;

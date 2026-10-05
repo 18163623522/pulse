@@ -2555,6 +2555,38 @@ void TestContextMenuPrefs() {
     Check(ipc::IsHandlerCatalogKey(slow_key) &&
           ipc::HandlerClsidFromKey(slow_key) == ipc::ToLowerVerb(adobe_clsid),
           L"prefs: handler catalog key round-trips the CLSID");
+
+    // SendTo is exempt from the slow-extension auto-disable (#77): it wraps
+    // the whole default menu, so it is structurally the last worker home.
+    ContextMenuPrefs sendto_prefs;
+    sendto_prefs.persist = false;
+    const std::wstring sendto_key = ipc::SendToHandlerCatalogKey();
+    for (int i = 0; i < 5; ++i)
+        Check(!sendto_prefs.RecordComTiming(sendto_key, 1500),
+              L"prefs: SendTo timeouts never register as slow hits (#77)");
+    Check(sendto_prefs.slow_ext.find(sendto_key) == sendto_prefs.slow_ext.end() &&
+              !sendto_prefs.ComDisabled(sendto_key) && !sendto_prefs.ComDeferred(sendto_key) &&
+              sendto_prefs.DisabledHandlerClsids().empty(),
+          L"prefs: SendTo stays enabled no matter how often it times out (#77)");
+    sendto_prefs.slow_ext[sendto_key].disabled = true;
+    sendto_prefs.slow_ext[sendto_key].timeout_hits = 3;
+    ContextMenuPrefs sendto_loaded;
+    sendto_loaded.persist = false;
+    Check(sendto_loaded.FromJson(sendto_prefs.ToJson()) &&
+              sendto_loaded.slow_ext.find(sendto_key) == sendto_loaded.slow_ext.end() &&
+              sendto_loaded.HandlerEnabled(ipc::kSendToHandlerClsid),
+          L"prefs: loading purges the persisted SendTo disable state (#77)");
+    // The settings page must not show a slow-disabled handler as on (#77).
+    ContextMenuPrefs row_prefs;
+    row_prefs.persist = false;
+    row_prefs.slow_ext[slow_key].disabled = true;
+    Check(!row_prefs.RowEnabled(slow_key, CtxMenuCategory::Software, true) &&
+              row_prefs.ItemEnabled(slow_key, CtxMenuCategory::Software, true),
+          L"prefs: a slow-disabled handler row reports off despite no override (#77)");
+    row_prefs.SetItemEnabled(slow_key, true);
+    Check(row_prefs.RowEnabled(slow_key, CtxMenuCategory::Software, true),
+          L"prefs: toggling a slow-disabled row back on clears the skip (#77)");
+
     Check(has(L"用 记事本 打开") && has(L"用 画图 打开") && !has(L"用 Word 打开") &&
           has(L"打开方式…"),
           L"prefs: static open-with MRU capped at 2 plus 打开方式");

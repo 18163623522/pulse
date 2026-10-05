@@ -416,6 +416,7 @@ enum class StringId : UINT {
     ContextShareDesc = IDS_CONTEXT_SHARE_DESC,
     ContextSystemDesc = IDS_CONTEXT_SYSTEM_DESC,
     ContextPrintDesc = IDS_CONTEXT_PRINT_DESC,
+    ContextSlowDisabled = IDS_CONTEXT_SLOW_DISABLED,
     RestoreDefaults = IDS_RESTORE_DEFAULTS,
     TooltipCloseTab = IDS_TOOLTIP_CLOSE_TAB,
     TooltipNewTab = IDS_TOOLTIP_NEW_TAB,

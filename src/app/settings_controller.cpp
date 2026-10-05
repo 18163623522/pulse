@@ -643,7 +643,9 @@ void SettingsController::ToggleUi(int index) {
             return;
         }
         const auto& seen = context_->seen[item];
-        const bool enabled = context_->ItemEnabled(seen.key, seen.category, seen.from_com);
+        // RowEnabled (#77): a slow-disabled handler shows as off, so one
+        // toggle re-enables it and clears the timeout skip via SetItemEnabled.
+        const bool enabled = context_->RowEnabled(seen.key, seen.category, seen.from_com);
         context_->SetItemEnabled(seen.key, !enabled);
         if (!enabled)
             context_->SetGroupEnabled(ipc::GroupOf(seen.category), true);

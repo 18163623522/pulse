@@ -1214,6 +1214,10 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
         const bool late = GetTickCount64() - started >= 1000;
         for (const auto& w : workers) {
             if (!w) continue;
+            // SendTo wraps the whole default menu, so its elapsed time is
+            // structurally the sum of every other worker; its worst case is an
+            // empty flyout, never a hang. Exempt it from the auto-disable (#77).
+            if (IsSendToHandlerClsid(w->desc.clsid_text)) continue;
             // Still inside QueryContextMenu: not responding (#65).
             const bool slow_one = worker_done(*w) ? w->elapsed_ms >= 1000 : late;
             if (slow_one && !w->desc.clsid_text.empty()) slow.push_back(w->desc.clsid_text);
