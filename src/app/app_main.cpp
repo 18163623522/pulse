@@ -2018,6 +2018,22 @@ bool WaitForShotReady(AppState& s) {
         ProcessPendingResults(s);
         app::Tab* tab = ActiveTab(s);
         if (tab && !tab->loading && tab->snapshot) {
+            // PULSE_TEST_SHOT_SETTLE_MS: keep pumping after the folder loaded so
+            // asynchronous results (thumbnails from the preview host) land in the shot.
+            wchar_t settle[16]{};
+            if (GetEnvironmentVariableW(L"PULSE_TEST_SHOT_SETTLE_MS", settle, 16)) {
+                const auto until = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds((std::min)(_wtoi(settle), 15000));
+                while (std::chrono::steady_clock::now() < until) {
+                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    ProcessPendingResults(s);
+                    if (s.hwnd) RedrawWindow(s.hwnd, nullptr, nullptr, RDW_UPDATENOW | RDW_INTERNALPAINT);
+                    Sleep(20);
+                }
+            }
             return true;
         }
         if (s.hwnd) {
