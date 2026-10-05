@@ -11,6 +11,7 @@
 #include "notebook_document.h"
 #include "font_raster.h"
 #include "image_frames.h"
+#include "image_pack.h"
 #include "media_pack.h"
 #include "metafile_raster.h"
 #include "office_doc_model.h"
@@ -902,6 +903,21 @@ static std::wstring MissingImageCodec(const std::wstring& path, const std::wstri
     return {};
 }
 
+// Image preview pack (HEIC / AVIF / JPEG XL without the Store extensions,
+// OpenEXR, Radiance HDR, QOI). False without the pack.
+static bool ImagePackInto(const DecodeRequest& q, UINT cap, DecodeResult& r) {
+    if (!preview::IsImagePackExtension(q.extension) || !preview::ImagePackAvailable()) return false;
+    preview::ImagePackFrame frame;
+    if (!preview::ImagePackDecode(q.path, cap, q.grid, frame)) {
+        ClearBitmap(r);
+        return false;
+    }
+    r.pixels = std::move(frame.pixels);
+    r.width = frame.width; r.height = frame.height; r.stride = frame.stride;
+    r.source_width = frame.source_width; r.source_height = frame.source_height;
+    return true;
+}
+
 // WIC images (animated GIF frames included).
 static bool AcceptsImage(const DecodeRequest& q) { return IsDirectImage(q.extension); }
 static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
@@ -944,11 +960,12 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
     if (made) return MadeBitmap(r);
     if (!q.offline) {
         // WIC has no decoder for every format in the list on every machine:
-        // AVIF/HEIC need the store extension. Fall back to the shell thumbnail
-        // - the path Explorer itself uses - before reporting the preview as
-        // unavailable.
-        r.pixels.clear();
-        r.width = r.height = r.stride = 0;
+        // AVIF/HEIC need the store extension. The image preview pack reads
+        // them when it is installed; otherwise fall back to the shell
+        // thumbnail - the path Explorer itself uses - before reporting the
+        // preview as unavailable.
+        ClearBitmap(r);
+        if (ImagePackInto(q, cap, r)) return MadeBitmap(r);
         if (ShellThumbnailInto(q, r)) return MadeBitmap(r);
         const std::wstring codec = MissingImageCodec(q.path, q.extension);
         if (!codec.empty()) {
@@ -957,6 +974,31 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
         }
     }
     if (r.error.empty()) r.error = L"image-decode-failed";
+    return DecodeStep::Failed;
+}
+
+// Formats outside the WIC image list that the image pack reads. JPEG XL tries
+// Windows 11's Store extension first. A file that does not start like one of
+// these (an ENVI .hdr header is plain text) keeps the text / hex chain; a real
+// picture without the pack names the pack for Quick Look's install card.
+static bool AcceptsImagePack(const DecodeRequest& q) {
+    return !q.is_directory && !q.offline && preview::IsImagePackOnlyExtension(q.extension);
+}
+static DecodeStep RunImagePack(const DecodeRequest& q, DecodeResult& r) {
+    // 16 bytes decide before any decoder (or process) starts.
+    if (!preview::LooksLikeImagePackFile(q.path)) return DecodeStep::Next;
+    if (q.extension == L".jxl") {
+        ClearBitmap(r);
+        if (DecodeImage(q.path, q.request.attrs, q.cap, r.pixels, r.width, r.height, r.stride,
+                        r.source_width, r.source_height)) return MadeBitmap(r);
+        ClearBitmap(r);
+    }
+    if (ImagePackInto(q, q.cap, r)) return MadeBitmap(r);
+    if (q.extension == L".jxl" && HasShellThumbnailHandler(q.extension) && ShellThumbnailInto(q, r))
+        return MadeBitmap(r);
+    ClearBitmap(r);
+    if (q.grid) return DecodeStep::Next;
+    r.error = preview::ImagePackAvailable() ? L"image-decode-failed" : L"image-pack-missing";
     return DecodeStep::Failed;
 }
 
@@ -1455,6 +1497,7 @@ static const preview::DecoderEntry kDecoders[] = {
     { "folder",          AcceptsFolder,       RunFolder },
     { "shortcut",        AcceptsShortcut,     RunShortcut },
     { "image",           AcceptsImage,        RunImage },
+    { "image-pack",      AcceptsImagePack,    RunImagePack },
     { "svg",             AcceptsVector,       RunVector },
     { "metafile",        AcceptsMetaFile,     RunMetaFile },
     { "pdf",             AcceptsPdf,          RunPdf },

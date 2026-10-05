@@ -1,6 +1,7 @@
 #include "preview_properties.h"
 #include "preview_file_utils.h"
 #include "video_codec.h"
+#include "image_pack.h"
 #include "media_pack.h"
 #include "../common/preview_extensions.h"
 #include <windows.h>
@@ -108,6 +109,11 @@ std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path) {
         };
         if (!has(L"时长") || (video && !has(L"编码格式"))) MediaPackProperties(path, out, kMaxRows);
     }
+    // Image preview pack: pictures Windows has no property handler for
+    // (AVIF, JPEG XL, EXR...). Reads headers only.
+    if (out.size() < kMaxRows && IsImagePackExtension(extension) && ImagePackAvailable() &&
+        std::none_of(out.begin(), out.end(), [](const PreviewPropertyValue& row) { return row.label == L"尺寸"; }))
+        ImagePackProperties(path, out, kMaxRows);
     return out;
 }
 
