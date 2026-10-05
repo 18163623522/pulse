@@ -1114,3 +1114,38 @@ target_link_libraries(pulse_open_with_icons_test PRIVATE ole32 shell32 shlwapi u
 add_executable(pulse_udf_listing_test src/bench/udf_listing_test.cpp src/preview_host/archive_listing.cpp src/preview_host/udf_listing.cpp)
 add_dependencies(pulse_udf_listing_test pulse_preview)
 add_executable(pulse_preview_integrity_test src/bench/preview_integrity_test.cpp)
+# Focused regressions for the October review; no full-suite dependency.
+add_executable(pulse_audit_persistence_test src/bench/audit_persistence_test.cpp
+    src/app/context_menu_prefs.cpp src/app/builtin_menu_items.cpp src/index/index_config.cpp)
+target_link_libraries(pulse_audit_persistence_test PRIVATE user32 shell32 ole32 advapi32 uuid shlwapi pulse_localization)
+
+add_executable(pulse_typography_policy_test src/bench/typography_policy_test.cpp src/bench/child_edit_test.rc
+    src/ui/typography.cpp src/ui/ui_compositor.cpp src/ui/edit_host.cpp
+    src/ui/fluent_components.cpp src/ui/fluent_menu.cpp src/ui/tab_shape.cpp)
+target_compile_definitions(pulse_typography_policy_test PRIVATE PULSE_TEST_LUMATEXT_PRESENT_FAILURE=1)
+target_link_options(pulse_typography_policy_test PRIVATE /MANIFEST:NO)
+target_link_libraries(pulse_typography_policy_test PRIVATE d3d11 d2d1 dwrite dxgi dcomp dwmapi
+    shcore ole32 windowscodecs user32 gdi32 comctl32 uxtheme shell32 pulse_localization)
+pulse_enable_lumatext(pulse_typography_policy_test)
+
+get_target_property(audit_content_sources pulse_content_index_test SOURCES)
+list(REMOVE_ITEM audit_content_sources src/bench/content_index_test.cpp src/bench/content_instant_test.cpp)
+get_target_property(audit_content_libraries pulse_content_index_test LINK_LIBRARIES)
+add_executable(pulse_search_audit_test ${audit_content_sources} src/bench/search_audit_test.cpp
+    src/app/search_query.cpp src/app/global_search_handoff_query.cpp src/index/network_index.cpp
+    src/index/index_config.cpp src/index/index_shard.cpp src/index/change_tracking.cpp)
+target_link_libraries(pulse_search_audit_test PRIVATE ${audit_content_libraries} shell32 mpr advapi32)
+target_sources(pulse PRIVATE src/app/global_search_handoff_query.cpp)
+add_executable(pulse_audit_preview_test src/bench/audit_preview_test.cpp
+    src/bench/thumbnail_cache_test.cpp src/ui/thumbnail_cache.cpp
+    src/preview_host/preview_properties.cpp src/preview_host/preview_file_utils.cpp
+    src/preview_host/video_codec.cpp src/preview_host/media_pack.cpp
+    src/preview_host/image_pack.cpp src/preview_host/raw_pack.cpp src/common/ffmpeg_tool.cpp)
+target_link_libraries(pulse_audit_preview_test PRIVATE pulse_runtime_log ole32 propsys shell32 shlwapi advapi32 uuid
+    gdi32 d3d11 d2d1 dxgi)
+
+add_executable(pulse_quicklook_catalog_test src/bench/quicklook_catalog_test.cpp
+    src/ui/preview_format_catalog.cpp src/ui/typography.cpp src/ui/ui_compositor.cpp)
+target_link_libraries(pulse_quicklook_catalog_test PRIVATE pulse_localization d3d11 d2d1 dwrite
+    dxgi dcomp dwmapi shcore ole32 windowscodecs user32 gdi32 shell32 advapi32 comctl32)
+pulse_enable_lumatext(pulse_quicklook_catalog_test)

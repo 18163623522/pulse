@@ -177,23 +177,6 @@ float LayoutSettingsGeneral(SettingsLayout& l, const WindowViewModel& vm, float 
     l.folder_sort_card=row(narrow ? 98.0f : 64.0f); segments(l.folder_sort_card,l.folder_sort_row,3,282);
     l.confirm_delete_row=row(64);
     l.group[2]=D2D1::RectF(left,l.density_card.top,right,y);
-    // Quick Look: read-only supported formats card, bit 2 of settings_expanded.
-    y+=24*scale; l.preview_section=row(28);
-    l.disclosure[2]=row(64);
-    if(vm.settings_expanded & 4u) {
-        l.preview_formats=D2D1::RectF(left,y,right,y);
-        y+=LayoutPreviewFormats(l.preview_formats,scale,nullptr,nullptr);
-        l.preview_formats.bottom=y;
-        const float bw=painter ? painter->MeasureButtonWidth(l10n::Pick(L"获取", L"Get")) : 72*scale;
-        for(int i=0;i<kPreviewCodecCount;++i) {
-            l.preview_codec_row[i]=row(60);
-            const bool detected=(vm.settings_preview_codecs & kPreviewCodecsDetected)!=0;
-            if(detected && !(vm.settings_preview_codecs & (1u<<i)) && PreviewCodec(i).store_id)
-                l.preview_codec_button[i]=D2D1::RectF(right-16*scale-bw,l.preview_codec_row[i].top+14*scale,
-                    right-16*scale,l.preview_codec_row[i].top+46*scale);
-        }
-    }
-    l.preview_group=D2D1::RectF(left,l.disclosure[2].top,right,y);
     y+=18*scale;
     l.disclosure[0]=row(64);
     if(vm.settings_expanded & 1u) {
@@ -252,10 +235,42 @@ float LayoutSettingsContent(SettingsLayout& l, const WindowViewModel& vm, float 
 // Texts shared by layout (measuring) and drawing. l10n::Pick converts to
 // Traditional Chinese at run time, like the Quick Look format catalog.
 namespace pack_text {
-inline const wchar_t* Title() { return l10n::Pick(L"预览增强包", L"Preview packs"); }
+inline const wchar_t* Title() { return l10n::Pick(L"快速预览", L"Quick Look"); }
 inline const wchar_t* Intro() { return l10n::Pick(
-    L"按需为预览和缩略图添加格式支持。预览增强包单独下载、在隔离的预览进程中运行，可随时卸载。",
-    L"Add formats to previews and thumbnails on demand. Packs download separately, run in the isolated preview process and can be removed at any time."); }
+    L"按空格键预览文件，在这里查看格式支持并管理扩展。",
+    L"Press Space to preview files. Explore format support and manage extensions here."); }
+inline const wchar_t* PacksSection() { return l10n::Pick(L"预览增强包", L"Preview packs"); }
+inline const wchar_t* FormatsSection() { return l10n::Pick(L"格式", L"Formats"); }
+inline std::wstring FormatsSummary(const WindowViewModel& vm) {
+    const int packs = int(vm.settings_pack_media_installed) + int(vm.settings_pack_images_installed) +
+                      int(vm.settings_pack_raw_installed) + int(vm.settings_pack_archive_installed);
+    int codecs = 0;
+    for (int i = 0; i < kPreviewCodecCount; ++i) if (vm.settings_preview_codecs & (1u << i)) ++codecs;
+    const auto count = std::to_wstring(PreviewFormatCount());
+    std::wstring result = l10n::IsChinese()
+        ? l10n::Cn(L"共 ") + count + l10n::Cn(L" 种格式 · 增强包 ") + std::to_wstring(packs) + L"/4"
+        : count + L" formats · Preview packs " + std::to_wstring(packs) + L"/4";
+    if (vm.settings_preview_codecs & kPreviewCodecsDetected)
+        result += std::wstring(l10n::Pick(L" · 系统扩展 ", L" · System extensions ")) + std::to_wstring(codecs) + L"/4";
+    else result += l10n::Pick(L" · 系统扩展检测中", L" · Checking system extensions");
+    return result;
+}
+inline const wchar_t* FormatsTitle() { return l10n::Pick(L"支持的格式", L"Supported formats"); }
+inline const wchar_t* SystemTitle() { return l10n::Pick(L"系统扩展", L"System extensions"); }
+inline const wchar_t* Legend(int source) {
+    if (source == 0) return l10n::Pick(L"内置", L"Built in");
+    if (source == 1) return l10n::Pick(L"预览增强包", L"Preview pack");
+    return l10n::Pick(L"增强包或系统扩展", L"Pack or system extension");
+}
+inline const wchar_t* LegendNote() { return l10n::Pick(
+    L"虚线：对应的增强支持尚未启用",
+    L"Dashed: enhanced support is not enabled"); }
+inline const wchar_t* SystemHint(const WindowViewModel& vm) { return vm.settings_pack_images_installed && vm.settings_pack_images_enabled
+    ? l10n::Pick(L"已启用现代图像格式增强包：HEIC / AVIF 可以由增强包解码，无需另装对应的系统扩展。",
+                 L"The image pack is enabled: it decodes HEIC / AVIF without the corresponding system extensions.")
+    : l10n::Pick(L"HEIC / AVIF 也可通过现代图像格式增强包预览，无需微软账户。",
+                 L"The image pack also supports HEIC / AVIF without a Microsoft account."); }
+
 inline const wchar_t* OpenFolder() { return l10n::Pick(L"打开文件夹", L"Open folder"); }
 inline const wchar_t* Media() { return l10n::Pick(L"媒体", L"Media"); }
 inline const wchar_t* Advanced() { return l10n::Pick(L"高级", L"Advanced"); }
@@ -403,12 +418,74 @@ float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float sc
         return text.empty() ? 0.0f : painter
             ? painter->MeasureWrappedCaptionHeight(text, (std::max)(40*scale, width)) : 40*scale;
     };
-    y += 30*scale;  // below the intro line, as on the search page
+    y += caption_h(pack_text::Intro(), right - left) + 10*scale;
+    const float font = static_cast<float>(vm.settings_ui_font_scale) / 100.0f;
+    l.preview_section = row(28*font);
+    const float header_top = y;
+    l.preview_header_title = D2D1::RectF(left + 54*scale, y + 12*scale, right - 48*scale, y + (12 + 26*font)*scale);
+    l.preview_header_summary = D2D1::RectF(left + 54*scale, l.preview_header_title.bottom, right - 48*scale,
+        l.preview_header_title.bottom + caption_h(pack_text::FormatsSummary(vm), right - left - 102*scale));
+    y = l.preview_header_summary.bottom + 12*scale;
+    l.disclosure[2] = D2D1::RectF(left, header_top, right, y);
+    if (vm.settings_expanded & 4u) {
+        l.preview_legend = D2D1::RectF(left + 54*scale, y + 4*scale, right - 16*scale, y + 4*scale);
+        float legend_x = l.preview_legend.left, legend_y = l.preview_legend.top;
+        for (int i = 0; i < 3; ++i) {
+            const float width = painter ? painter->MeasureBadgeWidth(pack_text::Legend(i)) : (i == 2 ? 180 : 100)*scale;
+            if (legend_x > l.preview_legend.left && legend_x + width > l.preview_legend.right) {
+                legend_x = l.preview_legend.left; legend_y += 30*font*scale;
+            }
+            l.preview_legend_chip[i] = D2D1::RectF(legend_x, legend_y, (std::min)(legend_x + width, l.preview_legend.right), legend_y + 24*font*scale);
+            legend_x += width + 10*scale;
+        }
+        const bool inline_note = l.preview_legend.right - legend_x > 250*font*scale;
+        const float note_left = inline_note ? legend_x + 6*scale : l.preview_legend.left;
+        const float note_top = inline_note ? legend_y + 2*scale : legend_y + 32*font*scale;
+        l.preview_legend_note = D2D1::RectF(note_left, note_top, right - 16*scale,
+            note_top + caption_h(pack_text::LegendNote(), right - 16*scale - note_left));
+        y = (std::max)(legend_y + 24*font*scale, l.preview_legend_note.bottom) + 14*scale;
+        l.preview_legend.bottom = y;
+        l.preview_formats = D2D1::RectF(left, y, right, y);
+        y += LayoutPreviewFormats(l.preview_formats, scale, nullptr, nullptr, caption_h);
+        l.preview_formats.bottom = y;
+    }
+    l.preview_group = D2D1::RectF(left, header_top, right, y);
+    y += 24*scale; l.preview_codec_section = row(28*font);
+    const float codecs_top = y;
+    const bool stacked_codecs = right - left < 620*font*scale;
+    for (int i = 0; i < kPreviewCodecCount; ++i) {
+        const auto info = PreviewCodec(i);
+        const bool detected = (vm.settings_preview_codecs & kPreviewCodecsDetected) != 0;
+        const bool has = (vm.settings_preview_codecs & (1u << i)) != 0;
+        const bool button = detected && !has && info.store_id;
+        const auto status = !detected ? l10n::Pick(L"检测中", L"Checking") : has
+            ? l10n::Pick(L"已安装", L"Installed") : l10n::Pick(L"未安装", L"Not installed");
+        const float badge_w = painter ? painter->MeasureBadgeWidth(status) : 110*scale;
+        const float bw = button ? button_w(l10n::Pick(L"获取", L"Get")) : 0;
+        const float text_right = stacked_codecs ? right - 16*scale : right - 28*scale - badge_w - (button ? bw + 10*scale : 0);
+        const float desc_h = caption_h(info.description, text_right - left - 54*scale);
+        const float text_h = 14*scale + 26*font*scale + desc_h;
+        const float row_h = (std::max)(64*scale, text_h + (stacked_codecs ? 46 : 12)*scale);
+        l.preview_codec_row[i] = row(row_h / scale);
+        const auto r = l.preview_codec_row[i];
+        l.preview_codec_text[i] = D2D1::RectF(left + 54*scale, r.top + 10*scale, text_right, r.top + text_h);
+        const float controls_y = stacked_codecs ? r.bottom - 42*scale : (r.top + r.bottom - 32*scale)/2;
+        if (button) l.preview_codec_button[i] = D2D1::RectF(right - 16*scale - bw, controls_y, right - 16*scale, controls_y + 32*scale);
+        const float badge_right = button ? l.preview_codec_button[i].left - 10*scale : right - 16*scale;
+        l.preview_codec_badge[i] = D2D1::RectF(badge_right - badge_w, controls_y + (32 - 24*font)*scale/2,
+                                            badge_right, controls_y + (32 + 24*font)*scale/2);
+    }
+    l.preview_codec_hint = D2D1::RectF(left + 16*scale, y + 12*scale, right - 16*scale,
+        y + 12*scale + caption_h(pack_text::SystemHint(vm), right - left - 32*scale));
+    y = l.preview_codec_hint.bottom + 14*scale;
+    l.preview_codec_group = D2D1::RectF(left, codecs_top, right, y);
+    y += 30*scale; l.pack_section = row(32*font);
     // Summary: how many packs, their disk use and where they live.
-    l.pack_summary = row(72);
+    const bool compact_pack = right - left < 560*font*scale;
+    l.pack_summary = row(compact_pack ? 116.0f : 76.0f);
     const float open_w = button_w(pack_text::OpenFolder());
-    l.pack_open = D2D1::RectF(right - 16*scale - open_w, l.pack_summary.top + 20*scale,
-                              right - 16*scale, l.pack_summary.top + 52*scale);
+    l.pack_open = D2D1::RectF(right - 16*scale - open_w, l.pack_summary.bottom - 48*scale,
+                              right - 16*scale, l.pack_summary.bottom - 16*scale);
 
     // One pack card: icon, title + badge (+ switch), description, meta line
     // with the primary button, and the last action's message.
@@ -418,14 +495,16 @@ float LayoutSettingsPacks(SettingsLayout& l, const WindowViewModel& vm, float sc
                            std::wstring_view desc, std::wstring_view primary, const std::wstring& notice) {
         const float top = y;
         float badge_right = inner_right;
+        const float badge_top = top + (compact_pack ? 44*font : 19)*scale;
         if (shows_enable) {
-            *out.enable = D2D1::RectF(inner_right - 42*scale, top + 14*scale, inner_right, top + 46*scale);
+            *out.enable = D2D1::RectF(inner_right - 42*scale, badge_top - 5*scale, inner_right, badge_top + 27*scale);
             badge_right = out.enable->left - 12*scale;
         }
         const float badge_w = painter ? painter->MeasureBadgeWidth(badge.text) : 96*scale;
-        *out.badge = D2D1::RectF(badge_right - badge_w, top + 19*scale, badge_right, top + 41*scale);
+        *out.badge = D2D1::RectF(badge_right - badge_w, badge_top, badge_right, badge_top + 24*font*scale);
         *out.desc_h = caption_h(desc, inner_right - text_left);
-        const float footer = top + 40*scale + *out.desc_h + 12*scale;
+        const float desc_top = compact_pack ? out.badge->bottom + 12*scale : top + 40*scale;
+        const float footer = desc_top + *out.desc_h + 12*scale;
         const float primary_w = button_w(primary);
         *out.primary = D2D1::RectF(inner_right - primary_w, footer, inner_right, footer + 32*scale);
         float bottom = footer + 32*scale + 14*scale;

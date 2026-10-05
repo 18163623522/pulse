@@ -346,6 +346,7 @@ struct EmptyStateSpec {
 };
 
 class Painter {
+    friend struct PainterTestPeer;
 public:
     explicit Painter(Compositor* compositor = nullptr) noexcept;
 

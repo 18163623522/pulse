@@ -148,7 +148,11 @@ struct ThumbnailCacheTestAccess {
         for (int i = 0; i < 5; ++i) {
             auto req = request(std::to_wstring(i));
             req.identity = L"animation";
+            req.details = true;
+            cache.latest_details_identity_ = req.identity;
             ThumbnailCache::Item item;
+            item.kind = ipc::PreviewContentKind::Bitmap;
+            req.frame_index = static_cast<uint32_t>(i);
             item.frame_count = 10;
             item.frame_delay_ms = 100;
             item.frame_index = static_cast<uint32_t>(i);
@@ -160,6 +164,8 @@ struct ThumbnailCacheTestAccess {
         check(cache.items_.size() == 4 && cache.items_.contains(L"0") &&
               !cache.items_.contains(L"1") && cache.cache_bytes_ == 4,
               "animation keeps four most recently used frames");
+        check(!cache.still_by_identity_.contains(L"animation"),
+              "direct animation is not reused as a static grid fallback");
         cache.Evict();
         for (int i = 0; i < 5; ++i) {
             auto req = request(std::to_wstring(i));
@@ -296,20 +302,23 @@ struct ThumbnailCacheTestAccess {
                     item.kind = ipc::PreviewContentKind::Bitmap;
                     auto req = request(cache.Key(L"stale", 128, 5, 6));
                     req.identity = identity;
+                    item.frame_count = 2;
+                    item.frame_delay_ms = 100;
                     cache.StoreResult(req, std::move(item));
                     context->BeginDraw();
-                    const auto result = cache.Draw(context.get(), D2D1::RectF(0, 0, 100, 100),
-                        L"stale", 0, 256, 0, 5, 6);
+                    cache.running_ = true; // Inspect the queued resize without launching a helper.
+                    const auto result = cache.DrawGridThumbnail(context.get(), D2D1::RectF(0, 0, 100, 100),
+                        L"stale", 0, 256, 0, 5, 6, 1.0f, false, nullptr);
+                    cache.running_ = false;
                     context->EndDraw();
                     bool queued = false;
                     {
                         std::lock_guard lock(cache.mutex_);
-                        // The worker may already have answered (failed: no such file).
                         const std::wstring wanted = cache.Key(L"stale", 256, 5, 6);
                         queued = cache.pending_.contains(wanted) || cache.items_.contains(wanted);
                     }
                     check(result == PreviewDrawResult::Bitmap && queued,
-                          "new size shows previous bitmap while it decodes");
+                          "AUD-024: grid animated first frame survives new-size decode (2 frames, 100ms)");
                 }
                 context->SetTarget(nullptr);
             }

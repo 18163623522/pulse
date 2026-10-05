@@ -217,8 +217,22 @@ HRESULT CreateRenderingParams(IDWriteFactory2* factory, HMONITOR monitor,
 
 void SetTextRenderMode(TextRenderMode mode) noexcept {
     const int value = std::clamp(static_cast<int>(mode), 0, 2);
-    if (g_text_render_mode.exchange(value, std::memory_order_relaxed) != value)
+    if (g_text_render_mode.exchange(value, std::memory_order_relaxed) != value) {
         g_generation.fetch_add(1, std::memory_order_relaxed);
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM) -> BOOL {
+            SendMessageW(window, TextBackendChangedMessage(), 0, 0);
+            EnumChildWindows(window, [](HWND child, LPARAM) -> BOOL {
+                SendMessageW(child, TextBackendChangedMessage(), 0, 0);
+                return TRUE;
+            }, 0);
+            return TRUE;
+        }, 0);
+    }
+}
+
+UINT TextBackendChangedMessage() noexcept {
+    static const UINT message = RegisterWindowMessageW(L"Pulse.TextBackendChanged");
+    return message;
 }
 
 TextRenderMode CurrentTextRenderMode() noexcept {

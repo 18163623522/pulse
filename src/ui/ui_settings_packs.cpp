@@ -5,7 +5,7 @@
 
 namespace pulse::ui {
 
-// Settings > 预览增强包 (page 5). Geometry: LayoutSettingsPacks; texts:
+// Settings > 快速预览 (page 5). Geometry: LayoutSettingsPacks; texts:
 // pack_text (settings_layout_sections.h); clicks: SettingsPackAction.
 void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme) {
     using H = HitTestResult;
@@ -63,12 +63,125 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
                                     right - r.left - 54*s, theme.text_secondary);
     };
 
+    // Format availability and pack controls share the same current settings model.
+    const auto source_color = [&](PreviewFormatSource source) {
+        if (source == PreviewFormatSource::Pack) {
+            auto color = theme.accent;
+            if (vm.dark) {
+                color.r += (1.0f - color.r) * 0.5f;
+                color.g += (1.0f - color.g) * 0.5f;
+                color.b += (1.0f - color.b) * 0.5f;
+            }
+            return color;
+        }
+        if (source == PreviewFormatSource::PackOrSystem)
+            return vm.dark ? HexColor(0xB5C6E5) : HexColor(0x4F5D77);
+        return theme.text;
+    };
+    const auto chip = [&](D2D1_RECT_F bounds, std::wstring_view label, PreviewFormatState support) {
+        const auto color = source_color(support.source);
+        const auto rounded = D2D1::RoundedRect(bounds, (bounds.bottom - bounds.top)/2, (bounds.bottom - bounds.top)/2);
+        MakeBrush(dc, WithAlpha(color, vm.dark ? 0.13f : 0.08f), brFillHover_);
+        if (support.available) dc->FillRoundedRectangle(rounded, brFillHover_.get());
+        else {
+            if (!dashStroke_.get()) {
+                ComPtr<ID2D1Factory> factory;
+                dc->GetFactory(&factory);
+                auto properties = D2D1::StrokeStyleProperties();
+                properties.dashStyle = D2D1_DASH_STYLE_DASH;
+                factory->CreateStrokeStyle(properties, nullptr, 0, &dashStroke_);
+            }
+            MakeBrush(dc, WithAlpha(color, 0.65f), brStrokeCard_);
+            dc->DrawRoundedRectangle(rounded, brStrokeCard_.get(), s, dashStroke_.get());
+        }
+        painter_.DrawText(label, bounds, compositor_->SmallFormat(), color, fluent::HorizontalAlignment::Center);
+    };
+    text(pack_text::FormatsSection(), lay.preview_section);
+    card(lay.preview_group);
+    const auto header = lay.disclosure[2];
+    if (IsHovered(vm, H::SettingsDisclosure, 2)) {
+        MakeBrush(dc, theme.fill_hover, brFillHover_);
+        FillRoundedRect(dc, brFillHover_.get(), header.left + 2*s, header.top + 2*s,
+                        header.right - header.left - 4*s, header.bottom - header.top - 4*s, 6*s);
+    }
+    DrawIconText(header.left + 16*s, header.top + 20*s, 24*s, 24*s, L"\xE8A5", L"", theme.text_secondary, 0.85f);
+    text(pack_text::FormatsTitle(), lay.preview_header_title);
+    painter_.DrawWrappedCaption(pack_text::FormatsSummary(vm),
+        D2D1::Point2F(lay.preview_header_summary.left, lay.preview_header_summary.top),
+        lay.preview_header_summary.right - lay.preview_header_summary.left, theme.text_secondary);
+    const bool formats_open = (vm.settings_expanded & 4u) != 0;
+    DrawIconText(header.right - 38*s, (header.top + header.bottom)/2 - 9*s, 18*s, 18*s,
+                 formats_open ? L"\xE70D" : L"\xE76C", L"", theme.text_secondary, 0.75f);
+    if (formats_open) {
+        for (int i = 0; i < 3; ++i)
+            chip(lay.preview_legend_chip[i], pack_text::Legend(i), {static_cast<PreviewFormatSource>(i), i == 0});
+        painter_.DrawWrappedCaption(pack_text::LegendNote(),
+            D2D1::Point2F(lay.preview_legend_note.left, lay.preview_legend_note.top),
+            lay.preview_legend_note.right - lay.preview_legend_note.left, theme.text_secondary);
+        const auto format_divider = [&](float y) {
+            MakeBrush(dc, theme.stroke_divider, brStrokeDivider_);
+            FillRect(dc, brStrokeDivider_.get(), lay.preview_group.left, y,
+                     lay.preview_group.right - lay.preview_group.left, 1);
+        };
+        format_divider(lay.preview_legend.bottom);
+        std::vector<PreviewFormatChip> chips;
+        std::vector<PreviewFormatRow> rows;
+        LayoutPreviewFormats(lay.preview_formats, s, &chips, &rows,
+            [&](std::wstring_view value, float width) { return painter_.MeasureWrappedCaptionHeight(value, width); });
+        const auto& groups = PreviewFormatGroups();
+        for (size_t g = 0; g < rows.size() && g < groups.size(); ++g) {
+            text(groups[g].name, rows[g].name);
+            const auto& note = rows[g].note;
+            if (note.bottom > note.top && !groups[g].note.empty()) {
+                painter_.DrawWrappedCaption(groups[g].note, D2D1::Point2F(note.left, note.top),
+                                            note.right - note.left, theme.text_secondary);
+            }
+            if (g + 1 < rows.size()) format_divider(rows[g].bounds.bottom);
+        }
+        for (const auto& item : chips)
+            chip(item.rect, groups[item.group].extensions[item.index], PreviewFormatSupport(vm, item.group, item.index));
+    }
+
+    text(pack_text::SystemTitle(), lay.preview_codec_section);
+    card(lay.preview_codec_group);
+    const bool detected = (vm.settings_preview_codecs & kPreviewCodecsDetected) != 0;
+    for (int i = 0; i < kPreviewCodecCount; ++i) {
+        const auto info = PreviewCodec(i);
+        const auto& r = lay.preview_codec_row[i];
+        const auto& bounds = lay.preview_codec_text[i];
+        const float title_h = 26*s*static_cast<float>(vm.settings_ui_font_scale)/100;
+        DrawIconText(r.left + 16*s, r.top + 17*s, 24*s, 24*s,
+            i == 1 || i == 2 ? L"\xE714" : L"\xE91B", L"", theme.text_secondary, 0.85f);
+        text(info.name, D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.top + title_h));
+        painter_.DrawWrappedCaption(info.description, D2D1::Point2F(bounds.left, bounds.top + title_h),
+            bounds.right - bounds.left, theme.text_secondary);
+        const bool has = (vm.settings_preview_codecs & (1u << i)) != 0;
+        const auto status = !detected ? l10n::Pick(L"检测中", L"Checking") : has
+            ? l10n::Pick(L"已安装", L"Installed") : l10n::Pick(L"未安装", L"Not installed");
+        fluent::BadgeSpec badge;
+        badge.bounds = lay.preview_codec_badge[i]; badge.text = status;
+        badge.kind = !detected ? fluent::BadgeKind::Neutral : has ? fluent::BadgeKind::Success : fluent::BadgeKind::Warning;
+        painter_.DrawBadge(badge);
+        const auto& get = lay.preview_codec_button[i];
+        if (get.right > get.left) {
+            fluent::ControlState state{};
+            state.hovered = IsHovered(vm, H::SettingsPreviewStore, i);
+            painter_.DrawButton({get, l10n::Pick(L"获取", L"Get"), {}, fluent::ButtonKind::Standard, state});
+        }
+        divider_below(r);
+    }
+    painter_.DrawWrappedCaption(pack_text::SystemHint(vm),
+        D2D1::Point2F(lay.preview_codec_hint.left, lay.preview_codec_hint.top),
+        lay.preview_codec_hint.right - lay.preview_codec_hint.left, theme.text_secondary);
+    text(pack_text::PacksSection(), lay.pack_section);
+
     // Summary: count, disk use and location.
     {
         const auto& r = lay.pack_summary;
         card(r);
         DrawIconText(r.left + 16*s, r.top + 24*s, 24*s, 24*s, L"\xE7B8", L"", theme.text_secondary, 0.85f);
-        const float right = lay.pack_open.left - 12*s;
+        const bool compact = r.right - r.left < 560*s*static_cast<float>(vm.settings_ui_font_scale)/100;
+        const float right = compact ? r.right - 16*s : lay.pack_open.left - 12*s;
         text(pack_text::Summary(vm), D2D1::RectF(r.left + 54*s, r.top + 14*s, right, r.top + 38*s));
         text(vm.settings_pack_root, D2D1::RectF(r.left + 54*s, r.top + 38*s, right, r.top + 58*s), true);
         button(lay.pack_open, pack_text::OpenFolder(), PackAction::OpenFolder);
@@ -91,14 +204,17 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
         card(r);
         const float text_left = r.left + 54*s, inner_right = r.right - 16*s;
         DrawIconText(r.left + 16*s, r.top + 18*s, 24*s, 24*s, c.icon, L"", theme.accent, 0.9f);
-        text(c.title, D2D1::RectF(text_left, r.top + 12*s, c.badge.left - 12*s, r.top + 36*s));
+        const bool stacked = c.badge.top > r.top + 30*s;
+        text(c.title, D2D1::RectF(text_left, r.top + 12*s,
+            stacked ? inner_right : c.badge.left - 12*s, r.top + 40*s));
         fluent::BadgeSpec spec{};
         spec.bounds = c.badge;
         spec.text = c.badge_text.text;
         spec.kind = c.badge_text.kind;
         painter_.DrawBadge(spec);
         if (c.shows_enable) toggle(c.enable, c.enabled, c.enable_action);
-        painter_.DrawWrappedCaption(c.desc, D2D1::Point2F(text_left, r.top + 40*s),
+        const float desc_top = stacked ? c.badge.bottom + 12*s : r.top + 40*s;
+        painter_.DrawWrappedCaption(c.desc, D2D1::Point2F(text_left, desc_top),
                                     inner_right - text_left, theme.text_secondary);
         const float meta_right = c.primary.left - 12*s;
         if (c.installing) {

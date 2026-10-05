@@ -452,7 +452,8 @@ bool ThumbnailCache::StoreResult(const Request& req, Item result) {
         // Paged documents (frame_count > 1, zero delay) keep page 1 as the
         // still, like a single-frame image.
         if (!result.failed && result.kind == ipc::PreviewContentKind::Bitmap &&
-            (result.frame_count <= 1 || (result.frame_delay_ms == 0 && req.frame_index == 0)) &&
+            ((!req.details && req.frame_index == 0) || result.frame_count <= 1 ||
+             (result.frame_delay_ms == 0 && req.frame_index == 0)) &&
             !req.identity.empty())
             still_by_identity_[req.identity] = req.key;
     }
@@ -465,7 +466,7 @@ bool ThumbnailCache::StoreResult(const Request& req, Item result) {
     // Animation frames of one file are capped at four; pages of a paged
     // document (zero delay) are ordinary LRU entries so every visible page and
     // strip thumbnail can stay resident together.
-    if (result.frame_count > 1 && result.frame_delay_ms > 0) {
+    if (req.details && result.frame_count > 1 && result.frame_delay_ms > 0) {
         size_t frames = 0;
         for (const auto& [key, item] : items_) {
             if (item.frame_count > 1 && item.animation_identity == req.identity) ++frames;

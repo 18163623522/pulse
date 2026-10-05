@@ -46,10 +46,10 @@ enum ExitCode : int {
 };
 
 // File extensions (lower case, with the dot) the pack is offered for.
+inline constexpr std::wstring_view kExtensions[] = {
+    L".heic", L".heif", L".hif", L".avif", L".jxl", L".exr", L".hdr", L".qoi"};
 inline bool IsImagePackExtension(std::wstring_view ext) {
-    static constexpr const wchar_t* kExtensions[] = {
-        L".heic", L".heif", L".hif", L".avif", L".jxl", L".exr", L".hdr", L".qoi"};
-    for (const wchar_t* candidate : kExtensions) {
+    for (const auto candidate : kExtensions) {
         const std::wstring_view c(candidate);
         if (ext.size() != c.size()) continue;
         bool same = true;

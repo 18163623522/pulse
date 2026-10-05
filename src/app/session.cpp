@@ -1,5 +1,6 @@
 // session.cpp
 #include "session.h"
+#include "../common/config_json.h"
 #include "../ui/panel_metrics.h"
 #include "../common/json_utils.h"
 #include "../common/utf8_file.h"
@@ -350,7 +351,7 @@ bool LoadSession(SessionSnapshot& snap) {
 }
 
 bool ParseSessionJson(const std::wstring& json, SessionSnapshot& snap) {
-    if (json.empty()) return false;
+    if (!pulse::json::ValidConfigObject(json)) return false;
     snap.window_rect.left = pulse::json::ExtractInt(json, L"left");
     snap.window_rect.top = pulse::json::ExtractInt(json, L"top");
     snap.window_rect.right = pulse::json::ExtractInt(json, L"right");

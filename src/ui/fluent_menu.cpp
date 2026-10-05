@@ -1173,7 +1173,7 @@ bool FluentMenu::EnsureFilterEdit() {
     edit_ = CreateChildEdit(hwnd_);
     if (!edit_) return false;
     SetWindowTheme(edit_, L"", L"");
-    if (!compositor_ || !compositor_->LumaTextEnabled())
+    if (!compositor_ || !compositor_->CustomEditEnabled())
         SetLayeredWindowAttributes(edit_, 0, 255, LWA_ALPHA);
     SendMessageW(edit_, WM_SETFONT, (WPARAM)edit_font_, TRUE);
     SendMessageW(edit_, EM_SETCUEBANNER, TRUE,

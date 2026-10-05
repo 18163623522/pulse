@@ -2,6 +2,7 @@
 #include "path_utils.h"
 #include "preview_packs.h"
 #include <algorithm>
+#include <iterator>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -10,23 +11,12 @@
 
 namespace pulse::ffmpeg {
 
-namespace {
-bool IsOneOf(std::wstring_view extension, std::initializer_list<std::wstring_view> values) {
-    return std::find(values.begin(), values.end(), extension) != values.end();
-}
-} // namespace
-
 bool IsVideoExtension(std::wstring_view e) {
-    return IsOneOf(e, {L".mp4", L".m4v", L".mov", L".mkv", L".webm", L".avi", L".wmv", L".flv",
-        L".f4v", L".mpg", L".mpeg", L".m2v", L".ts", L".m2t", L".mts", L".m2ts", L".vob",
-        L".3gp", L".3g2", L".asf", L".ogv", L".rm", L".rmvb", L".mxf", L".divx", L".dv",
-        L".y4m", L".mjpeg", L".hevc", L".h264", L".264", L".265"});
+    return std::find(std::begin(kVideoExtensions), std::end(kVideoExtensions), e) != std::end(kVideoExtensions);
 }
 
 bool IsAudioExtension(std::wstring_view e) {
-    return IsOneOf(e, {L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma", L".ogg", L".oga",
-        L".opus", L".aif", L".aiff", L".ape", L".wv", L".tta", L".dsf", L".dff", L".mka",
-        L".ac3", L".dts", L".amr", L".caf", L".mpc"});
+    return std::find(std::begin(kAudioExtensions), std::end(kAudioExtensions), e) != std::end(kAudioExtensions);
 }
 
 std::wstring QuoteArgument(const std::wstring& argument) {

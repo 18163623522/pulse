@@ -520,7 +520,7 @@ private:
         SetWindowTheme(edit, L"", L"");
         const auto& cue = l10n::Get(cue_id);
         SendMessageW(edit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(cue.c_str()));
-        if (!compositor_.LumaTextEnabled())
+        if (!compositor_.CustomEditEnabled())
             SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA);
         if (font_) SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
         SetWindowSubclass(edit, EditProc, static_cast<UINT_PTR>(id), reinterpret_cast<DWORD_PTR>(this));

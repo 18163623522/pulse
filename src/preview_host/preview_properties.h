@@ -7,11 +7,14 @@
 #include <string>
 #include <vector>
 
+struct IPropertyStore;
+
 namespace pulse::preview {
 
 struct PreviewPropertyValue { std::wstring label, value; };
 
 // At most six formatted label/value pairs; empty when the store is unavailable.
+std::vector<PreviewPropertyValue> ReadPropertiesFromStore(const std::wstring& path, IPropertyStore* store);
 std::vector<PreviewPropertyValue> ReadProperties(const std::wstring& path);
 
 // Playing time of a video file in milliseconds (grid thumbnail duration

@@ -53,6 +53,16 @@ inline constexpr std::wstring_view kRaw[] = {
     L".dng", L".raf", L".orf", L".rw2", L".pef", L".srw", L".rwl"
 };
 
+// Media families describe file categories; decoder availability remains backend-specific.
+inline constexpr std::wstring_view kVideo[] = {
+    L".mp4", L".m4v", L".mov", L".wmv", L".avi", L".mkv", L".webm",
+    L".mpg", L".mpeg", L".m2ts", L".mts", L".3gp"
+};
+inline constexpr std::wstring_view kAudio[] = {
+    L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma", L".ogg",
+    L".oga", L".opus", L".aif", L".aiff"
+};
+
 // Vector documents WIC cannot decode but Direct2D renders natively. They are
 // deliberately not part of the image list: that list feeds the WIC decoder,
 // and sending an SVG there only produced "image-decode-failed".
@@ -126,6 +136,15 @@ inline bool IsTextExtension(std::wstring_view extension) {
 
 inline bool IsImageExtension(std::wstring_view extension) {
     return IsFamilyExtension(PreviewFamily::Image, extension);
+}
+
+inline bool IsVideoExtension(std::wstring_view extension) {
+    for (const auto value : formats::kVideo) if (value == extension) return true;
+    return false;
+}
+inline bool IsAudioExtension(std::wstring_view extension) {
+    for (const auto value : formats::kAudio) if (value == extension) return true;
+    return false;
 }
 
 inline bool IsVectorExtension(std::wstring_view extension) {

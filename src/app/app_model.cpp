@@ -2,6 +2,7 @@
 #include "app_model.h"
 #include "layout_pane_selection.h"
 #include "network_sidebar.h"
+#include "../common/config_json.h"
 #include "search_query.h"
 #include "entry_group.h"
 #include "../common/json_utils.h"
@@ -990,12 +991,13 @@ void StagingTray::ToJson(std::wstring& out) const {
 }
 
 bool StagingTray::FromJson(const std::wstring& in) {
-    batches_.clear();
+    if (!pulse::json::ValidConfigArray(in)) return false;
+    std::vector<TrayBatch> parsed;
     const size_t open = in.find(L'[');
     if (open == std::wstring::npos) return false;
     const size_t close = pulse::json::MatchingClose(in, open);
     if (close == std::wstring::npos) return false;
-    return pulse::json::ForEachElement(in.substr(open, close - open + 1), [&](const std::wstring& block) {
+    const bool ok = pulse::json::ForEachElement(in.substr(open, close - open + 1), [&](const std::wstring& block) {
         if (block.empty() || block.front() != L'{') return;
         TrayBatch batch;
         batch.move_intent = pulse::json::ExtractBool(block, L"move");
@@ -1012,8 +1014,11 @@ bool StagingTray::FromJson(const std::wstring& in) {
             }
             batch.items.push_back(std::move(it));
         }
-        if (!batch.items.empty()) batches_.push_back(std::move(batch));
+        if (!batch.items.empty()) parsed.push_back(std::move(batch));
     });
+    if (!ok) return false;
+    batches_ = std::move(parsed);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

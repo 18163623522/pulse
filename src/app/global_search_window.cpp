@@ -194,16 +194,12 @@ struct GlobalSearchWindow::Impl {
     }
     void MergeFilenames() {
         rows.clear();
-        size_t duplicates = 0;
-        for (const auto* source : {&local_result, &network_result}) for (const auto& hit : source->hits) {
-            const bool duplicate = std::any_of(rows.begin(), rows.end(), [&](const auto& row) {
-                return CompareStringOrdinal(row.path.c_str(), -1, hit.path.c_str(), -1, TRUE) == CSTR_EQUAL;
-            });
-            if (duplicate) { ++duplicates; continue; }
-            if (rows.size() < kMaximumResults) rows.push_back({hit.name, hit.path, {}, hit.is_dir});
-        }
-        total = local_result.total + network_result.total;
-        total -= std::min(total, duplicates);
+        index::Query request;
+        request.needle = search_pinyin ? query : L"nopinyin: " + query;
+        request.limit = kMaximumResults;
+        const auto merged = index::MergeSearchResults(request, local_result, network_result, true);
+        for (const auto& hit : merged.hits) rows.push_back({hit.name, hit.path, {}, hit.is_dir});
+        total = merged.total;
         truncated = total > rows.size(); busy = !(local_ready && network_ready);
         if (!busy) KillTimer(hwnd, kConnectTimeout);
         ClampSelection(false); Invalidate();

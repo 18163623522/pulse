@@ -723,11 +723,45 @@ bool TestNetworkLocationsView() {
     return ok;
 }
 
+bool TestStaticMenuIdentity() {
+    using namespace pulse::app;
+    bool ok = true;
+    for (int scenario = 0; scenario != 5; ++scenario) {
+        ContextMenuController controller;
+        ContextMenuPrefs prefs;
+        std::wstring invoked;
+        ContextMenuController::ShellOperations operations;
+        operations.query = [](auto, HWND, bool, bool, auto) { return 17u; };
+        operations.execute_command = [&](const auto& command, const auto&) { invoked = command; };
+        controller.SetShellOperations(std::move(operations));
+        StaticVerb a{L"a", L"A", L"", L"cmd-a", {}};
+        StaticVerb b{L"b", L"B", L"", L"cmd-b", {}};
+        StaticVerb parent{L"parent", L"Parent", L"", L"", {a,b}};
+        const bool cascade = scenario == 1;
+        controller.CompleteStaticVerbs(L".txt", cascade ? std::vector<StaticVerb>{parent} :
+            std::vector<StaticVerb>{a,b}, controller.cache_generation());
+        controller.StartQuery(prefs, nullptr, {L"C:\\one.txt"}, false, L".txt", false,
+            [](const auto& path) { return path; }, {});
+        controller.OpenMenu({});
+        parent.children = {b,a};
+        controller.CompleteStaticVerbs(L".txt", cascade ? std::vector<StaticVerb>{parent} :
+            scenario == 2 ? std::vector<StaticVerb>{b} : std::vector<StaticVerb>{b,a},
+            controller.cache_generation());
+        if (scenario == 3) controller.NotePatchedDisplay();
+        if (scenario == 4) controller.CloseMenu();
+        controller.ExecuteShellCommand(CmdShellStaticBase + (cascade ? 1 : 0), {}, {});
+        const auto expected = scenario == 2 ? L"" : scenario == 3 ? L"cmd-b" : L"cmd-a";
+        ok &= Report("static menu displayed identity survives asynchronous refresh", invoked == expected);
+    }
+    return ok;
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc == 2 && std::wstring(argv[1]) == L"--network-locations-view")
         return TestNetworkLocationsView() ? 0 : 1;
     if (argc == 2 && std::wstring(argv[1]) == L"--layout-active-pane")
         return TestLayoutActivePane() ? 0 : 1;
+    if (argc == 2 && std::wstring(argv[1]) == L"--audit-identity") return TestStaticMenuIdentity() ? 0 : 1;
     if (argc == 2 && std::wstring(argv[1]) == L"--default-manager") {
         pulse::l10n::Initialize(GetModuleHandleW(nullptr), L"zh-CN");
         return TestDefaultFileManager() ? 0 : 1;

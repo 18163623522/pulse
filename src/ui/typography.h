@@ -39,6 +39,8 @@ HRESULT CreateRenderingParams(IDWriteFactory2* factory, HMONITOR monitor,
 enum class TextRenderMode : int { Auto = 0, Sharp = 1, Smooth = 2 };
 void SetTextRenderMode(TextRenderMode mode) noexcept;
 TextRenderMode CurrentTextRenderMode() noexcept;
+// Sent to existing UI-thread windows after the selected backend changes.
+UINT TextBackendChangedMessage() noexcept;
 // Auto draws with LumaText; Sharp and Smooth use DirectWrite directly.
 inline bool UseLumaTextForUi() noexcept { return CurrentTextRenderMode() == TextRenderMode::Auto; }
 

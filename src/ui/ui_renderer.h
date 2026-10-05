@@ -39,7 +39,7 @@ namespace pulse::ui {
 enum class PaneHeaderIcon;
 
 inline constexpr unsigned kSettingsContextExpandedMask = 0x1f00u;
-inline constexpr unsigned kSettingsDefaultExpandedMask = kSettingsContextExpandedMask | 0x3u;
+inline constexpr unsigned kSettingsDefaultExpandedMask = kSettingsContextExpandedMask | 0x7u;
 
 class BloomAccentPicker;
 

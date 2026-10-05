@@ -3,6 +3,8 @@
 #include "ui_compositor.h"
 
 namespace pulse::ui {
+// Applies the selected backend to existing child surfaces; returns custom mode.
+bool SynchronizeChildEditBackend(Compositor& compositor, HWND hwnd);
 bool HandleChildEditMessage(Compositor& compositor, IDWriteTextFormat* format,
     D2D1_COLOR_F foreground, D2D1_COLOR_F background, HBRUSH background_brush,
     HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, LRESULT& result);

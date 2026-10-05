@@ -1,5 +1,6 @@
 // app_state.h — Window process state, shot request, and WM_APP message ids.
 #pragma once
+#include "../common/path_utils.h"
 
 #include "../ui/ui_compositor.h"
 #include "../ui/notification_toast.h"
@@ -17,6 +18,7 @@
 #include "../fs/fs_snapshot.h"
 #include "../fs/fs_watch.h"
 #include "app_model.h"
+#include "live_network_search.h"
 #include "frame_pump.h"
 #include <deque>
 #include <atomic>
@@ -159,17 +161,6 @@ struct TrayTextProbe {
     std::atomic<int> state{0}; // 0 running, 1 both text, 2 binary / unreadable
 };
 
-// #74: live walk of an unindexed network search scope. Reused for later pages
-// and re-sorts of the same query; F5 or a finished file operation drops it.
-struct LiveNetworkSearch {
-    std::wstring key;
-    std::wstring folder;
-    std::mutex mutex;
-    index::LiveNetworkMatches matches;  // guarded by mutex
-    std::atomic<bool> cancel{false};
-    std::atomic<uint32_t> latest_id{0};  // newest request answered from this walk
-};
-
 struct SidebarRefreshLoad;
 struct AppState {
     HWND hwnd = nullptr;
@@ -290,7 +281,7 @@ struct AppState {
         std::wstring live_network_root;  // #74: scope walked live instead of the network index
     };
     std::unordered_map<uint32_t, PendingIndexSearch> pendingIndexSearches;
-    std::shared_ptr<LiveNetworkSearch> liveNetworkSearch;
+    LiveNetworkSearchSessions liveNetworkSearches;
     std::vector<index::Hit> paletteHits;
     size_t paletteTotal = 0;
     std::wstring paletteQuery;
@@ -810,9 +801,7 @@ inline AppState* GetAppState(HWND hwnd) {
 }
 
 inline std::wstring ClipboardPath(const std::wstring& p) {
-    if (p.starts_with(L"\\\\?\\UNC\\")) return L"\\\\" + p.substr(8);
-    if (p.starts_with(L"\\\\?\\")) return p.substr(4);
-    return p;
+    return path::StripExtendedPathPrefix(p);
 }
 
 } // namespace pulse

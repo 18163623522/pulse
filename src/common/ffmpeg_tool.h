@@ -12,6 +12,16 @@
 
 namespace pulse::ffmpeg {
 
+inline constexpr std::wstring_view kVideoExtensions[] = {
+    L".mp4", L".m4v", L".mov", L".mkv", L".webm", L".avi", L".wmv", L".flv",
+    L".f4v", L".mpg", L".mpeg", L".m2v", L".ts", L".m2t", L".mts", L".m2ts", L".vob",
+    L".3gp", L".3g2", L".asf", L".ogv", L".rm", L".rmvb", L".mxf", L".divx", L".dv",
+    L".y4m", L".mjpeg", L".hevc", L".h264", L".264", L".265"};
+inline constexpr std::wstring_view kAudioExtensions[] = {
+    L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma", L".ogg", L".oga",
+    L".opus", L".aif", L".aiff", L".ape", L".wv", L".tta", L".dsf", L".dff", L".mka",
+    L".ac3", L".dts", L".amr", L".caf", L".mpc"};
+
 // Containers and audio formats the media pack handles (lower case, with dot).
 bool IsVideoExtension(std::wstring_view extension);
 bool IsAudioExtension(std::wstring_view extension);

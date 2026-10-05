@@ -1732,8 +1732,11 @@ struct SettingsLayout {
     D2D1_RECT_F integration_section{}, integration_badge{}, integration_bar{}, integration_list_head{};
     D2D1_RECT_F integration_chip[4]{};
     float integration_text_right = 0.0f;
-    // General > Quick Look: supported formats card (disclosure[2]).
-    D2D1_RECT_F preview_section{}, preview_group{}, preview_formats{};
+    // Quick Look page: formats, source legend and system extensions.
+    D2D1_RECT_F preview_section{}, preview_group{}, preview_formats{}, preview_legend{}, preview_legend_note{};
+    D2D1_RECT_F preview_header_title{}, preview_header_summary{};
+    D2D1_RECT_F preview_legend_chip[3]{}, preview_codec_section{}, preview_codec_group{}, preview_codec_hint{}, pack_section{};
+    D2D1_RECT_F preview_codec_text[kPreviewCodecCount]{}, preview_codec_badge[kPreviewCodecCount]{};
     D2D1_RECT_F preview_codec_row[kPreviewCodecCount]{}, preview_codec_button[kPreviewCodecCount]{};
     // 预览增强包 page (5), see LayoutSettingsPacks.
     D2D1_RECT_F pack_summary{}, pack_open{}, pack_media_section{}, pack_card{}, pack_badge{}, pack_enable{},

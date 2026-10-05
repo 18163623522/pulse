@@ -18,6 +18,7 @@
 #include "../ui/quick_preview_window.h"
 #include "app_sidebar_refresh.h"
 #include "../ui/typography.h"
+#include "../ui/preview_format_catalog.h"
 #include "../common/crash_reporter.h"
 #include "../common/diagnostics_exporter.h"
 #include "../common/localization.h"
@@ -1011,6 +1012,13 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
     case WM_ACTIVATE:
         if (s) s->renderer.NotifyPreviewActivate(LOWORD(wParam) != WA_INACTIVE);
+        if (s && LOWORD(wParam) != WA_INACTIVE) {
+            std::wstring kind, page;
+            const auto* tab = ActiveTab(*s);
+            if (tab && app::ParsePulsePath(tab->current_path, &kind, &page) && kind == L"settings" &&
+                app::SettingsController::PageFromName(page) == 5)
+                ui::DetectPreviewCodecs(true, hwnd);
+        }
         break;
 
     case WM_ACTIVATEAPP:
@@ -2642,6 +2650,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         }
 #ifdef PULSE_WITH_SELFTEST
         wchar_t settings_interactions[32768]{};
+        wchar_t quicklook_settings[32768]{};
+        if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_QUICKLOOK_SETTINGS", quicklook_settings, ARRAYSIZE(quicklook_settings))) {
+            extern int RunQuickLookSettingsTest(AppState&, const wchar_t*);
+            const int result = RunQuickLookSettingsTest(state, quicklook_settings);
+            DestroyWindow(hwnd); OleUninitialize(); return result;
+        }
         if (state.isolatedTest && GetEnvironmentVariableW(L"PULSE_TEST_SETTINGS_INTERACTIONS",settings_interactions,ARRAYSIZE(settings_interactions))) {
             extern int RunSettingsInteractionTest(AppState&,const wchar_t*);
             const int result=RunSettingsInteractionTest(state,settings_interactions);

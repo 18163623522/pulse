@@ -1,5 +1,6 @@
 // context_menu_prefs.cpp — JSON load/save for the Explorer fusion-zone prefs.
 #include "context_menu_prefs.h"
+#include "../common/config_json.h"
 #include "session.h"
 #include "../common/json_utils.h"
 #include "../common/utf8_file.h"
@@ -267,7 +268,7 @@ std::wstring ContextMenuPrefs::ToJson() const {
 }
 
 bool ContextMenuPrefs::FromJson(const std::wstring& json) {
-    if (json.empty()) return false;
+    if (!pulse::json::ValidConfigObject(json)) return false;
     explorer_cap = ClampCap(pulse::json::ExtractInt(json, L"explorer_cap", ipc::kDefaultExplorerCap),
                             1, 48, ipc::kDefaultExplorerCap);
     open_with_mru = ClampCap(pulse::json::ExtractInt(json, L"open_with_mru", 2), 0, 8, 2);
@@ -415,14 +416,24 @@ void ContextMenuPrefs::CoalesceCompressCatalog() {
 
 bool ContextMenuPrefs::Load() {
     const std::wstring dir = GetPulseDataDir();
-    if (dir.empty()) return false;
+    if (dir.empty()) { load_failed = true; return false; }
+    const std::wstring file = dir + L"\\context_menu.json";
+    const DWORD attributes = GetFileAttributesW(file.c_str());
+    const DWORD code = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+    const bool missing = attributes == INVALID_FILE_ATTRIBUTES &&
+        (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND);
     std::wstring json;
-    if (!ReadUtf8File(dir + L"\\context_menu.json", json) || json.empty()) return false;
-    return FromJson(json);
+    if (!missing && (!ReadUtf8File(file, json) || !FromJson(json))) {
+        load_failed = true;
+        return false;
+    }
+    load_failed = false;
+    return true;
 }
 
 bool ContextMenuPrefs::Save() const {
     if (!persist) return true;
+    if (load_failed) return false;
     const std::wstring dir = GetPulseDataDir();
     if (dir.empty()) return false;
     return WriteUtf8FileAtomic(dir + L"\\context_menu.json", ToJson());

@@ -6,6 +6,7 @@
 #include "../common/path_utils.h"
 #include "../common/preview_packs.h"
 #include "ffmpeg_playback.h"
+#include "../common/preview_extensions.h"
 #include <mfplay.h>
 #include <mfapi.h>
 #include <mfreadwrite.h>
@@ -210,18 +211,14 @@ std::wstring LowerExtension(const std::wstring& path) {
 
 bool VideoPreview::IsAudio(const std::wstring& path) {
     const std::wstring ext = LowerExtension(path);
-    for (const auto* audio : {L".mp3", L".wav", L".flac", L".m4a", L".aac", L".wma",
-                              L".ogg", L".oga", L".opus", L".aif", L".aiff"})
-        if (ext == audio) return true;
-    return ffmpeg::IsAudioExtension(ext) && MediaPackPlayable();
+    return preview::IsAudioExtension(ext) ||
+        (ffmpeg::IsAudioExtension(ext) && MediaPackPlayable());
 }
 
 bool VideoPreview::Supports(const std::wstring& path) {
     const std::wstring ext = LowerExtension(path);
-    for (const auto* video : {L".mp4", L".m4v", L".mov", L".wmv", L".avi", L".mkv",
-                              L".webm", L".mpg", L".mpeg", L".m2ts", L".mts", L".3gp"})
-        if (ext == video) return true;
-    return IsAudio(path) || (ffmpeg::IsVideoExtension(ext) && MediaPackPlayable());
+    return preview::IsVideoExtension(ext) || preview::IsAudioExtension(ext) ||
+        ((ffmpeg::IsVideoExtension(ext) || ffmpeg::IsAudioExtension(ext)) && MediaPackPlayable());
 }
 
 LRESULT CALLBACK VideoPreview::VideoProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {

@@ -1,10 +1,15 @@
+#include "../common/windows_compat.h"
+#include "ui_renderer.h"
 // Keep MF header feature gates consistent with the Windows 8.1 app target
 // (same as video_preview.cpp).
 #undef NTDDI_VERSION
 #define NTDDI_VERSION 0x06030000
 #include "preview_format_catalog.h"
 #include "video_preview.h"
+#include "typography.h"
 #include "../common/localization.h"
+#include "../common/image_pack_protocol.h"
+#include "../common/ffmpeg_tool.h"
 #include "../common/preview_extensions.h"
 #include <mfapi.h>
 #include <objbase.h>
@@ -51,9 +56,10 @@ std::vector<PreviewFormatGroup> BuildGroups() {
     AppendTable(images, f::kVector);
     AppendTable(images, f::kPsd);
     AppendTable(images, f::kMetaFile);
+    AppendTable(images, imgpack::kExtensions);
     add(L"图片", L"Images",
-        L"动图受预览限额限制；TIFF 可翻页；SVG 使用系统渲染，不支持的内容显示源码；HEIC / AVIF 需要系统扩展",
-        L"Animation has preview limits; TIFF supports pages; SVG uses system rendering; unsupported content shows source; HEIC / AVIF need system extensions",
+        L"动图可播放，TIFF 可翻页；SVG 不支持的内容显示源码",
+        L"Animation and TIFF pages; unsupported SVG content shows source",
         std::move(images));
 
     std::vector<std::wstring> raw;
@@ -85,14 +91,13 @@ std::vector<PreviewFormatGroup> BuildGroups() {
 
     // These are playback candidates, not a guarantee of installed system support.
     std::vector<std::wstring> media;
-    for (const wchar_t* extension : {L"mp4", L"mkv", L"mov", L"webm", L"avi", L"wmv", L"m4v",
-                                     L"mpg", L"mpeg", L"m2ts", L"mts", L"3gp", L"mp3", L"flac",
-                                     L"wav", L"m4a", L"aac", L"wma", L"ogg", L"oga", L"opus",
-                                     L"aif", L"aiff"})
-        if (VideoPreview::Supports(std::wstring(L"x.") + extension)) media.emplace_back(extension);
+    AppendTable(media, f::kVideo);
+    AppendTable(media, f::kAudio);
+    AppendTable(media, ffmpeg::kVideoExtensions);
+    AppendTable(media, ffmpeg::kAudioExtensions);
     add(L"音视频", L"Audio & video",
-        L"播放取决于系统组件；OGG / OGA / Opus 需兼容的系统媒体扩展；HEVC / AV1 见下方",
-        L"Playback depends on Windows media components; OGG / OGA / Opus need compatible system extensions; HEVC / AV1 below",
+        L"由系统解码器播放；媒体增强包或已有 FFmpeg 补充解码支持",
+        L"Playback uses system codecs; the media pack or your FFmpeg adds decoding support",
         std::move(media));
 
     std::vector<std::wstring> archives;
@@ -105,6 +110,8 @@ std::vector<PreviewFormatGroup> BuildGroups() {
     AppendTable(fonts, f::kFont);
     add(L"字体", L"Fonts", L"显示样张，无需安装",
         L"Specimen page without installing", std::move(fonts));
+    // Keep media adjacent to images without changing extension deduplication.
+    std::rotate(groups.begin() + 1, groups.begin() + 5, groups.begin() + 6);
     return groups;
 }
 
@@ -241,6 +248,35 @@ size_t PreviewFormatCount() {
     return count;
 }
 
+PreviewFormatState PreviewFormatSupport(const WindowViewModel& vm, size_t group, size_t index) {
+    const auto& groups = PreviewFormatGroups();
+    if (group >= groups.size() || index >= groups[group].extensions.size()) return {};
+    const std::wstring ext = L"." + groups[group].extensions[index];
+    // Ambiguous .ts is listed once in Code & text, where it needs no media pack.
+    if (preview::IsTextExtension(ext)) return {};
+    const bool image_pack = vm.settings_pack_images_installed && vm.settings_pack_images_enabled;
+    const bool media_pack = vm.settings_pack_ffmpeg_enabled &&
+        (vm.settings_pack_use_custom ? vm.settings_pack_ffmpeg == 2 : vm.settings_pack_media_installed);
+    if (imgpack::IsImagePackExtension(ext)) {
+        const bool heif = preview::IsOneOf(ext, {L".heic", L".heif", L".hif"});
+        const bool avif = ext == L".avif";
+        const bool detected = (vm.settings_preview_codecs & kPreviewCodecsDetected) != 0;
+        const bool system = detected && (heif ? (vm.settings_preview_codecs & 3u) == 3u :
+                                         avif && (vm.settings_preview_codecs & 4u));
+        return {heif || avif ? PreviewFormatSource::PackOrSystem : PreviewFormatSource::Pack,
+                image_pack || system};
+    }
+    if (preview::IsFamilyExtension(preview::PreviewFamily::Raw, ext))
+        return {PreviewFormatSource::PackOrSystem, vm.settings_pack_raw_installed && vm.settings_pack_raw_enabled};
+    if (preview::IsArchiveExtension(ext) && !preview::IsOneOf(ext, {L".zip", L".tar", L".iso", L".udf"}))
+        return {PreviewFormatSource::PackOrSystem, vm.settings_pack_archive_installed && vm.settings_pack_archive_enabled};
+    const auto in = [&](const auto& table) { return std::find(std::begin(table), std::end(table), ext) != std::end(table); };
+    if ((in(ffmpeg::kVideoExtensions) || in(ffmpeg::kAudioExtensions)) &&
+        !preview::IsVideoExtension(ext) && !preview::IsAudioExtension(ext))
+        return {PreviewFormatSource::Pack, media_pack};
+    return {};
+}
+
 PreviewCodecInfo PreviewCodec(int index) {
     switch (index) {
     case 0: return {Pick(L"HEIF 图像扩展", L"HEIF Image Extensions"),
@@ -280,35 +316,53 @@ bool OpenPreviewCodecStore(HWND owner, int index) {
 
 float LayoutPreviewFormats(const D2D1_RECT_F& area, float scale,
                            std::vector<PreviewFormatChip>* chips,
-                           std::vector<PreviewFormatRow>* rows) {
+                           std::vector<PreviewFormatRow>* rows,
+                           const std::function<float(std::wstring_view, float)>& measure_note) {
+    scale *= typography::UiFontScale();
     const auto& groups = PreviewFormatGroups();
-    const float left = area.left + 16 * scale, right = area.right - 16 * scale;
-    const bool stacked = right - left < 380 * scale;
-    const float name_width = 108 * scale;
-    const float chips_left = stacked ? left : left + name_width;
-    const float chip_height = 22 * scale, gap = 5 * scale;
-    float y = area.top + 4 * scale;
+    const float left = area.left + (area.right - area.left >= 608 * scale ? 54 : 24) * scale;
+    const float right = area.right - 24 * scale;
+    const bool stacked = right - left < 560 * scale;
+    const float chips_left = stacked ? left : left + 234 * scale;
+    const float note_right = stacked ? right : left + 210 * scale;
+    const float chip_height = 22 * scale, gap = 6 * scale;
+    const WindowViewModel source_model{};
+    float y = area.top;
     for (size_t g = 0; g < groups.size(); ++g) {
         PreviewFormatRow row{};
-        row.bounds.left = area.left; row.bounds.right = area.right; row.bounds.top = y;
-        y += 10 * scale;
-        row.name = D2D1::RectF(left, y, stacked ? right : chips_left - 8 * scale, y + chip_height);
-        if (stacked) y += chip_height + 4 * scale;
-        float x = chips_left;
-        for (size_t i = 0; i < groups[g].extensions.size(); ++i) {
-            const float w = ChipWidth(groups[g].extensions[i], scale);
-            if (x > chips_left && x + w > right) { x = chips_left; y += chip_height + 4 * scale; }
-            if (chips) chips->push_back({D2D1::RectF(x, y, x + w, y + chip_height), g, i});
-            x += w + gap;
-        }
-        y += chip_height;
+        row.bounds = D2D1::RectF(area.left, y, area.right, y);
+        const float top = y + 14 * scale;
+        row.name = D2D1::RectF(left, top, note_right, top + chip_height);
+        float description_bottom = row.name.bottom;
         if (!groups[g].note.empty()) {
-            const float available = (std::max)(right - chips_left, 1.0f);
+            const float available = (std::max)(note_right - left, 1.0f);
             const float lines = (std::max)(1.0f, std::ceil(EstimateWidth(groups[g].note, scale) / available));
-            row.note = D2D1::RectF(chips_left, y + 4 * scale, right, y + (4 + 18 * lines) * scale);
-            y += (4 + 18 * lines) * scale;
+            row.note = D2D1::RectF(left, row.name.bottom + 3 * scale, note_right,
+                                 row.name.bottom + 3 * scale + (measure_note
+                                     ? measure_note(groups[g].note, available) : 18 * lines * scale));
+            description_bottom = row.note.bottom;
         }
-        y += 10 * scale;
+        float chip_y = stacked ? description_bottom + 10 * scale : top;
+        bool any_band = false;
+        for (const bool enhanced : {false, true}) {
+            float x = chips_left;
+            bool any = false;
+            for (size_t i = 0; i < groups[g].extensions.size(); ++i) {
+                const bool is_enhanced = PreviewFormatSupport(source_model, g, i).source != PreviewFormatSource::BuiltIn;
+                if (is_enhanced != enhanced) continue;
+                if (!any && any_band) chip_y += chip_height + 6 * scale;
+                const float w = (std::min)(ChipWidth(groups[g].extensions[i], scale), right - chips_left);
+                if (x > chips_left && x + w > right) {
+                    x = chips_left;
+                    chip_y += chip_height + 6 * scale;
+                }
+                if (chips) chips->push_back({D2D1::RectF(x, chip_y, x + w, chip_y + chip_height), g, i});
+                x += w + gap;
+                any = true;
+            }
+            any_band |= any;
+        }
+        y = (std::max)(description_bottom, chip_y + chip_height) + 14 * scale;
         row.bounds.bottom = y;
         if (rows) rows->push_back(row);
     }

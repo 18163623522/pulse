@@ -48,10 +48,10 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
         pulse::l10n::StringId::SettingsDuplicates,
     };
     static constexpr const wchar_t* kNavIcon[] = {
-        kIconHome, kIconSearch, kIconSettings, kIconInfo, kIconCopy, L"\xE7B8"  // Package
+        kIconHome, kIconSearch, kIconSettings, kIconInfo, kIconCopy, L"\xE890"  // Quick Look
     };
     static_assert(std::size(kNavIcon) == kSettingsNavCount);
-    // Page 5 (预览增强包) has no string-table entry; see pack_text.
+    // Page 5 (快速预览) has no string-table entry; see pack_text.
     auto nav_label = [](int page) -> std::wstring {
         return page == 5 ? std::wstring(pack_text::Title()) : pulse::l10n::Get(kNav[page]);
     };
@@ -113,9 +113,9 @@ void MainRenderer::DrawSettings(const WindowViewModel& vm, const D2D1_RECT_F& re
         dc->DrawTextLayout(D2D1::Point2F(lay.content.left+pad,origin+pad),title_layout.get(),brText_.get());
     }
     if (vm.settings_page == 5)
-        painter_.DrawText(pack_text::Intro(),
-            D2D1::RectF(lay.content.left+pad,origin+60*scale_,lay.content.right-pad,origin+84*scale_),
-            compositor_->SmallFormat(),theme.text_secondary);
+        painter_.DrawWrappedCaption(pack_text::Intro(),
+            D2D1::Point2F(lay.content.left+pad, origin+60*scale_),
+            lay.content.right-lay.content.left-2*pad, theme.text_secondary);
     if (vm.settings_page == 0 || vm.settings_page == 1)
         painter_.DrawText(l10n::Get(vm.settings_page == 0 ? l10n::StringId::SettingsGeneralIntro : l10n::StringId::SettingsSearchIntro),
             D2D1::RectF(lay.content.left+pad,origin+60*scale_,lay.content.right-pad,origin+84*scale_),

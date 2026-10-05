@@ -965,7 +965,7 @@ void QuickPreviewWindow::OpenFind() {
     SetForegroundWindow(GetAncestor(find_edit_, GA_ROOT));
     SetFocus(find_edit_);
     SendMessageW(find_edit_, EM_SETSEL, 0, -1);
-    if (compositor_.LumaTextEnabled())
+    if (compositor_.CustomEditEnabled())
         PaintFindEditLuma(find_edit_, nullptr);
 }
 
@@ -992,7 +992,7 @@ bool QuickPreviewWindow::EnsureFindEdit() {
     find_edit_ = CreateChildEdit(hwnd_);
     if (!find_edit_) return false;
     SetWindowTheme(find_edit_, L"", L"");
-    if (!compositor_.LumaTextEnabled())
+    if (!compositor_.CustomEditEnabled())
         SetLayeredWindowAttributes(find_edit_, 0, 255, LWA_ALPHA);
     if (find_edit_font_)
         SendMessageW(find_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(find_edit_font_), TRUE);
@@ -1024,7 +1024,7 @@ void QuickPreviewWindow::LayoutFindEdit() {
     UINT flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
     if (!moved) flags |= SWP_NOMOVE | SWP_NOSIZE | SWP_NOREDRAW;
     SetWindowPos(find_edit_, HWND_TOP, pt.x, y, w, line_h, flags);
-    if (moved && compositor_.LumaTextEnabled())
+    if (moved && compositor_.CustomEditEnabled())
         PaintFindEditLuma(find_edit_, nullptr);
 }
 
@@ -1049,7 +1049,7 @@ void QuickPreviewWindow::SyncFindFromEdit() {
 }
 
 void QuickPreviewWindow::PaintFindEditLuma(HWND hwnd, HDC hdc) {
-    if (!hwnd || !compositor_.LumaTextEnabled()) return;
+    if (!hwnd || !compositor_.CustomEditEnabled()) return;
     HideCaret(hwnd);
     IDWriteTextFormat* format = compositor_.AddressFormat();
     if (!format) format = compositor_.TextFormat();
@@ -1108,7 +1108,7 @@ LRESULT CALLBACK QuickPreviewWindow::FindEditProc(HWND hwnd, UINT message, WPARA
                                                   LPARAM lparam, UINT_PTR, DWORD_PTR data) {
     auto* self = reinterpret_cast<QuickPreviewWindow*>(data);
     if (!self) return DefSubclassProc(hwnd, message, wparam, lparam);
-    const bool luma = self->compositor_.LumaTextEnabled();
+    const bool luma = SynchronizeChildEditBackend(self->compositor_, hwnd);
     if (luma && (message == WM_PRINT || message == WM_PRINTCLIENT ||
                  message == WM_NCPAINT)) {
         return 0;

@@ -500,7 +500,7 @@ private:
         if (!edit) return nullptr;
         SetWindowLongPtrW(edit, GWLP_ID, id);
         SetWindowTheme(edit, L"", L"");
-        if (!compositor_.LumaTextEnabled()) SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA);
+        if (!compositor_.CustomEditEnabled()) SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA);
         if (font_) SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
         SetWindowSubclass(edit, EditProc, 1, reinterpret_cast<DWORD_PTR>(this));
         return edit;
