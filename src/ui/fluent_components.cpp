@@ -310,9 +310,13 @@ void Painter::EnsureTextFormats() {
     if (!compositor_ || !compositor_->DwriteFactory() ||
         (body_format_.get() && caption_format_.get() &&
          small_icon_format_.get() && micro_icon_format_.get() &&
-         std::abs(format_scale_ - scale_) <= 0.001f)) {
+         std::abs(format_scale_ - scale_) <= 0.001f &&
+         format_generation_ == typography::Generation())) {
         return;
     }
+    // Every painter (main window, menus, dialogs) follows font settings the
+    // same way: formats are rebuilt when the typography generation moves.
+    format_generation_ = typography::Generation();
     body_format_.reset();
     nav_format_.reset();
     section_format_.reset();

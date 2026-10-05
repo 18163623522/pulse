@@ -252,6 +252,24 @@ std::uint64_t Generation() noexcept {
     return g_generation.load(std::memory_order_relaxed);
 }
 
+int EditFontPixels(float scale, float dip) noexcept {
+    return std::max(1, static_cast<int>(std::lround(dip * UiFontScale() * std::max(0.25f, scale))));
+}
+
+HFONT CreateEditFont(float scale, float dip) {
+    // Grayscale like the DirectWrite text (flat pixel geometry), not ClearType.
+    const int height = -EditFontPixels(scale, dip);
+    HFONT font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, PreferredTextFamily());
+    if (!font) {
+        font = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    return font;
+}
+
 D2D1_RECT_F SnapVerticalBounds(const D2D1_RECT_F& bounds) noexcept {
     D2D1_RECT_F snapped = bounds;
     snapped.top = std::round(bounds.top);
