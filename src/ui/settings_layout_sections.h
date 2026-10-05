@@ -308,7 +308,14 @@ inline Badge MediaBadge(const WindowViewModel& vm) {
     return {l10n::Pick(L"未安装", L"Not installed"), fluent::BadgeKind::Neutral};
 }
 inline const wchar_t* Primary(const WindowViewModel& vm) {
+    if (vm.settings_pack_installing) return l10n::Pick(L"取消", L"Cancel");
     return vm.settings_pack_media_installed ? Remove() : Install();
+}
+// "正在下载… 42%" while the pack downloads.
+inline std::wstring Downloading(const WindowViewModel& vm) {
+    const int percent = static_cast<int>(vm.settings_pack_progress * 100.0f + 0.5f);
+    return std::wstring(l10n::Pick(L"正在下载… ", L"Downloading… ")) +
+           std::to_wstring(percent < 0 ? 0 : percent > 100 ? 100 : percent) + L"%";
 }
 // Switch and path rows exist once there is something to switch.
 inline bool ShowsEnable(const WindowViewModel& vm) { return vm.settings_pack_ffmpeg != 0; }

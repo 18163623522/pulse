@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_prefs.h"
+#include "pack_installer.h"
 #include "context_menu_prefs.h"
 
 #include <cstdint>
@@ -125,10 +126,15 @@ public:
         uint32_t installed = 0;
         uint64_t bytes = 0;
         std::wstring version, custom_path, detected_path, root, notice;
+        bool installing = false;          // a download is running
+        float progress = 0.0f;            // 0..1 while installing
     };
     const PackState& Packs();
     // Each returns true when thumbnails have to be decoded again.
-    bool InstallMediaPack();
+    // Starts the download, or cancels the running one. `notify` repaints.
+    bool InstallMediaPack(HWND notify);
+    // Once per finished download: true when a pack was installed.
+    bool TakeMediaPackResult();
     bool RemoveMediaPack();
     bool ToggleMediaPack();
     bool ToggleCustomFfmpeg();
@@ -220,6 +226,7 @@ private:
     PackState packs_;
     uint64_t packs_checked_ = 0;
     void RefreshPacks();
+    PackInstaller media_installer_;
     std::shared_ptr<TaskState> task_state_ = std::make_shared<TaskState>();
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;

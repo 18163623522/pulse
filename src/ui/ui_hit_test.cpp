@@ -527,7 +527,8 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
                 // Buttons first: they sit inside the clickable rows.
                 const std::pair<const D2D1_RECT_F*, PackAction> pack_targets[] = {
                     {&lay.pack_open, PackAction::OpenFolder},
-                    {&lay.pack_primary, vm.settings_pack_media_installed ? PackAction::Remove : PackAction::Install},
+                    {&lay.pack_primary, vm.settings_pack_media_installed && !vm.settings_pack_installing
+                                            ? PackAction::Remove : PackAction::Install},
                     {&lay.pack_enable, PackAction::Enable},
                     {&lay.pack_detect, PackAction::UseDetected},
                     {&lay.pack_browse, PackAction::Browse},

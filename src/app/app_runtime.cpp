@@ -432,6 +432,15 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
                 vm.settings_pack_detected_path = packs.detected_path;
                 vm.settings_pack_root = packs.root;
                 vm.settings_pack_notice = packs.notice;
+                vm.settings_pack_installing = packs.installing;
+                vm.settings_pack_progress = packs.progress;
+                // Screenshot fixture for the downloading state (percent).
+                wchar_t fake_progress[8]{};
+                if (s.shot.active && s.isolatedTest &&
+                    GetEnvironmentVariableW(L"PULSE_TEST_PACK_PROGRESS", fake_progress, ARRAYSIZE(fake_progress))) {
+                    vm.settings_pack_installing = true;
+                    vm.settings_pack_progress = static_cast<float>(_wtoi(fake_progress)) / 100.0f;
+                }
             }
             vm.settings_theme = s.themeOverride == ui::ThemeMode::Light ? 1 : s.themeOverride == ui::ThemeMode::Dark ? 2 : 0;
             const auto content_config = s.contentSearch.GetConfig();
@@ -1781,6 +1790,9 @@ static void FillTrayCompare(AppState& s, const std::wstring (&paths)[2],
 
 ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
     if (!s.pane) return {};
+    // A finished pack download repaints the window once; drop the cached
+    // failed thumbnails so the newly supported files are decoded again.
+    if (s.settings.TakeMediaPackResult()) s.renderer.EvictThumbnails();
     UpdateFolderCompare(s);
     s.changes.visible_paths.clear();
     ForEachPane(s, [&](app::Pane& pane) {

@@ -89,11 +89,22 @@ void MainRenderer::DrawSettingsPacks(const WindowViewModel& vm, const D2D1_RECT_
         if (pack_text::ShowsEnable(vm)) toggle(lay.pack_enable, vm.settings_pack_ffmpeg_enabled, PackAction::Enable);
         painter_.DrawWrappedCaption(pack_text::MediaDesc(), D2D1::Point2F(text_left, r.top + 40*s),
                                     inner_right - text_left, theme.text_secondary);
-        text(pack_text::MediaMeta(), D2D1::RectF(text_left, lay.pack_primary.top + 6*s,
-             lay.pack_primary.left - 12*s, lay.pack_primary.bottom - 6*s), true);
-        const bool installed = vm.settings_pack_media_installed;
+        const float meta_right = lay.pack_primary.left - 12*s;
+        if (vm.settings_pack_installing) {
+            // Status above a thin bar, both centred on the button's row.
+            const float cy = (lay.pack_primary.top + lay.pack_primary.bottom) * 0.5f;
+            text(pack_text::Downloading(vm), D2D1::RectF(text_left, cy - 16*s, meta_right, cy + 2*s), true);
+            fluent::ProgressSpec bar;
+            bar.bounds = D2D1::RectF(text_left, cy + 6*s, (std::min)(meta_right, text_left + 320*s), cy + 10*s);
+            bar.value = vm.settings_pack_progress;
+            painter_.DrawProgressBar(bar);
+        } else {
+            text(pack_text::MediaMeta(), D2D1::RectF(text_left, lay.pack_primary.top + 6*s,
+                 meta_right, lay.pack_primary.bottom - 6*s), true);
+        }
+        const bool installed = vm.settings_pack_media_installed && !vm.settings_pack_installing;
         button(lay.pack_primary, pack_text::Primary(vm), installed ? PackAction::Remove : PackAction::Install,
-               installed ? fluent::ButtonKind::Standard : fluent::ButtonKind::Primary);
+               installed || vm.settings_pack_installing ? fluent::ButtonKind::Standard : fluent::ButtonKind::Primary);
         if (lay.pack_notice.bottom > lay.pack_notice.top) {
             const auto& n = lay.pack_notice;
             MakeBrush(dc, theme.fill_hover, brFillHover_);

@@ -7,6 +7,7 @@
 #include "../index/index_client.h"
 #include "../index/network_agent_client.h"
 #include "../common/preview_packs.h"
+#include "pack_catalog.h"
 
 #include <algorithm>
 #include <array>
@@ -79,30 +80,6 @@ uint64_t DirectoryBytes(const std::wstring& directory, int depth = 0) {
     return total;
 }
 
-bool RemoveTree(const std::wstring& directory) {
-    WIN32_FIND_DATAW data{};
-    HANDLE find = FindFirstFileExW((directory + L"\\*").c_str(), FindExInfoBasic, &data,
-                                   FindExSearchNameMatch, nullptr, 0);
-    bool ok = true;
-    if (find != INVALID_HANDLE_VALUE) {
-        do {
-            if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
-            const std::wstring child = directory + L"\\" + data.cFileName;
-            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-                !(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                ok = RemoveTree(child) && ok;
-            } else if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                ok = RemoveDirectoryW(child.c_str()) && ok;   // a junction: never follow it
-            } else {
-                SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
-                ok = DeleteFileW(child.c_str()) && ok;
-            }
-        } while (FindNextFileW(find, &data));
-        FindClose(find);
-    }
-    return RemoveDirectoryW(directory.c_str()) && ok;
-}
-
 bool IsFfmpegExe(const std::wstring& path) {
     const size_t slash = path.find_last_of(L"\\/");
     const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
@@ -140,21 +117,66 @@ void SettingsController::RefreshPacks() {
 
 const SettingsController::PackState& SettingsController::Packs() {
     if (!packs_checked_ || GetTickCount64() - packs_checked_ >= 2000) RefreshPacks();
+    packs_.installing = media_installer_.running();
+    packs_.progress = packs_.installing ? media_installer_.progress() : 0.0f;
     return packs_;
 }
 
-bool SettingsController::InstallMediaPack() {
-    // The signed pack is not published yet; point at what works today.
-    packs_.notice = l10n::Pick(
-        L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
-        L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
+bool SettingsController::InstallMediaPack(HWND notify) {
+    if (media_installer_.running()) {
+        media_installer_.Cancel();
+        return false;
+    }
+    packs_.notice.clear();
+    if (!kMediaPackRelease.file_count) {
+        // Nothing is published for this build yet; point at what works today.
+        packs_.notice = l10n::Pick(
+            L"预览增强包的下载即将提供。现在可以打开下方的“使用已安装的 FFmpeg”，指定这台电脑上的 ffmpeg.exe。",
+            L"Pack downloads are coming soon. Meanwhile, turn on \"Use an installed FFmpeg\" below and choose an ffmpeg.exe on this PC.");
+        return false;
+    }
+    if (!media_installer_.Start(kMediaPackRelease, notify)) return false;
+    packs_.installing = true;
+    packs_.progress = 0.0f;
+    return false;
+}
+
+bool SettingsController::TakeMediaPackResult() {
+    DWORD error = ERROR_SUCCESS;
+    const PackInstallOutcome outcome = media_installer_.TakeOutcome(error);
+    if (outcome == PackInstallOutcome::None) return false;
+    RefreshPacks();
+    switch (outcome) {
+    case PackInstallOutcome::Installed:
+        packs_.notice.clear();
+        return true;
+    case PackInstallOutcome::Cancelled:
+        packs_.notice = l10n::Pick(L"已取消下载。", L"Download cancelled.");
+        break;
+    default:
+        if (error == ERROR_INVALID_DATA) {
+            packs_.notice = l10n::Pick(L"下载的文件校验失败，已丢弃。请稍后重试。",
+                                       L"The download did not pass verification and was discarded. Try again later.");
+        } else if (error == ERROR_SHARING_VIOLATION) {
+            packs_.notice = l10n::Pick(L"旧版本的文件正在使用。关闭正在播放的视频后再试一次。",
+                                       L"Files of the old version are in use. Close playing videos and try again.");
+        } else if (error == ERROR_NOT_SUPPORTED) {
+            packs_.notice = l10n::Pick(L"这台电脑缺少解压所需的系统组件，无法安装。",
+                                       L"This PC lacks the Windows component needed to unpack the download.");
+        } else {
+            packs_.notice = l10n::Pick(L"下载失败，请检查网络后重试。",
+                                       L"The download failed. Check the connection and try again.");
+        }
+        break;
+    }
     return false;
 }
 
 bool SettingsController::RemoveMediaPack() {
+    if (media_installer_.running()) return false;
     const std::wstring root = packs::PacksRoot();
     if (root.empty()) return false;
-    const bool removed = RemoveTree(root + L"\\" + packs::PackKey(packs::PackId::Media));
+    const bool removed = RemovePackTree(root + L"\\" + packs::PackKey(packs::PackId::Media));
     packs_.notice = removed ? std::wstring{} : std::wstring(l10n::Pick(
         L"有文件正在使用，未能全部删除。关闭正在播放的视频后再试一次。",
         L"Some files are in use and were not removed. Close playing videos and try again."));

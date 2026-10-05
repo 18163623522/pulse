@@ -682,6 +682,8 @@ struct WindowViewModel {
     std::wstring settings_pack_detected_path;   // ffmpeg.exe found on PATH
     std::wstring settings_pack_root;            // %LOCALAPPDATA%\Pulse\packs
     std::wstring settings_pack_notice;          // last action's message, empty when none
+    bool settings_pack_installing = false;      // the FFmpeg pack is downloading
+    float settings_pack_progress = 0.0f;        // 0..1 while downloading
     int settings_theme = 0; // system, light, dark
     bool settings_open = false;
     int settings_page = 0; // 0 general, 1 search/index, 2 context menu, 3 about, 4 duplicates

@@ -128,7 +128,7 @@ bool HandleSettingsControl(AppState& s,const H& hit) {
     case H::SettingsPackAction: {
         bool refresh=false;
         switch(static_cast<ui::PackAction>(hit.index)) {
-        case ui::PackAction::Install: refresh=s.settings.InstallMediaPack();break;
+        case ui::PackAction::Install: refresh=s.settings.InstallMediaPack(s.hwnd);break;
         case ui::PackAction::Remove: refresh=s.settings.RemoveMediaPack();break;
         case ui::PackAction::Enable: refresh=s.settings.ToggleMediaPack();break;
         case ui::PackAction::UseCustom: refresh=s.settings.ToggleCustomFfmpeg();break;
