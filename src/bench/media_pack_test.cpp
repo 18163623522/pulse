@@ -168,7 +168,8 @@ int wmain() {
         };
         const fs::path hevc = media / L"clip hevc.mkv", flv = media / L"clip.flv", shortclip = media / L"short.mp4",
             tall = media / L"tall.mkv", wide = media / L"anamorphic.mkv", junk = media / L"junk.mkv",
-            audio = media / L"tone.mka", ts = media / L"stream.ts";
+            audio = media / L"tone.mka", ts = media / L"stream.ts",
+            m2ts = media / L"concert.m2ts";
         bool have_hevc = gen(L"-f lavfi -i testsrc2=size=640x360:rate=25:duration=10 -c:v libx265 -preset ultrafast -x265-params log-level=error", hevc);
         if (!have_hevc) have_hevc = gen(L"-f lavfi -i testsrc2=size=640x360:rate=25:duration=10 -c:v mpeg4", hevc);
         Check(have_hevc, "fixture: 10 s 640x360 mkv");
@@ -179,6 +180,7 @@ int wmain() {
         Check(gen(L"-f lavfi -i testsrc2=size=720x576:rate=25:duration=4 -vf setsar=16/15 -c:v mpeg4", wide), "fixture: anamorphic mkv");
         Check(gen(L"-f lavfi -i sine=frequency=440:duration=5 -c:a flac", audio), "fixture: flac mka");
         Check(gen(L"-f lavfi -i testsrc2=size=320x240:rate=25:duration=5 -c:v mpeg2video -f mpegts", ts), "fixture: mpeg-ts");
+        Check(gen(L"-f lavfi -i smptehdbars=s=1280x720:d=22 -c:v mpeg2video -f mpegts", m2ts), "fixture: 720p mpeg-ts");
         WriteText(junk, std::string(200000, 'x'));
 
         // Pack = the stand-in FFmpeg, through the "use installed FFmpeg" setting.
@@ -250,6 +252,13 @@ int wmain() {
             r = {};
             Check(host.Request(ts.wstring(), r, MAXDWORD, 256, ipc::PreviewRequestKind::Content, grid) &&
                   r.response.kind == ipc::PreviewContentKind::Bitmap, "host: mpeg-ts grid thumbnail");
+            r = {};
+            // Windows' own provider stalls > 8 s on this file; the pack must not wait for it.
+            const ULONGLONG m2ts_started = GetTickCount64();
+            Check(host.Request(m2ts.wstring(), r, 4000, 256, ipc::PreviewRequestKind::Content, grid) &&
+                  r.response.kind == ipc::PreviewContentKind::Bitmap && r.response.duration_ms >= 21000,
+                  "host: 720p m2ts grid thumbnail without the shell stall");
+            Check(GetTickCount64() - m2ts_started < 4000, "host: 720p m2ts answers within 4 s");
             r = {};
             Check(host.Request(hevc.wstring(), r, MAXDWORD, 256, ipc::PreviewRequestKind::Content, grid) &&
                   r.response.kind == ipc::PreviewContentKind::Bitmap && r.response.duration_ms > 0,

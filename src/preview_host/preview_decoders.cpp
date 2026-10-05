@@ -1102,11 +1102,20 @@ static bool AcceptsMediaPack(const DecodeRequest& q) {
     return !q.is_directory && !q.offline && preview::IsMediaPackVideoExtension(q.extension) &&
         preview::MediaPackAvailable();
 }
+// MPEG transport streams: Windows' video thumbnail provider was measured
+// stalling for more than 8 s on a 22 s 720p MPEG-2 .ts/.m2ts (with or without
+// the pack), while ffmpeg returns the frame in about 150 ms. For these only
+// Explorer's existing cache entry is taken before ffmpeg; the provider is not
+// asked at all.
+static bool IsTransportStreamExtension(std::wstring_view extension) {
+    return IsOneOf(extension, {L".ts", L".m2ts", L".mts", L".m2t"});
+}
 static DecodeStep RunMediaPack(const DecodeRequest& q, DecodeResult& r) {
     const bool shell_known = IsKnownShellPreview(q.extension);
     uint32_t known_duration_ms = 0;
     if (shell_known || HasShellThumbnailHandler(q.extension)) {
-        if (ShellThumbnailInto(q, r)) return MadeBitmap(r);
+        const bool cache_only = IsTransportStreamExtension(q.extension);
+        if (cache_only ? CachedShellThumbnailInto(q, r) : ShellThumbnailInto(q, r)) return MadeBitmap(r);
         ClearBitmap(r);
         // Windows may still know the playing time (the property handler
         // parses the container even when no decoder is installed).
