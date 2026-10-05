@@ -479,8 +479,9 @@ void ShowTrayBatchMenu(AppState& s, POINT screen_pt) {
             spec.cancel_text = l10n::Get(l10n::StringId::Cancel);
             if (!ui::ShowConfirmDialog(s.hwnd, spec, s.darkMode, s.accentColor)) break;
         }
-        for (const auto& p : paths)
-            ShellExecuteW(s.hwnd, nullptr, p.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        // The same open service as the list: long-path prefixes, the item's
+        // folder as working directory, and off the UI thread.
+        for (const auto& p : paths) s.ops.OpenWith(p);
         break;
     }
     case kReveal: {

@@ -877,9 +877,26 @@ void StagingTray::Collect(const std::vector<std::wstring>& paths, bool move_inte
 
 void StagingTray::ReplacePath(const std::wstring& from, const std::wstring& to) {
     const std::wstring key = fs::NormalizePath(from);
-    for (auto& batch : batches_)
-        for (auto& item : batch.items)
-            if (_wcsicmp(item.path.c_str(), key.c_str()) == 0) item.path = fs::NormalizePath(to);
+    std::wstring target = fs::NormalizePath(to);
+    if (key.empty() || target.empty()) return;
+    for (auto& batch : batches_) {
+        for (auto& item : batch.items) {
+            if (_wcsicmp(item.path.c_str(), key.c_str()) == 0) {
+                item.path = target;
+                continue;
+            }
+            // Items staged from inside a renamed or moved folder follow it.
+            const bool child = item.path.size() > key.size() &&
+                _wcsnicmp(item.path.c_str(), key.c_str(), key.size()) == 0 &&
+                (key.back() == L'\\' || item.path[key.size()] == L'\\');
+            if (!child) continue;
+            std::wstring rest = item.path.substr(key.size());
+            if (rest.empty() || rest.front() != L'\\') rest.insert(rest.begin(), L'\\');
+            std::wstring base = target;
+            while (!base.empty() && base.back() == L'\\') base.pop_back();
+            item.path = base + rest;
+        }
+    }
 }
 
 bool StagingTray::RefreshExists() {
@@ -974,74 +991,29 @@ void StagingTray::ToJson(std::wstring& out) const {
 
 bool StagingTray::FromJson(const std::wstring& in) {
     batches_.clear();
-    // Minimal parser: enough for our own serialization.
-    size_t i = in.find(L'[');
-    if (i == std::wstring::npos) return false;
-    ++i;
-    while (i < in.size()) {
-        while (i < in.size() && (in[i] == L' ' || in[i] == L'\n' || in[i] == L'\r' || in[i] == L'\t' || in[i] == L',')) ++i;
-        if (i >= in.size() || in[i] == L']') break;
-        if (in[i] != L'{') return false;
-        ++i;
+    const size_t open = in.find(L'[');
+    if (open == std::wstring::npos) return false;
+    const size_t close = pulse::json::MatchingClose(in, open);
+    if (close == std::wstring::npos) return false;
+    return pulse::json::ForEachElement(in.substr(open, close - open + 1), [&](const std::wstring& block) {
+        if (block.empty() || block.front() != L'{') return;
         TrayBatch batch;
-        while (i < in.size() && in[i] != L'}') {
-            while (i < in.size() && (in[i] == L' ' || in[i] == L'\n' || in[i] == L'\r' || in[i] == L'\t' || in[i] == L',')) ++i;
-            size_t keyEnd = in.find(L'"', i + 1);
-            if (keyEnd == std::wstring::npos) return false;
-            std::wstring key = in.substr(i + 1, keyEnd - i - 1);
-            i = keyEnd + 1;
-            while (i < in.size() && in[i] != L':') ++i;
-            if (i >= in.size()) return false;
-            ++i;
-            while (i < in.size() && (in[i] == L' ' || in[i] == L'\n' || in[i] == L'\r' || in[i] == L'\t')) ++i;
-            if (key == L"move") {
-                batch.move_intent = (i + 4 <= in.size() && in.compare(i, 4, L"true") == 0);
-                if (batch.move_intent) i += 4; else i += 5;
-            } else if (key == L"items") {
-                while (i < in.size() && in[i] != L'[') ++i;
-                if (i >= in.size()) return false;
-                ++i;
-                while (i < in.size() && in[i] != L']') {
-                    while (i < in.size() && (in[i] == L' ' || in[i] == L'\n' || in[i] == L'\r' || in[i] == L'\t' || in[i] == L',')) ++i;
-                    if (in[i] != L'"') { ++i; continue; }
-                    ++i;
-                    std::wstring path;
-                    while (i < in.size() && in[i] != L'"') {
-                        if (in[i] == L'\\' && i + 1 < in.size()) {
-                            ++i;
-                            if (in[i] == L'n') path += L'\n';
-                            else if (in[i] == L'r') path += L'\r';
-                            else if (in[i] == L't') path += L'\t';
-                            else path += in[i];
-                        } else {
-                            path += in[i];
-                        }
-                        ++i;
-                    }
-                    if (i < in.size()) ++i;
-                    TrayItem it;
-                    it.path = fs::NormalizePath(path);
-                    WIN32_FILE_ATTRIBUTE_DATA data{};
-                    it.exists = GetFileAttributesExW(it.path.c_str(),
-                        GetFileExInfoStandard, &data) != FALSE;
-                    it.attrs = it.exists ? data.dwFileAttributes : 0;
-                    it.is_dir = it.exists && (it.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                    if (it.exists && !it.is_dir) {
-                        it.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) |
-                            data.nFileSizeLow;
-                        batch.total_size += it.size;
-                    }
-                    batch.items.push_back(std::move(it));
-                }
-                if (i < in.size()) ++i;
-            } else {
-                while (i < in.size() && in[i] != L',' && in[i] != L'}') ++i;
+        batch.move_intent = pulse::json::ExtractBool(block, L"move");
+        for (const std::wstring& path : pulse::json::ExtractStringArray(block, L"items")) {
+            TrayItem it;
+            it.path = fs::NormalizePath(path);
+            WIN32_FILE_ATTRIBUTE_DATA data{};
+            it.exists = GetFileAttributesExW(it.path.c_str(), GetFileExInfoStandard, &data) != FALSE;
+            it.attrs = it.exists ? data.dwFileAttributes : 0;
+            it.is_dir = it.exists && (it.attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (it.exists && !it.is_dir) {
+                it.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+                batch.total_size += it.size;
             }
+            batch.items.push_back(std::move(it));
         }
-        if (i < in.size()) ++i;
         if (!batch.items.empty()) batches_.push_back(std::move(batch));
-    }
-    return true;
+    });
 }
 
 // ---------------------------------------------------------------------------
