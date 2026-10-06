@@ -1428,13 +1428,16 @@ private:
                       ID2D1SolidColorBrush* brush, std::wstring_view text,
                       float x, float y, float width, float height,
                       D2D1_DRAW_TEXT_OPTIONS options = D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    void DrawFolderIcon(float x, float y, float size, const Theme& theme);
+    void DrawFolderIcon(float x, float y, float size, const Theme& theme,
+                        float opacity = 1.0f);
     PreviewDrawResult DrawEntryThumbnail(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
         const ListEntryView& entry, ViewMode mode, uint64_t generation, uint32_t pixels,
         float opacity, bool align_bottom, D2D1_RECT_F* artwork, uint32_t* duration = nullptr);
     void DrawSidebarPeek(const WindowViewModel& vm, const D2D1_RECT_F& rect, const Theme& theme);
-    void DrawFileIcon(float x, float y, float size, const Theme& theme);
-    void DrawEntryIcon(const ListEntryView& entry, float x, float y, float size, const Theme& theme);
+    void DrawFileIcon(float x, float y, float size, const Theme& theme,
+                      float opacity = 1.0f);
+    void DrawEntryIcon(const ListEntryView& entry, float x, float y, float size,
+                       const Theme& theme, float opacity = 1.0f);
     void DrawLinkOverlay(float x, float y, float size, const Theme& theme, float opacity = 1.0f,
                          const std::wstring& label = {}, float expansion = 0.0f,
                          float right_limit = 0.0f, const D2D1_RECT_F* artwork = nullptr);

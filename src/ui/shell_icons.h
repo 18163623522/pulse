@@ -33,9 +33,10 @@ public:
     void Reset();
 
     // Returns false while native icons are loading or the device is unavailable.
+    // opacity lets callers fade the icon (hidden entries, cut items).
     bool Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
               const std::wstring& path, const std::wstring& name,
-              bool is_dir, DWORD attrs);
+              bool is_dir, DWORD attrs, float opacity = 1.0f);
 
     // Icon bitmap at (about) desired_dips, or nullptr while unresolved —
     // caller leaves the slot empty. Lets owners apply their own opacity

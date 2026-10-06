@@ -719,11 +719,12 @@ bool MainRenderer::PointInItemName(const PaneViewModel& vm, const D2D1_RECT_F& f
     return x >= text_left - slop && x < text_left + text_width + slop &&
            y >= name.top && y < name.bottom;
 }
-void MainRenderer::DrawFolderIcon(float x, float y, float size, const Theme& theme) {
+void MainRenderer::DrawFolderIcon(float x, float y, float size, const Theme& theme,
+                                  float opacity) {
     (void)theme;
     if (compositor_ && compositor_->Dc())
         icon_cache_.Draw(compositor_->Dc(), D2D1::RectF(x, y, x + size, y + size),
-                         L"", L"", true, FILE_ATTRIBUTE_DIRECTORY);
+                         L"", L"", true, FILE_ATTRIBUTE_DIRECTORY, opacity);
 }
 
 PreviewDrawResult MainRenderer::DrawEntryThumbnail(ID2D1DeviceContext* dc,
@@ -750,11 +751,12 @@ PreviewDrawResult MainRenderer::DrawEntryThumbnail(ID2D1DeviceContext* dc,
         generation, entry.modified_value, entry.size_value, opacity, align_bottom, artwork, duration);
 }
 
-void MainRenderer::DrawFileIcon(float x, float y, float size, const Theme& theme) {
+void MainRenderer::DrawFileIcon(float x, float y, float size, const Theme& theme,
+                                float opacity) {
     (void)theme;
     if (compositor_ && compositor_->Dc())
         icon_cache_.Draw(compositor_->Dc(), D2D1::RectF(x, y, x + size, y + size),
-                         L"", L"", false, FILE_ATTRIBUTE_NORMAL);
+                         L"", L"", false, FILE_ATTRIBUTE_NORMAL, opacity);
 }
 
 namespace {
@@ -968,11 +970,11 @@ void MainRenderer::DrawThumbnailBadges(const ListEntryView& entry, const D2D1_RE
 }
 
 void MainRenderer::DrawEntryIcon(const ListEntryView& entry, float x, float y, float size,
-                                 const Theme& theme) {
+                                 const Theme& theme, float opacity) {
     const auto dest = D2D1::RectF(x, y, x + size, y + size);
     if (entry.record_only && compositor_ && compositor_->Dc()) {
         auto* dc = compositor_->Dc();
-        MakeBrush(dc, WithAlpha(theme.text_secondary, 0.65f), brTextSecondary_);
+        MakeBrush(dc, WithAlpha(theme.text_secondary, 0.65f * opacity), brTextSecondary_);
         const float pad = size * 0.2f;
         const auto shape = D2D1::RoundedRect(D2D1::RectF(x + pad, y + pad,
             x + size - pad, y + size - pad), size * 0.04f, size * 0.04f);
@@ -982,11 +984,12 @@ void MainRenderer::DrawEntryIcon(const ListEntryView& entry, float x, float y, f
         return;
     }
     if (compositor_ && compositor_->Dc() &&
-        icon_cache_.Draw(compositor_->Dc(), dest, entry.path, entry.name, entry.is_dir, entry.attrs)) {
+        icon_cache_.Draw(compositor_->Dc(), dest, entry.path, entry.name, entry.is_dir,
+                         entry.attrs, opacity)) {
         return;
     }
-    if (entry.is_dir) DrawFolderIcon(x, y, size, theme);
-    else DrawFileIcon(x, y, size, theme);
+    if (entry.is_dir) DrawFolderIcon(x, y, size, theme, opacity);
+    else DrawFileIcon(x, y, size, theme, opacity);
 }
 
 void MainRenderer::DrawMorphIcon(const ListEntryView& entry, const PaneViewModel& vm,
@@ -1010,11 +1013,13 @@ void MainRenderer::DrawMorphIcon(const ListEntryView& entry, const PaneViewModel
     // row-sized, row icons give way to thumbnails early when growing.
     const bool thumb_from = !entry.record_only && !sample.entering && UsesThumbnails(from_mode);
     const bool thumb_to = !entry.record_only && UsesThumbnails(vm.view_mode);
-    float thumb_alpha = 0.0f;
-    if (thumb_from && thumb_to) thumb_alpha = 1.0f;
-    else if (thumb_from) thumb_alpha = 1.0f - motion::SmoothStep(0.55f, 0.95f, sample.progress);
-    else if (thumb_to) thumb_alpha = motion::SmoothStep(0.05f, 0.45f, sample.progress);
-    thumb_alpha *= sample.opacity;
+    const float hidden_alpha = HiddenEntryAlpha(entry.attrs);
+    float thumb_weight = 0.0f;
+    if (thumb_from && thumb_to) thumb_weight = 1.0f;
+    else if (thumb_from) thumb_weight = 1.0f - motion::SmoothStep(0.55f, 0.95f, sample.progress);
+    else if (thumb_to) thumb_weight = motion::SmoothStep(0.05f, 0.45f, sample.progress);
+    // Keep the crossfade weight independent of the item's overall opacity.
+    const float thumb_alpha = thumb_weight * sample.opacity * hidden_alpha;
     bool thumb = false;
     D2D1_RECT_F thumbnail_artwork = icon;
     if (thumb_alpha > 0.01f) {
@@ -1031,14 +1036,15 @@ void MainRenderer::DrawMorphIcon(const ListEntryView& entry, const PaneViewModel
     // the first static frame after the glide only finds it cached.
     if (!entry.record_only)
         icon_cache_.Prefetch(entry.path, entry.name, entry.is_dir, entry.attrs, target_size);
-    const float icon_alpha = (thumb ? 1.0f - thumb_alpha : 1.0f) * sample.opacity;
+    const float icon_alpha = (thumb ? 1.0f - thumb_weight : 1.0f) * sample.opacity * hidden_alpha;
     if (icon_alpha <= 0.01f) {
         if (!entry.record_only && entry.is_link)
-            DrawLinkOverlay(icon.left, icon.top, size, theme, sample.opacity, {}, 0.0f, 0.0f, &thumbnail_artwork);
+            DrawLinkOverlay(icon.left, icon.top, size, theme, sample.opacity * hidden_alpha,
+                            {}, 0.0f, 0.0f, &thumbnail_artwork);
         return;
     }
     if (entry.record_only) {
-        DrawEntryIcon(entry, icon.left, icon.top, size, theme);
+        DrawEntryIcon(entry, icon.left, icon.top, size, theme, hidden_alpha);
         return;
     }
     // One image-list size for the whole morph: a size that crossed SHIL
@@ -1069,14 +1075,15 @@ void MainRenderer::DrawMorphIcon(const ListEntryView& entry, const PaneViewModel
         // Vector placeholders cannot fade; a fading-in item waits for its
         // icon (or thumbnail) instead of popping in at full strength.
     } else if (entry.is_dir) {
-        DrawFolderIcon(icon.left, aligned_y, size, theme);
+        DrawFolderIcon(icon.left, aligned_y, size, theme, hidden_alpha);
     } else {
-        DrawFileIcon(icon.left, aligned_y, size, theme);
+        DrawFileIcon(icon.left, aligned_y, size, theme, hidden_alpha);
     }
     if (entry.is_link) {
         const auto artwork = D2D1::RectF(icon.left + ink.left * size, aligned_y + ink.top * size,
             icon.left + ink.right * size, aligned_y + ink.bottom * size);
-        DrawLinkOverlay(icon.left, icon.top, size, theme, sample.opacity, {}, 0.0f, 0.0f, &artwork);
+        DrawLinkOverlay(icon.left, icon.top, size, theme, sample.opacity * hidden_alpha,
+                        {}, 0.0f, 0.0f, &artwork);
     }
 }
 
@@ -1193,19 +1200,20 @@ void MainRenderer::DrawMorphFrom(const PaneViewModel& vm, const motion::ViewMorp
                                                    was.icon.bottom - was.icon.top));
         const D2D1_RECT_F dest = D2D1::RectF(was.icon.left, was.icon.top,
                                              was.icon.left + size, was.icon.top + size);
+        const float hidden_alpha = HiddenEntryAlpha(e.attrs);
         const bool thumb = !e.record_only && UsesThumbnails(mode) &&
             DrawEntryThumbnail(dc, was.icon, e, mode, vm.view_generation,
-                ThumbnailRequestPixels(mode, size), 1.0f, grid, nullptr) == PreviewDrawResult::Bitmap;
+                ThumbnailRequestPixels(mode, size), hidden_alpha, grid, nullptr) == PreviewDrawResult::Bitmap;
         if (thumb) continue;
         if (ID2D1Bitmap* bitmap = e.record_only ? nullptr
                 : icon_cache_.CachedBitmapFor(e.path, e.name, e.is_dir, e.attrs, size)) {
-            dc->DrawBitmap(bitmap, &dest, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+            dc->DrawBitmap(bitmap, &dest, hidden_alpha, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
                            nullptr, nullptr);
         } else if (e.is_dir) {
             // Vector placeholder: DrawEntryIcon would convert synchronously.
-            DrawFolderIcon(dest.left, dest.top, size, theme);
+            DrawFolderIcon(dest.left, dest.top, size, theme, hidden_alpha);
         } else {
-            DrawFileIcon(dest.left, dest.top, size, theme);
+            DrawFileIcon(dest.left, dest.top, size, theme, hidden_alpha);
         }
     }
     dc->PopLayer();
@@ -2213,6 +2221,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
             bool selected = vm.IsRowSelected(src);
             bool hover = (src == vm.hover_index);
             bool cut = e.record_only || vm.cut_names.contains(e.name);
+            const float hidden_alpha = HiddenEntryAlpha(e.attrs);
             const bool expand_link = e.is_link && (hover || selected) && src != vm.rename_index;
             const float link_expansion = e.is_link && pane_index >= 0 && pane_index < 8
                 ? link_pill_motion_[pane_index].Update(list_context, row_key, expand_link,
@@ -2284,7 +2293,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 uint32_t media_duration_ms = 0;
                 const bool drewThumbnail = !e.record_only && UsesThumbnails(vm.view_mode) &&
                     DrawEntryThumbnail(dc, iconRect, e, vm.view_mode, vm.view_generation,
-                        ThumbnailRequestPixels(vm.view_mode, renderedIconSize), 1.0f, iconGrid, &artwork,
+                        ThumbnailRequestPixels(vm.view_mode, renderedIconSize), hidden_alpha, iconGrid, &artwork,
                         &media_duration_ms)
                         == PreviewDrawResult::Bitmap;
                 // Photos and videos look alike as thumbnails: say which program
@@ -2316,13 +2325,13 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     if (settled) {
                         const D2D1_RECT_F dest = D2D1::RectF(iconX, iconY, iconX + renderedIconSize,
                                                              iconY + renderedIconSize);
-                        dc->DrawBitmap(settled, &dest, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                        dc->DrawBitmap(settled, &dest, hidden_alpha, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
                                        nullptr, nullptr);
                     } else if (morphing && !e.record_only) {
-                        if (e.is_dir) DrawFolderIcon(iconX, iconY, renderedIconSize, theme);
-                        else DrawFileIcon(iconX, iconY, renderedIconSize, theme);
+                        if (e.is_dir) DrawFolderIcon(iconX, iconY, renderedIconSize, theme, hidden_alpha);
+                        else DrawFileIcon(iconX, iconY, renderedIconSize, theme, hidden_alpha);
                     } else {
-                        DrawEntryIcon(e, iconX, iconY, renderedIconSize, theme);
+                        DrawEntryIcon(e, iconX, iconY, renderedIconSize, theme, hidden_alpha);
                     }
                 }
             }
@@ -2332,7 +2341,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     ? link_label : FileNameOf(link_label);
                 DrawLinkOverlay(iconRect.left, iconRect.top,
                     std::min(iconRect.right - iconRect.left, iconRect.bottom - iconRect.top), theme,
-                    cut ? 0.55f : 1.0f, expand_on_icon ? caption : std::wstring(),
+                    cut ? 0.55f : hidden_alpha, expand_on_icon ? caption : std::wstring(),
                     expand_on_icon ? link_expansion : 0.0f, cell.right - 8.0f * scale_, &artwork);
             }
             // Mid-morph the labels are drawn in a second, faded pass.
