@@ -30,6 +30,13 @@ namespace {
 constexpr wchar_t kClassName[] = L"PulsePreviewHandlerHost";
 constexpr UINT kOpenDelayMs = 100;
 constexpr wchar_t kPreviewHandlerIid[] = L"{8895b1c6-b41f-4c1c-a562-0d564250836f}";
+// The built-in "Windows TXT Previewer". Text-perceived associations without a
+// handler of their own - txtfile, PerceivedType text - resolve to it, and it
+// draws the same plain text Pulse's own text view shows without starting a
+// surrogate process first.
+constexpr CLSID kWindowsTxtPreviewer = {
+    0x1531d583, 0x8375, 0x4d3f, {0xb5, 0xfb, 0xd2, 0x3b, 0xbd, 0x16, 0x9f, 0x22}
+};
 constexpr CLSID kQueryAssociations = {
     0xa07034fd, 0x6caa, 0x4954, {0xac, 0x3f, 0x97, 0xa2, 0x72, 0x16, 0xf9, 0x8a}
 };
@@ -189,6 +196,29 @@ bool IsOfflinePlaceholder(DWORD attrs) {
     return (attrs & (kRecallOnOpen | kRecallOnData)) && !(attrs & kPinned);
 }
 
+// The shell's content type for an extension, when an installer recorded one -
+// Git for Windows, for instance, marks .gitignore / .gitattributes as
+// text/plain. Text content means the native text view already draws the file,
+// so no COM handler is started for it.
+bool ExtensionHasTextContentType(const std::wstring& extension) {
+    static std::unordered_map<std::wstring, bool> cache;
+    {
+        std::lock_guard<std::mutex> lock(g_association_mutex);
+        if (auto it = cache.find(extension); it != cache.end()) return it->second;
+    }
+    wchar_t content[64]{};
+    DWORD chars = ARRAYSIZE(content);
+    const bool text =
+        SUCCEEDED(AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_CONTENTTYPE,
+                                    extension.c_str(), nullptr, content, &chars)) &&
+        _wcsnicmp(content, L"text/", 5) == 0;
+    {
+        std::lock_guard<std::mutex> lock(g_association_mutex);
+        cache[extension] = text;
+    }
+    return text;
+}
+
 bool FindPreviewHandlerClsid(const std::wstring& extension, CLSID& clsid) {
 #ifdef PULSE_PREVIEW_HANDLER_TESTING
     if (g_preview_handler_factory_for_test) { clsid = GUID_NULL; return true; }
@@ -232,12 +262,15 @@ bool FindPreviewHandlerClsid(const std::wstring& extension, CLSID& clsid) {
         SUCCEEDED(assoc->GetString(ASSOCF_NOTRUNCATE, ASSOCSTR_SHELLEXTENSION,
                                    kPreviewHandlerIid, guid, &chars)) &&
         SUCCEEDED(CLSIDFromString(guid, &resolved));
+    // The TXT previewer means the native text path is the faster preview of the
+    // same content, so its extensions are not handed to a COM server at all.
+    const bool native_text = found && IsEqualCLSID(resolved, kWindowsTxtPreviewer);
     {
         std::lock_guard<std::mutex> lock(g_association_mutex);
-        if (found) cache[extension] = resolved;
+        if (found && !native_text) cache[extension] = resolved;
         else negative[extension] = GetTickCount64();
     }
-    if (!found) {
+    if (!found || native_text) {
         return false;
     }
     clsid = resolved;
@@ -372,6 +405,10 @@ void RegisterClassOnce() {
 bool PreviewHandlerHost::CanHost(const std::wstring& path) {
     const std::wstring extension = ExtensionOf(path);
     if (extension.empty() || IsNativePreviewExtension(extension)) return false;
+    // Plain text - the shell's own content type, or the built-in TXT previewer
+    // below - renders instantly in the native text view; a handler process is
+    // only started for previews the pane cannot draw itself.
+    if (ExtensionHasTextContentType(extension)) return false;
     // A provider that just stalled is left alone until it has warmed up: the
     // caller then takes the thumbnail path, which answers on its own process.
     if (ProviderCoolingDown(extension)) return false;

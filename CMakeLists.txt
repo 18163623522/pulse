@@ -719,7 +719,7 @@ add_executable(pulse_preview_handler_stale_test src/bench/preview_handler_stale_
     src/ui/preview_handler_host.cpp)
 target_compile_definitions(pulse_preview_handler_stale_test PRIVATE PULSE_PREVIEW_HANDLER_TESTING=1)
 target_link_libraries(pulse_preview_handler_stale_test PRIVATE
-    ole32 shell32 uuid shlwapi oleaut32 d2d1 gdi32 user32)
+    ole32 shell32 uuid shlwapi oleaut32 d2d1 gdi32 user32 advapi32)
 target_link_libraries(pulse_preview_handler_pan_test PRIVATE gdi32 user32)
 
 add_executable(pulse_material_test
