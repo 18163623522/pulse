@@ -43,6 +43,9 @@ bool EntryLess(const fs::DirEntry& a, const fs::DirEntry& b, ui::SortColumn, ui:
     return direction == ui::SortDirection::Asc ? a.name < b.name : a.name > b.name;
 }
 void SortEntriesBySize(std::vector<fs::DirEntry>&, ui::SortDirection, const FolderSizeLookup&, const std::function<void()>&) {}
+void SortEntries(std::vector<fs::DirEntry>& entries, ui::SortColumn col, ui::SortDirection dir, const std::function<void()>& tick) {
+    std::sort(entries.begin(), entries.end(), [&](const fs::DirEntry& a, const fs::DirEntry& b) { if (tick) tick(); return EntryLess(a, b, col, dir); });
+}
 }
 namespace pulse::diagnostics::runtime {
 void Event(const char*, std::initializer_list<Field>) noexcept {}

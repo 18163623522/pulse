@@ -42,6 +42,9 @@ ScopedEntryGrouping::ScopedEntryGrouping(int,const std::wstring&) {}
 ScopedEntryGrouping::~ScopedEntryGrouping() = default;
 bool EntryLess(const fs::DirEntry& a,const fs::DirEntry& b,ui::SortColumn,ui::SortDirection) {return a.name<b.name;}
 void SortEntriesBySize(std::vector<fs::DirEntry>&,ui::SortDirection,const FolderSizeLookup&,const std::function<void()>&) {}
+void SortEntries(std::vector<fs::DirEntry>& entries, ui::SortColumn col, ui::SortDirection dir, const std::function<void()>& tick) {
+    std::sort(entries.begin(), entries.end(), [&](const fs::DirEntry& a, const fs::DirEntry& b) { if (tick) tick(); return EntryLess(a, b, col, dir); });
+}
 }
 namespace pulse::fs {
 NetSnapshotWriteTicket BeginNetSnapshotWrite(const std::wstring&) {return {};}

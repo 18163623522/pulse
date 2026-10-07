@@ -219,6 +219,14 @@ void SnapshotStore::MarkDirty(const std::wstring& path) {
     if (it != map_.end()) it->second.dirty = true;
 }
 
+void SnapshotStore::BeginRefresh(const std::wstring& path) {
+    std::wstring key = NormalizePath(path);
+    if (!path.empty() && key.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = map_.find(key);
+    if (it != map_.end()) it->second.dirty = false;
+}
+
 size_t SnapshotStore::EntryCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return map_.size();
