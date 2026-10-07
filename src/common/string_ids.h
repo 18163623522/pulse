@@ -1367,3 +1367,6 @@
 #define IDS_OP_SKIP_AUTHORIZATION 2530
 #define IDS_OP_AUTHORIZATION_PROMPT 2531
 #define IDS_OP_AUTHORIZATION_NOT_GRANTED 2532
+
+// File operations that track items (delete, restore) label their speed with this unit.
+#define IDS_OP_ITEMS_PER_SECOND 2533

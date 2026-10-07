@@ -10,7 +10,7 @@ namespace {
 
 constexpr UINT kFirstString = IDS_SETTINGS;
 // Must stay on the highest allocated string id, otherwise Get() returns empty.
-constexpr UINT kLastString = IDS_OP_AUTHORIZATION_NOT_GRANTED;
+constexpr UINT kLastString = IDS_OP_ITEMS_PER_SECOND;
 static_assert(static_cast<UINT>(StringId::UiFontLarger) <= kLastString);
 static_assert(static_cast<UINT>(StringId::OpAuthorizationNotGranted) <= kLastString);
 static_assert(static_cast<UINT>(StringId::ListThumbnailBadgesDesc) <= kLastString);
@@ -23,6 +23,7 @@ static_assert(static_cast<UINT>(StringId::NetworkLiveAddFailed) <= kLastString);
 static_assert(static_cast<UINT>(StringId::IntegrationReapply) <= kLastString);
 static_assert(static_cast<UINT>(StringId::UpdateDescManual) <= kLastString);
 static_assert(static_cast<UINT>(StringId::Downloads) <= kLastString);
+static_assert(static_cast<UINT>(StringId::OpItemsPerSecond) <= kLastString);
 static_assert(static_cast<UINT>(StringId::SettingsChangeTracking) >= kFirstString &&
               static_cast<UINT>(StringId::ChangeDisabled) <= kLastString &&
               static_cast<UINT>(StringId::FolderSortMixed) <= kLastString &&
