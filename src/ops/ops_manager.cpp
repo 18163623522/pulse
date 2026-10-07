@@ -1859,6 +1859,7 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 
     std::wstring failure;
     HRESULT failure_hr = S_OK;   // lets a lock-style failure be traced to its owner
+    std::optional<LockReport> move_lock_report;
     bool cancelled = transfer_cancel_.load() || stopping_.load();
     const auto stop_requested = [&] {
         cancelled = cancelled || transfer_cancel_.load() || stopping_.load();
@@ -1946,8 +1947,14 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
 #ifndef PULSE_ELEVATED_HOST
             if (move_error == ERROR_ACCESS_DENIED || move_error == ERROR_PRIVILEGE_NOT_HELD ||
                 move_error == ERROR_ELEVATION_REQUIRED) {
-                RunAuthorizedTransfer(req, task_id);
-                return;
+                // A locked descendant also makes a directory rename return access
+                // denied. Elevation cannot release that handle; retain lock retry.
+                move_lock_report = ProbeLock(req, task_id, HRESULT_FROM_WIN32(move_error),
+                    Win32Message(move_error) + L" | " + req.sources.front());
+                if (move_lock_report->Empty()) {
+                    RunAuthorizedTransfer(req, task_id);
+                    return;
+                }
             }
 #endif
             if (move_error != ERROR_NOT_SAME_DEVICE) {
@@ -2603,7 +2610,8 @@ void OpsManager::RunTransfer(const OpRequest& req, uint64_t task_id) {
         {"hresult", static_cast<uint32_t>(failure_hr)}, {"has_error", !failure.empty()},
         {"cancelled", transfer_cancelled}, {"completed_sources", completed_sources.size()}});
     const LockReport lock_report = !transfer_cancelled && !failure.empty()
-        ? ProbeLock(req, task_id, failure_hr, failure) : LockReport{};
+        ? (move_lock_report ? *move_lock_report : ProbeLock(req, task_id, failure_hr, failure))
+        : LockReport{};
     SetStatus([&](OpStatus& st) {
         st.active = false;
         st.completed_ops++;
