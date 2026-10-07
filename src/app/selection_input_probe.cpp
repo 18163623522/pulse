@@ -3,11 +3,91 @@
 #include "app_navigation.h"
 #include "app_sidebar_refresh.h"
 #include "app_runtime.h"
+#include "app_ops_ui.h"
 #include <algorithm>
 #include <cstdio>
 
 using namespace pulse;
 namespace {
+int CheckDeleteSelection(AppState& s, FILE* log) {
+    wchar_t data[32768]{};
+    if (!s.isolatedTest || !GetEnvironmentVariableW(L"PULSE_TEST_DATA_DIR", data, ARRAYSIZE(data))) return 2;
+    auto* tab = ActiveTab(s);
+    const std::wstring fixture = fs::NormalizePath(std::wstring(data) + L"\\files");
+    if (!tab || fs::NormalizePath(tab->current_path) != fs::NormalizePath(fixture) || tab->EntryCount() != 5) {
+        fprintf(log, "[ERROR] fixture guard path=%ls expected=%ls count=%zu\n",
+                tab ? tab->current_path.c_str() : L"", fixture.c_str(), tab ? tab->EntryCount() : 0);
+        return 2;
+    }
+    for (int i = 0; i < 5; ++i) {
+        const std::wstring expected(1, static_cast<wchar_t>(L'a' + i));
+        if (tab->EntryAt(i).name != expected + L".txt") {
+            fprintf(log, "[ERROR] fixture row %d name=%ls\n", i, tab->EntryAt(i).name.c_str());
+            return 2;
+        }
+    }
+    s.appPrefs.confirm_recycle_delete = false;
+    int failures = 0;
+    const auto pump = [] {
+        MSG msg{};
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg); DispatchMessageW(&msg);
+        }
+        Sleep(10);
+    };
+    const auto remove = [&](std::vector<int> indices, int remaining, const wchar_t* expected, const char* label) {
+        tab->SelectIndices(indices);
+        const auto paths = SelectedFullPaths(*tab);
+        DeleteSelected(s, false);
+        const auto deadline = GetTickCount64() + 15000;
+        bool completed = false;
+        while (GetTickCount64() < deadline) {
+            pump();
+            completed = !tab->loading && tab->EntryCount() == static_cast<size_t>(remaining);
+            for (const auto& path : paths) completed &= GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES;
+            if (completed) break;
+        }
+        const auto settled = GetTickCount64() + 500;
+        while (GetTickCount64() < settled) pump();
+        const std::wstring actual = tab->selected_index >= 0 ? tab->EntryAt(tab->selected_index).name : L"";
+        const bool okay = completed && actual == expected && (remaining || tab->SelectedCount() == 0);
+        fprintf(log, "[%s] %s actual=%ls index=%d remaining=%zu\n", okay ? "PASS" : "FAIL", label,
+                actual.c_str(), tab->selected_index, tab->EntryCount());
+        fflush(log);
+        failures += !okay;
+        return okay;
+    };
+    if (!remove({2}, 4, L"d.txt", "real recycle command: middle selection follows successor")) return 1;
+    if (!remove({3}, 3, L"d.txt", "real recycle command: last selection follows predecessor")) return 1;
+    if (!remove({1, 2}, 1, L"a.txt", "real recycle command: multiple deletion follows surviving neighbor")) return 1;
+    if (!remove({0}, 0, L"", "real recycle command: deleting final item clears selection")) return 1;
+    for (wchar_t ch = L'a'; ch <= L'e'; ++ch) {
+        const auto path = fixture + L"\\" + std::wstring(1, ch) + L".txt";
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return 2;
+        CloseHandle(file);
+    }
+    auto entries = std::make_shared<std::vector<fs::DirEntry>>();
+    fs::EnumerateDirectory(fixture, *entries);
+    std::sort(entries->begin(), entries->end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    tab->SetSnapshot(entries);
+    for (const auto& name : {L"c.txt", L"e.txt"}) {
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(tab->EntryCount()); ++i) if (tab->EntryAt(i).name == name) index = i;
+        if (index < 0) return 2;
+        tab->SelectOnly(index);
+        if (!DeleteFileW((fixture + L"\\" + name).c_str())) return 2;
+        const bool applied = ApplyNotifyToVisible(s, fixture, {FILE_ACTION_REMOVED, name, {}});
+        const auto actual = tab->selected_index >= 0 ? tab->EntryAt(tab->selected_index).name : L"";
+        const bool okay = applied && actual == L"d.txt";
+        fprintf(log, "[%s] directory-notify handler: applied=%d removed=%ls selected=%ls\n",
+                okay ? "PASS" : "FAIL", applied ? 1 : 0, name, actual.c_str());
+        fflush(log);
+        failures += !okay;
+    }
+    return failures ? 1 : 0;
+}
+
 template<class Check>
 void CheckFilteredRanges(Check check) {
     // In-memory rows only: validate the same path list consumed by operations,
@@ -96,6 +176,11 @@ void CheckFilteredRanges(Check check) {
 int RunSelectionInputProbe(AppState& s, const wchar_t* output) {
     FILE* log = nullptr;
     if (_wfopen_s(&log, output, L"w") || !log) return 2;
+    if (GetEnvironmentVariableW(L"PULSE_TEST_DELETE_SELECTION_ONLY", nullptr, 0)) {
+        const int result = CheckDeleteSelection(s, log);
+        std::fclose(log);
+        return result;
+    }
     int failures = 0;
     const auto check = [&](bool ok, const char* label) {
         std::fprintf(log, "[%s] %s\n", ok ? "PASS" : "FAIL", label);

@@ -1335,7 +1335,7 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
                 }
             }
             if (!startedRename) {
-                app::RestoreListingSelection(*tab, pendingNames, pendingFocus, selection_restore.user_changed);
+                app::RestoreListingSelection(*tab, selection_restore, &pane, &s.places);
             }
             if (focusedTab && ensurePendingVisible && tab->selected_index >= 0) {
                 EnsureRowVisible(s, *tab, tab->selected_index);
@@ -1522,9 +1522,11 @@ static bool ApplyNotifiesToVisible(AppState& s, const std::wstring& path,
             }
             if (_wcsicmp(focus.c_str(), event.old_name.c_str()) == 0) focus = event.name;
         }
+        app::ListingSelectionRestore selection_restore{
+            std::move(names), std::move(focus), false, false, tab->snapshot, tab->selected_index};
         tab->SetSnapshot(std::move(copy));
         tab->order_held = true;
-        if (!names.empty()) tab->RemapSelection(names, focus);
+        if (!selection_restore.names.empty()) app::RestoreListingSelection(*tab, selection_restore, &pane, &s.places);
         else if (tab->snapshot && tab->EntryCount() != 0 && tab->selected_index < 0)
             tab->SelectOnly(0);
         if (!store_snap) store_snap = tab->snapshot;
