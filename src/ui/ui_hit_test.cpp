@@ -717,6 +717,7 @@ HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F
         for (int i = static_cast<int>(slots.size()) - 1; i >= 0; --i) {
             const auto& slot = slots[i];
             if (!ContainsPt(slot.rc, x, y)) continue;
+            if (slot.kind == SidebarSlot::RailMore) continue; // decoration only
             if (slot.kind == SidebarSlot::TrayRelease) {
                 r.region = HitTestResult::TrayRelease;
                 r.index = slot.batch;

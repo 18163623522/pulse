@@ -514,6 +514,15 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s->shot.active && l10n::IsLanguageId(s->shot.language) &&
             s->shot.language != L"system")
             s->appPrefs.language = s->shot.language;
+        if (s->shot.active) {
+            // GUI verification of hidden / protected item styling (never persisted).
+            wchar_t show_hidden[2]{};
+            if (GetEnvironmentVariableW(L"PULSE_TEST_SHOW_HIDDEN", show_hidden, 2) == 1 &&
+                show_hidden[0] == L'1') {
+                s->appPrefs.show_hidden_files = true;
+                s->appPrefs.show_protected_os_files = true;
+            }
+        }
         l10n::Initialize(cs->hInstance, s->appPrefs.language);
         if (s->shot.update_available) {
             s->update_result_ready = true;

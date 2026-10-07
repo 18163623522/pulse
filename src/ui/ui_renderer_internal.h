@@ -19,6 +19,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <wrl/client.h>
 
 namespace pulse::ui {
 
@@ -241,10 +242,74 @@ void ClearTextWidthCache() {
         }
     }
 
-    // Hidden entries render faded (icon, and the column strip's name), at the
-    // same 0.55 strength as cut items, so they read as background content.
+    // Protected operating-system items are hidden *and* system (Explorer's
+    // "protected operating system files"). A folder with only the system bit is
+    // just a customized folder and stays normal.
+    inline bool IsProtectedSystemEntry(DWORD attrs) noexcept {
+        constexpr DWORD kMask = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
+        return (attrs & kMask) == kMask;
+    }
+
+    // Hidden entries render faded (icon and name) so they read as background
+    // content; protected system items fade further and carry a shield badge.
     inline float HiddenEntryAlpha(DWORD attrs) noexcept {
-        return (attrs & FILE_ATTRIBUTE_HIDDEN) ? 0.55f : 1.0f;
+        if (IsProtectedSystemEntry(attrs)) return 0.42f;
+        return (attrs & FILE_ATTRIBUTE_HIDDEN) ? 0.50f : 1.0f;
+    }
+
+    // Name color that matches HiddenEntryAlpha: secondary text for hidden items,
+    // a step lighter for protected system items.
+    inline D2D1_COLOR_F HiddenEntryNameColor(DWORD attrs, const Theme& theme,
+                                             D2D1_COLOR_F normal) noexcept {
+        if (IsProtectedSystemEntry(attrs)) {
+            D2D1_COLOR_F c = theme.text_secondary;
+            c.a *= 0.78f;
+            return c;
+        }
+        if (attrs & FILE_ATTRIBUTE_HIDDEN) return theme.text_secondary;
+        return normal;
+    }
+
+    // Opaque shield badge on the bottom-right of a protected item's artwork.
+    inline void DrawProtectedBadge(ID2D1DeviceContext* dc, const D2D1_RECT_F& art,
+                                   float scale, const Theme& theme) {
+        if (!dc) return;
+        const float art_size = (std::min)(art.right - art.left, art.bottom - art.top);
+        if (art_size <= 0.0f) return;
+        const float d = std::clamp(art_size * 0.42f, 11.0f * scale, 18.0f * scale);
+        const float cx = art.right - d * 0.25f;
+        const float cy = art.bottom - d * 0.25f;
+        Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+        D2D1_COLOR_F plate = theme.surface_flyout;
+        plate.a = 1.0f;
+        if (FAILED(dc->CreateSolidColorBrush(plate, &brush))) return;
+        const D2D1_ELLIPSE circle = D2D1::Ellipse(D2D1::Point2F(cx, cy), d * 0.5f, d * 0.5f);
+        dc->FillEllipse(circle, brush.Get());
+        D2D1_COLOR_F ring = theme.text;
+        ring.a = 0.16f;
+        brush->SetColor(ring);
+        dc->DrawEllipse(circle, brush.Get(), (std::max)(1.0f, scale));
+        Microsoft::WRL::ComPtr<ID2D1Factory> factory;
+        dc->GetFactory(&factory);
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> shield;
+        if (!factory || FAILED(factory->CreatePathGeometry(&shield))) return;
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(shield->Open(&sink))) return;
+        // Shield outline in a 12-unit box, scaled into the badge.
+        const float u = d * 0.62f / 12.0f;
+        const float ox = cx - 6.0f * u;
+        const float oy = cy - 6.0f * u;
+        const auto P = [&](float x, float y) { return D2D1::Point2F(ox + x * u, oy + y * u); };
+        sink->BeginFigure(P(6.0f, 0.8f), D2D1_FIGURE_BEGIN_FILLED);
+        sink->AddLine(P(10.4f, 2.4f));
+        sink->AddLine(P(10.4f, 5.7f));
+        sink->AddBezier(D2D1::BezierSegment(P(10.4f, 8.5f), P(8.5f, 10.5f), P(6.0f, 11.2f)));
+        sink->AddBezier(D2D1::BezierSegment(P(3.5f, 10.5f), P(1.6f, 8.5f), P(1.6f, 5.7f)));
+        sink->AddLine(P(1.6f, 2.4f));
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        if (FAILED(sink->Close())) return;
+        brush->SetColor(theme.text_secondary);
+        dc->FillGeometry(shield.Get(), brush.Get());
     }
 
     const ListEntryView& MakeVisibleEntry(const PaneViewModel& vm, size_t index) {
@@ -357,6 +422,9 @@ void ClearTextWidthCache() {
             // Rail only: a section's own icon row (always present, so the icon
             // never disappears and the section can be folded from it).
             Rail,
+            // Rail only: "+N" chip standing in for section rows that do not fit
+            // (batch = how many rows it replaces). Drawn, never hit.
+            RailMore,
             TrayPanel,
             TrayRelease,
             TrayClear
@@ -586,16 +654,37 @@ void ClearTextWidthCache() {
                 }
                 for (int i = 0; i < static_cast<int>(group.items.size()); ++i) {
                     if (group.items[i].starred_child) continue;
-                    if (y + rowH > sb.bottom - trayH) break;
+                    // Tags are a colored dot each, so their rail rows are shorter.
+                    const float itemH = group.items[i].is_tag ? 32.0f * scale : rowH;
+                    if (y + itemH > sb.bottom - trayH) {
+                        if (group.items[i].is_tag) {
+                            // The last fitting tag row becomes "+N" for the rest.
+                            int rest = static_cast<int>(group.items.size()) - i;
+                            if (!out.empty() && out.back().kind == SidebarSlot::Tag &&
+                                out.back().group == g) {
+                                out.back().kind = SidebarSlot::RailMore;
+                                out.back().batch = rest + 1;
+                            } else if (y + 26.0f * scale <= sb.bottom - trayH) {
+                                SidebarSlot more;
+                                more.kind = SidebarSlot::RailMore;
+                                more.rc = D2D1::RectF(4.0f * scale, y, width - 4.0f * scale,
+                                                      y + 26.0f * scale);
+                                more.group = g;
+                                more.batch = rest;
+                                out.push_back(more);
+                            }
+                        }
+                        break;
+                    }
                     SidebarSlot slot;
                     slot.kind = group.items[i].is_drive ? SidebarSlot::Drive
                               : group.items[i].is_tag ? SidebarSlot::Tag : SidebarSlot::Item;
-                    slot.rc = D2D1::RectF(4.0f * scale, y, width - 4.0f * scale, y + rowH);
+                    slot.rc = D2D1::RectF(4.0f * scale, y, width - 4.0f * scale, y + itemH);
                     slot.group = g;
                     slot.item = i;
                     slot.run = run++;
                     out.push_back(slot);
-                    y += rowH;
+                    y += itemH;
                 }
             }
             SidebarSlot tray;

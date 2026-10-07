@@ -230,7 +230,9 @@ void MainRenderer::DrawColumnStripColumn(const WindowViewModel& vm, const PaneVi
         if (fs::ClassifyLink(entry.attrs, entry.reparse_tag) != fs::LinkKind::None ||
             (!entry.is_dir && IsShortcutName(entry.name)))
             DrawLinkOverlay(ix, iy, icon, theme, hidden_alpha);
-        MakeBrush(dc, WithAlpha(theme.text, theme.text.a * hidden_alpha), brText_);
+        if (IsProtectedSystemEntry(entry.attrs)) DrawProtectedBadge(dc, dest, scale_, theme);
+        MakeBrush(dc, IsHighContrast() ? theme.text
+                                       : HiddenEntryNameColor(entry.attrs, theme, theme.text), brText_);
         const float tx = ix + icon + 8.0f * scale_;
         const float chevron_w = entry.is_dir ? 18.0f * scale_ : 0.0f;
         DrawTextEndEllipsis(dc, factory, compositor_->FileNameFormat(), brText_.get(), entry.name,

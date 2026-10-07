@@ -2345,6 +2345,8 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     cut ? 0.55f : hidden_alpha, expand_on_icon ? caption : std::wstring(),
                     expand_on_icon ? link_expansion : 0.0f, cell.right - 8.0f * scale_, &artwork);
             }
+            if (draw_shapes && !morph_item && !e.record_only && IsProtectedSystemEntry(e.attrs))
+                DrawProtectedBadge(dc, iconGrid ? artwork : iconRect, scale_, theme);
             // Mid-morph the labels are drawn in a second, faded pass.
             if (!draw_text) continue;
 
@@ -2435,6 +2437,7 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     }
                 }
                 if (cut) nameColor = WithAlpha(nameColor, 0.55f);
+                else if (!IsHighContrast()) nameColor = HiddenEntryNameColor(e.attrs, theme, nameColor);
                 MakeBrush(dc, nameColor, brText_);
                 bool name_truncated = true;
                 if (iconGrid && tagDotCount == 0) {

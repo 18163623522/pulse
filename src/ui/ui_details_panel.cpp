@@ -405,6 +405,7 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
                 }
                 if (d.is_link)
                     DrawLinkOverlay(iconRc.left, iconRc.top, icon, theme, hidden_alpha);
+                if (IsProtectedSystemEntry(d.attrs)) DrawProtectedBadge(dc, iconRc, scale_, theme);
                 if (showState && !state.empty())
                     centeredText(state,
                         D2D1::RectF(contentRc.left, iconRc.bottom + stateGap,
