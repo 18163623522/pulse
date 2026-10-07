@@ -64,6 +64,10 @@ struct ContextMenuPrefs {
     bool GroupEnabled(ipc::CtxMenuGroup g) const;
     void SetGroupEnabled(ipc::CtxMenuGroup g, bool on);
     bool ItemEnabled(const std::wstring& key, ipc::CtxMenuCategory c, bool from_com) const;
+    // Settings-page view of a row (#77): a handler the slow-extension
+    // auto-disable turned off must not display as on just because no explicit
+    // override exists. Toggling such a row on also clears the disable.
+    bool RowEnabled(const std::wstring& key, ipc::CtxMenuCategory c, bool from_com) const;
     void SetItemEnabled(const std::wstring& key, bool on);
     bool HandlerEnabled(const std::wstring& clsid) const;
     std::vector<std::wstring> DisabledHandlerClsids() const;

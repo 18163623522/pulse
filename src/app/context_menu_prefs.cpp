@@ -84,6 +84,11 @@ bool ContextMenuPrefs::ItemEnabled(const std::wstring& key, ipc::CtxMenuCategory
     return CategoryEnabled(c);
 }
 
+bool ContextMenuPrefs::RowEnabled(const std::wstring& key, ipc::CtxMenuCategory c,
+                                  bool from_com) const {
+    return ItemEnabled(key, c, from_com) && !ComDisabled(key);
+}
+
 void ContextMenuPrefs::SetBuiltinVisible(BuiltinMenuItem item, bool on) {
     if (on) builtin_hidden &= ~BuiltinMenuBit(item);
     else builtin_hidden |= BuiltinMenuBit(item);
@@ -140,7 +145,10 @@ bool ContextMenuPrefs::RecordSeen(const std::wstring& key, const std::wstring& t
 }
 
 bool ContextMenuPrefs::RecordComTiming(const std::wstring& key, uint32_t elapsed_ms) {
-    if (key.empty()) return false;
+    // SendTo never feeds the slow-extension auto-disable (#77): it serializes
+    // the whole default menu, so it is structurally the last worker home and
+    // would be permanently killed after three slow right-clicks.
+    if (key.empty() || key == ipc::SendToHandlerCatalogKey()) return false;
     SlowComExt& st = slow_ext[key];
     st.last_ms = elapsed_ms;
     bool changed = false;
@@ -331,6 +339,9 @@ bool ContextMenuPrefs::FromJson(const std::wstring& json) {
             st.disabled = pulse::json::ExtractBool(block, L"disabled", false);
             slow_ext[key] = st;
         });
+    // Purge disable state older builds persisted for SendTo (#77): the
+    // exemption above keeps it clear, so this migration is idempotent.
+    slow_ext.erase(ipc::SendToHandlerCatalogKey());
     return true;
 }
 

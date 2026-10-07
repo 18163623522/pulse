@@ -520,6 +520,7 @@ struct SettingsRowView {
     std::wstring text;
     int group = 0; // 0 software, 1 open-with, 2 share, 3 system, 4 print
     bool on = false;
+    bool slow_disabled = false; // auto-disabled after response timeouts (#77)
 };
 
 struct IndexVolumeRowView {

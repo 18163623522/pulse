@@ -1682,6 +1682,10 @@ LRESULT CALLBACK WndProcImpl(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     prefs_changed = true;
                 if (!completed.partial) {
                     for (const auto& clsid : payload->slow_clsids) {
+                        // SendTo is exempt from the auto-disable (#77): it
+                        // serializes the whole default menu, so it would be
+                        // permanently killed after three slow right-clicks.
+                        if (ipc::IsSendToHandlerClsid(clsid)) continue;
                         if (s->ctxMenuPrefs.RecordComTiming(
                                 ipc::HandlerCatalogKey(clsid), 1000))
                             prefs_changed = true;

@@ -35,12 +35,18 @@ void MainRenderer::DrawSettingsContext(const WindowViewModel& vm,const D2D1_RECT
         painter_.DrawText(l10n::Get(I::SettingsContextEmpty),empty,compositor_->SmallFormat(),theme.text_secondary);
     for(size_t i=0;i<l.context_rows.size();++i) {
         const auto r=l.context_rows[i];if(r.bottom<=r.top) continue;
+        const auto& row=vm.settings_items[i];
         if(IsHovered(vm,HitTestResult::SettingsToggle,100+static_cast<int>(i))) {
             MakeBrush(dc,theme.fill_hover,brFillHover_);
             dc->FillRoundedRectangle(D2D1::RoundedRect(r,4*scale_,4*scale_),brFillHover_.get());
         }
-        painter_.DrawText(vm.settings_items[i].text,D2D1::RectF(r.left+16*scale_,r.top,r.right-76*scale_,r.bottom),compositor_->TextFormat(),theme.text);
-        fluent::ControlState state{};state.checked=vm.settings_items[i].on;state.hovered=IsHovered(vm,HitTestResult::SettingsToggle,100+static_cast<int>(i));
+        // A row auto-disabled after timeouts (#77) is dimmed and carries the
+        // reason right of its text; the switch stays clickable to recover.
+        const float text_right=row.slow_disabled ? r.right-268*scale_ : r.right-76*scale_;
+        painter_.DrawText(row.text,D2D1::RectF(r.left+16*scale_,r.top,text_right,r.bottom),compositor_->TextFormat(),row.slow_disabled?theme.text_secondary:theme.text);
+        if(row.slow_disabled)
+            painter_.DrawText(l10n::Get(I::ContextSlowDisabled),D2D1::RectF(r.right-252*scale_,r.top,r.right-76*scale_,r.bottom),compositor_->SmallFormat(),theme.text_secondary);
+        fluent::ControlState state{};state.checked=row.on;state.hovered=IsHovered(vm,HitTestResult::SettingsToggle,100+static_cast<int>(i));
         painter_.DrawSwitch(D2D1::RectF(r.right-60*scale_,r.top+4*scale_,r.right-16*scale_,r.bottom-4*scale_),L"",state);
     }
     fluent::ControlState restore{};restore.hovered=IsHovered(vm,HitTestResult::SettingsRestore);

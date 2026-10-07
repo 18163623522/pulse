@@ -273,6 +273,17 @@ inline bool IsHandlerCatalogKey(std::wstring_view key) {
 inline std::wstring HandlerClsidFromKey(std::wstring_view key) {
     return IsHandlerCatalogKey(key) ? std::wstring(key.substr(2)) : std::wstring{};
 }
+// The standalone SendTo extension (#77): its QueryContextMenu wraps the whole
+// default Shell menu, so it is exempt from the slow-extension auto-disable —
+// its worst case is an empty flyout, never a hang.
+inline constexpr wchar_t kSendToHandlerClsid[] =
+    L"{7ba4c740-9e81-11cf-99d3-00aa004ae837}";
+inline bool IsSendToHandlerClsid(std::wstring_view clsid) {
+    return ToLowerVerb(clsid) == ToLowerVerb(kSendToHandlerClsid);
+}
+inline std::wstring SendToHandlerCatalogKey() {
+    return HandlerCatalogKey(kSendToHandlerClsid);
+}
 inline bool IsDisabledHandler(std::wstring_view clsid,
                               const std::vector<std::wstring>& disabled) {
     const std::wstring c = ToLowerVerb(clsid);

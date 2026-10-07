@@ -1370,3 +1370,4 @@
 
 // File operations that track items (delete, restore) label their speed with this unit.
 #define IDS_OP_ITEMS_PER_SECOND 2533
+#define IDS_CONTEXT_SLOW_DISABLED 2534
