@@ -1,6 +1,13 @@
+#include "nt_directory_record.h"
 #include <mutex>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <thread>
+#include <chrono>
 // fs_enum.cpp
 #include "fs_enum.h"
+#include "bounded_enumeration.h"
 #include "../common/localization.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -52,20 +59,7 @@ struct NtIoStatusBlock {
 
 using NtPioApcRoutine = VOID (NTAPI*)(PVOID ApcContext, NtIoStatusBlock* IoStatusBlock, ULONG Reserved);
 
-struct NtFileFullDirInformation {
-    ULONG NextEntryOffset;
-    ULONG FileIndex;
-    LARGE_INTEGER CreationTime;
-    LARGE_INTEGER LastAccessTime;
-    LARGE_INTEGER LastWriteTime;
-    LARGE_INTEGER ChangeTime;
-    LARGE_INTEGER EndOfFile;
-    LARGE_INTEGER AllocationSize;
-    ULONG FileAttributes;
-    ULONG FileNameLength;
-    ULONG EaSize;
-    WCHAR FileName[1];
-};
+using pulse::fs::NtFileFullDirInformation;
 
 enum NtFileInformationClass : int {
     NtFileFullDirectoryInformation = 2,
@@ -146,24 +140,35 @@ std::wstring NormalizePath(std::wstring path) {
         if (path.size() == 6 && path[5] == L':') path += L'\\';
         return path;
     }
-    if (path.starts_with(L"\\\\")) {
-        return L"\\\\?\\UNC\\" + path.substr(2);
-    }
-    // Relative path: \\?\ requires a fully-qualified path, resolve it first.
-    if (path.size() < 2 || path[1] != L':') {
-        wchar_t full[32768];
-        DWORD n = GetFullPathNameW(path.c_str(), (DWORD)_countof(full), full, nullptr);
-        if (n > 0 && n < _countof(full)) path.assign(full, n);
-    }
+    // Keep the address bar's bare-drive -> root convention, but C:folder
+    // still means that drive's working directory, not the active tab's path.
     if (path.size() == 2 && path[1] == L':') path += L'\\';
+    // Resolve ALL ordinary DOS/UNC inputs before introducing the extended
+    // prefix, which disables Win32 dot-segment and drive-relative handling.
+    // Empty is the failure sentinel for a nonempty input; admission/cache
+    // callers must distinguish it from an intentional This-PC empty path.
+    if (path.find(L'\0') != std::wstring::npos) {
+        SetLastError(ERROR_INVALID_NAME);
+        return {};
+    }
+    wchar_t full[32768];
+    const DWORD n = GetFullPathNameW(path.c_str(), static_cast<DWORD>(_countof(full)), full, nullptr);
+    if (n == 0) return {};
+    if (n >= _countof(full)) {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return {};
+    }
+    path.assign(full, n);
     // Remove trailing backslash except for drive root.
     if (path.size() > 1 && path.back() == L'\\' && path[path.size() - 2] != L':')
         path.pop_back();
+    if (path.starts_with(L"\\\\")) return L"\\\\?\\UNC\\" + path.substr(2);
     return L"\\\\?\\" + path;
 }
 
 std::wstring ParentPath(const std::wstring& path) {
     std::wstring normalized = NormalizePath(path);
+    if (normalized.empty()) throw std::runtime_error("Invalid directory path");
     std::wstring_view view = normalized;
     // Strip long-path prefix for find_last_of logic.
     std::wstring_view core = view;
@@ -188,7 +193,7 @@ std::wstring StripLnkSuffix(const std::wstring& name) {
     return name.substr(0, name.size() - 4);
 }
 
-static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEntry>& out) {
+static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEntry>& out, const std::atomic<bool>* cancelled = nullptr) {
     std::wstring pattern = path;
     if (!pattern.ends_with(L"\\")) pattern += L"\\";
     pattern += L"*";
@@ -209,6 +214,7 @@ static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEn
         throw std::runtime_error(oss.str());
     }
     do {
+        if (cancelled && cancelled->load()) { FindClose(h); throw EnumerationCancelled(); }
         if (fd.cFileName[0] == L'.' &&
             (fd.cFileName[1] == L'\0' || (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0')))
             continue;
@@ -233,7 +239,7 @@ static void EnumerateFindFirstFileEx(const std::wstring& path, std::vector<DirEn
     }
 }
 
-static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& out) {
+static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& out, const std::atomic<bool>* cancelled = nullptr) {
     InitNtApi();
 
     std::wstring target = path;
@@ -272,16 +278,21 @@ static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& ou
         throw std::runtime_error(oss.str());
     }
 
+    const auto close_handle = [](void* handle) { CloseHandle(handle); };
+    std::unique_ptr<void, decltype(close_handle)> directory_owner(h, close_handle);
     constexpr SIZE_T kBufSize = 64 * 1024;
     std::vector<BYTE> buffer(kBufSize);
     bool restart = true;
     HANDLE hEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!hEvent) {
-        CloseHandle(h);
         throw std::runtime_error("CreateEvent failed");
     }
 
+    std::unique_ptr<void, decltype(close_handle)> event_owner(hEvent, close_handle);
     for (;;) {
+        if (cancelled && cancelled->load()) {
+            throw EnumerationCancelled();
+        }
         iosb = {};
         status = g_NtQueryDirectoryFile(
             h,
@@ -299,21 +310,30 @@ static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& ou
         restart = false;
 
         if (status == STATUS_PENDING) {
-            WaitForSingleObject(hEvent, INFINITE);
+            while (WaitForSingleObject(hEvent, 25) == WAIT_TIMEOUT) {
+                if (cancelled && cancelled->load()) {
+                    CancelIoEx(h, nullptr);
+                    // The caller can retire this worker. These stack-owned NT
+                    // buffers must nevertheless survive until completion.
+                    WaitForSingleObject(hEvent, INFINITE);
+                    break;
+                }
+            }
             status = iosb.Status;
         }
 
         if (status == STATUS_NO_MORE_FILES) break;
         if (status != STATUS_SUCCESS) {
-            CloseHandle(hEvent);
-            CloseHandle(h);
             std::ostringstream oss;
             oss << "NtQueryDirectoryFile failed, status=0x" << std::hex << status;
             throw std::runtime_error(oss.str());
         }
 
+        if (iosb.Information > buffer.size()) throw std::runtime_error("Invalid NT directory buffer size");
         auto* info = reinterpret_cast<NtFileFullDirInformation*>(buffer.data());
         for (;;) {
+            pulse::fs::ValidateNtDirectoryRecord(info, static_cast<size_t>(iosb.Information) -
+                static_cast<size_t>(reinterpret_cast<BYTE*>(info) - buffer.data()));
             DirEntry e;
             e.name.assign(info->FileName, info->FileNameLength / sizeof(WCHAR));
             if (!(e.name.size() == 1 && e.name[0] == L'.') &&
@@ -340,8 +360,8 @@ static void EnumerateNtQuery(const std::wstring& path, std::vector<DirEntry>& ou
         }
     }
 
-    CloseHandle(hEvent);
-    CloseHandle(h);
+
+
 }
 
 // "This PC" view (empty path): one entry per logical drive, label matches
@@ -404,13 +424,14 @@ static void EnumerateServerShares(const std::wstring& server, std::vector<DirEnt
     NetApiBufferFree(buf);
 }
 
-void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out) {
+static void EnumerateDirectoryImpl(const std::wstring& path, std::vector<DirEntry>& out, const std::atomic<bool>* cancelled) {
     out.clear();
     if (path.empty()) {
         EnumerateThisPc(out);
         return;
     }
     std::wstring normalized = NormalizePath(path);
+    if (normalized.empty()) throw std::runtime_error("Invalid directory path");
     if (normalized.starts_with(L"\\\\?\\UNC\\")) {
         std::wstring rest = normalized.substr(8);
         while (!rest.empty() && rest.back() == L'\\') rest.pop_back();
@@ -420,13 +441,89 @@ void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out) {
         }
     }
     try {
-        EnumerateNtQuery(normalized, out);
+        EnumerateNtQuery(normalized, out, cancelled);
         return;
     } catch (...) {
+        if (cancelled && cancelled->load()) throw;
         // Fall back to FindFirstFileExW.
     }
     out.clear();
-    EnumerateFindFirstFileEx(normalized, out);
+    EnumerateFindFirstFileEx(normalized, out, cancelled);
+}
+
+void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out, const std::atomic_bool* cancelled) {
+    EnumerateDirectoryImpl(path, out, cancelled);
+}
+
+namespace {
+std::atomic<unsigned> active_directory_requests{0};
+std::atomic<unsigned> active_remote_directory_requests{0};
+struct DirectoryRequest {
+    bool remote = false;
+    std::atomic<bool> cancelled{false};
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool done = false;
+    std::vector<DirEntry> entries;
+    std::exception_ptr error;
+    ~DirectoryRequest() {
+        if (remote) --active_remote_directory_requests;
+        --active_directory_requests;
+    }
+};
+}
+void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out, const EnumerationOptions& options) {
+    out.clear();
+    if (options.cancelled && options.cancelled()) throw EnumerationCancelled();
+    const bool remote = IsUncPath(path);
+    if (remote && active_remote_directory_requests.fetch_add(1) >= 16) {
+        --active_remote_directory_requests;
+        throw std::runtime_error("Remote directory provider retirement limit reached");
+    }
+    if (active_directory_requests.fetch_add(1) >= 32) {
+        --active_directory_requests;
+        if (remote) --active_remote_directory_requests;
+        throw std::runtime_error("Directory provider retirement limit reached");
+    }
+    std::shared_ptr<DirectoryRequest> request;
+    try { request = std::make_shared<DirectoryRequest>(); request->remote = remote; }
+    catch (...) {
+        --active_directory_requests;
+        if (remote) --active_remote_directory_requests;
+        throw;
+    }
+    std::thread worker([request, path] {
+        try { EnumerateDirectoryImpl(path, request->entries, &request->cancelled); }
+        catch (...) { request->error = std::current_exception(); }
+        { std::lock_guard lock(request->mutex); request->done = true; }
+        request->changed.notify_one();
+    });
+    const auto start = GetTickCount64();
+    try {
+        std::unique_lock lock(request->mutex);
+        for (;;) {
+            const bool cancelled = options.cancelled && options.cancelled();
+            if (cancelled || GetTickCount64() - start >= options.timeout_ms) {
+                request->cancelled = true;
+                CancelSynchronousIo(worker.native_handle());
+                worker.detach();
+                throw std::runtime_error(cancelled ? "Directory enumeration cancelled" : "Directory enumeration timed out");
+            }
+            if (request->done) break;
+            request->changed.wait_for(lock, std::chrono::milliseconds(25));
+        }
+        lock.unlock();
+        worker.join();
+    } catch (...) {
+        if (worker.joinable()) {
+            request->cancelled = true;
+            CancelSynchronousIo(worker.native_handle());
+            worker.detach();
+        }
+        throw;
+    }
+    if (request->error) std::rethrow_exception(request->error);
+    out = std::move(request->entries);
 }
 
 } // namespace pulse::fs

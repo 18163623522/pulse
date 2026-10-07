@@ -123,7 +123,7 @@ std::wstring MakeRoot() {
     return root;
 }
 
-int OnlineInstall(const wchar_t* requested_root) {
+int OnlineInstall(const wchar_t* requested_root, const wchar_t* asset_directory = nullptr) {
     // Only own a newly created directory, never delete or reuse caller data.
     wchar_t absolute[32768]{};
     const DWORD length = GetFullPathNameW(requested_root, 32768, absolute, nullptr);
@@ -132,16 +132,36 @@ int OnlineInstall(const wchar_t* requested_root) {
         return 1;
     }
     const std::wstring root = absolute;
+    UpdateResponseReader reader = ReadUpdateResponse;
+    if (asset_directory) {
+        const std::wstring source = asset_directory;
+        reader = [source](std::wstring_view url, uint64_t maximum, const std::atomic<bool>& cancelled,
+                          const std::function<bool(const void*, DWORD)>& consume,
+                          UpdateError& category, DWORD& error) {
+            const auto slash = url.find_last_of(L'/');
+            if (slash == std::wstring_view::npos) { error = ERROR_INVALID_NAME; return false; }
+            const auto bytes = ReadAll(source + L"\\" + std::wstring(url.substr(slash + 1)));
+            if (bytes.empty()) { category = UpdateError::LocalIo; error = ERROR_FILE_NOT_FOUND; return false; }
+            if (bytes.size() > maximum) { category = UpdateError::ResponseTooLarge; error = ERROR_FILE_TOO_LARGE; return false; }
+            for (size_t offset = 0; offset < bytes.size(); offset += 65536) {
+                if (cancelled.load()) { error = ERROR_CANCELLED; return false; }
+                const auto count = static_cast<DWORD>((std::min)(size_t{65536}, bytes.size() - offset));
+                if (!consume(bytes.data() + offset, count)) { error = ERROR_WRITE_FAULT; return false; }
+            }
+            return true;
+        };
+        std::printf("Source: downloaded catalog assets (network transport is not under test)\n");
+    }
     const PackRelease* releases[] = {&kMediaPackRelease, &kImagePackRelease, &kRawPackRelease, &kArchivePackRelease};
     const packs::PackId ids[] = {packs::PackId::Media, packs::PackId::Images, packs::PackId::Raw, packs::PackId::Archives};
     for (size_t p = 0; p < std::size(releases); ++p) {
         const auto& release = *releases[p];
-        std::printf("Installing online: %ls %ls\n", release.key, release.version);
+        std::printf("Installing %s: %ls %ls\n", asset_directory ? "downloaded assets" : "online", release.key, release.version);
         std::fflush(stdout);
         PackInstallProgress progress;
         DWORD error = 0;
-        // Use the real WinHTTP update transport and its mirror fallback.
-        const auto outcome = InstallPack(release, root, progress, error);
+        // Local asset mode still exercises production verification, decompression and commit.
+        const auto outcome = InstallPack(release, root, progress, error, reader);
         Check(outcome == PackInstallOutcome::Installed && error == ERROR_SUCCESS, "online pack installs");
         if (outcome != PackInstallOutcome::Installed) {
             std::printf("FAIL: online install %ls returned error %lu\n", release.key, error);
@@ -172,16 +192,18 @@ int OnlineInstall(const wchar_t* requested_root) {
         if (g_failed) break;
     }
     if (g_failed) Check(RemovePackTree(root) && !Exists(root), "failed online test directory cleaned up");
-    else std::printf("Verified online packs retained at %ls\n", root.c_str());
-    std::printf("pack_installer_test online: %d passed, %d failed\n", g_passed, g_failed);
+    else std::printf("Verified packs retained at %ls\n", root.c_str());
+    std::printf("pack_installer_test %s: %d passed, %d failed\n",
+        asset_directory ? "catalog assets" : "online", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }
 } // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && !wcscmp(argv[1], L"--catalog-assets")) return OnlineInstall(argv[3], argv[2]);
     if (argc == 3 && !wcscmp(argv[1], L"--online")) return OnlineInstall(argv[2]);
     if (argc != 1) {
-        std::printf("Usage: pulse_pack_installer_test [--online <new-isolated-root>]\n");
+        std::printf("Usage: pulse_pack_installer_test [--online <new-isolated-root> | --catalog-assets <downloads> <new-isolated-root>]\n");
         return 2;
     }
     const auto defaults = packs::ParsePackSettings(L"{}");

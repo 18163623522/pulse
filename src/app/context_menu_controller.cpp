@@ -165,7 +165,10 @@ void ContextMenuController::StartQuery(
     if (normalize_path) {
         for (auto& path : paths) path = normalize_path(path);
     }
-    if (token_ != 0 && background_ == background && paths_ == paths) {
+    auto disabled_handlers = prefs.DisabledHandlerClsids();
+    std::sort(disabled_handlers.begin(), disabled_handlers.end());
+    if (token_ != 0 && background_ == background && paths_ == paths &&
+        extended_ == extended && disabled_handlers_ == disabled_handlers) {
         if (prefetch_static) prefetch_static(extension);
         return;
     }
@@ -173,9 +176,11 @@ void ContextMenuController::StartQuery(
     uint32_t token = 0;
     if (operations_.query)
         token = operations_.query(paths, hwnd, background, extended,
-                                  prefs.DisabledHandlerClsids());
+                                  disabled_handlers);
     paths_ = std::move(paths);
     background_ = background;
+    extended_ = extended;
+    disabled_handlers_ = std::move(disabled_handlers);
     extension_ = std::move(extension);
     if (background && extension_.empty()) extension_ = ipc::kBackgroundVerbKey;
     token_ = token;
@@ -190,9 +195,14 @@ void ContextMenuController::StartQuery(
 
 void ContextMenuController::Close() {
     const uint32_t live = token_;
+    display_snapshot_valid_ = false;
+    menu_com_items_.clear();
+    menu_static_verbs_.clear();
     token_ = 0;
     paths_.clear();
     background_ = false;
+    extended_ = false;
+    disabled_handlers_.clear();
     com_ready_ = false;
     com_items_.clear();
     static_verbs_.clear();
@@ -247,8 +257,8 @@ bool ContextMenuController::ExecuteShellCommand(
         }
         if (!com_ready_ && wait_until_ready) wait_until_ready();
         uint32_t live = FindLiveComId(verb, text);
-        if (live == 0 && com_ready_) live = clicked;
-        if (token_ && (live != 0 || !text.empty() || !verb.empty())) {
+        // A recycled session-local ID cannot stand in for a missing action.
+        if (token_ && (live != 0 || (!com_ready_ && (!text.empty() || !verb.empty())))) {
             if (operations_.invoke) operations_.invoke(token_, live, verb, text);
             token_ = 0;
         }
@@ -260,8 +270,9 @@ bool ContextMenuController::ExecuteShellCommand(
         const int packed = command - CmdShellStaticBase;
         const size_t index = static_cast<size_t>(packed / ipc::kStaticVerbStride);
         const int child = packed % ipc::kStaticVerbStride;
-        if (index < menu_static_verbs_.size()) {
-            const StaticVerb* verb = &menu_static_verbs_[index];
+        const auto& displayed = display_snapshot_valid_ ? menu_static_verbs_ : static_verbs_;
+        if (index < displayed.size()) {
+            const StaticVerb* verb = &displayed[index];
             const auto same = [](const StaticVerb& a, const StaticVerb& b) {
                 return a.verb == b.verb && a.command == b.command &&
                        a.app_path == b.app_path && a.display == b.display;
@@ -497,6 +508,7 @@ void ContextMenuController::OpenMenu(std::vector<ui::FluentMenuItem> base_items)
     base_items_ = std::move(base_items);
     menu_com_items_ = com_items_;
     menu_static_verbs_ = static_verbs_;
+    display_snapshot_valid_ = true;
     menu_open_ = true;
 }
 

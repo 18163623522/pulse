@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cwctype>
+#include <string_view>
 
 bool RunThumbnailCacheTests();
+bool RunThumbnailSheetRegression();
+bool RunThumbnailDeadlineRegression();
 namespace {
 int failures = 0;
 void Check(bool ok, const char* name) {
@@ -50,9 +53,14 @@ public:
     }
 };
 }
-int main() {
+int main(int argc, char** argv) {
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     Check(SUCCEEDED(initialized), "initialize isolated property test");
+    if (argc > 1 && (std::string_view(argv[1]) == "--thumbnail-sheet" || std::string_view(argv[1]) == "--thumbnail-deadline")) {
+        const bool ok = std::string_view(argv[1]) == "--thumbnail-sheet" ? RunThumbnailSheetRegression() : RunThumbnailDeadlineRegression();
+        if (SUCCEEDED(initialized)) CoUninitialize();
+        return ok && !failures ? 0 : 1;
+    }
     for (const auto ext : pulse::preview::formats::kVideo) {
         PropertyStore store;
         std::wstring path = L"fixture" + std::wstring(ext);

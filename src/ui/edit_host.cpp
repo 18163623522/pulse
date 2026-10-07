@@ -55,7 +55,11 @@ bool CustomEdit(Compositor& compositor, HWND hwnd) {
 }
 bool PresentEdit(Compositor& compositor, HWND hwnd, IDWriteTextFormat* format,
     D2D1_COLOR_F foreground, D2D1_COLOR_F background) {
-    if (compositor.PresentLumaEdit(hwnd, format, foreground, background)) return true;
+    bool force_failure = false;
+#ifdef PULSE_WITH_SELFTEST
+    force_failure = GetPropW(hwnd, L"Pulse.Test.LumaPresentFailure") != nullptr;
+#endif
+    if (!force_failure && compositor.PresentLumaEdit(hwnd, format, foreground, background)) return true;
     // Keep native EDIT input, selection and IME together if presentation fails.
     SetPropW(hwnd, kNativeEdit, reinterpret_cast<HANDLE>(1));
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
@@ -79,6 +83,7 @@ bool HandleChildEditMessage(Compositor& compositor, IDWriteTextFormat* format,
     HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LRESULT& result) {
     (void)background_brush;
     if (msg == WM_NCDESTROY) {
+        compositor.SynchronizeEditSelection(hwnd, msg, wParam, lParam);
         RemovePropW(hwnd, kNativeEdit);
         RemovePropW(hwnd, kPolicyNative);
         RemovePropW(hwnd, kRestoreUploaded);
@@ -135,6 +140,7 @@ bool HandleChildEditMessage(Compositor& compositor, IDWriteTextFormat* format,
         return true;
     }
     case WM_KILLFOCUS:
+        compositor.SynchronizeEditSelection(hwnd, msg, wParam, lParam);
         KillTimer(hwnd, kEditCaretTimer);
         return false;
     case WM_TIMER:
@@ -163,6 +169,7 @@ LRESULT DefPresentedChildEditProc(Compositor& compositor, IDWriteTextFormat* for
     const bool custom_paint = changes_visual && CustomEdit(compositor, hwnd) && IsWindowVisible(hwnd);
     if (custom_paint) SendMessageW(hwnd, WM_SETREDRAW, FALSE, 0);
     const LRESULT result = DefSubclassProc(hwnd, msg, wParam, lParam);
+    if (changes_visual) compositor.SynchronizeEditSelection(hwnd, msg, wParam, lParam);
     if (custom_paint) {
         SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
         HideCaret(hwnd);

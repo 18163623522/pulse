@@ -336,18 +336,43 @@ bool ContextMenuPrefs::FromJson(const std::wstring& json) {
 
 // Older builds keyed the catalog by raw display text, so one verb showed up once
 // per file type ("新建(N)" / "新建(W)", "用 X 打开" with and without spaces) and
-// switching one of them off left its siblings on. Re-key every row through
-// CatalogKey, merge the duplicates, and move the stored overrides onto the
-// normalized keys so a switch the user already flipped keeps applying.
+// switching one of them off left its siblings on. Only display-text identities
+// are migrated; command and handler identities must remain language independent.
 void ContextMenuPrefs::MigrateSeenKeys() {
+    constexpr std::wstring_view quick_access = L"pulse:quick-access";
+    const auto display_key = [](std::wstring_view key) {
+        return key.starts_with(L"v:") || key.starts_with(L"f:");
+    };
+    const auto old_quick_access = [&](const SeenMenuItem& item) {
+        if (!item.key.starts_with(L"v:") || item.flyout || item.from_com ||
+            item.category != ipc::CtxMenuCategory::Software) return false;
+        const auto normalized = ipc::NormalizeCatalogText(item.text);
+        for (const auto label : {L"Pin to Quick access", L"固定到快速访问", L"固定到快速存取"}) {
+            if (normalized == ipc::NormalizeCatalogText(label) &&
+                ipc::NormalizeCatalogText(item.key.substr(2)) == normalized) return true;
+        }
+        return false;
+    };
+    std::unordered_set<std::wstring> repaired_aliases;
+    std::unordered_set<std::wstring> observed_keys;
+    for (const auto& item : seen) observed_keys.insert(item.key);
+    // Older preferences can retain an override after its seen row was evicted.
+    // Only infer the legacy Pulse alias when no row identifies it as COM/other.
+    for (const auto& [key, enabled] : item_enabled) {
+        (void)enabled;
+        if (observed_keys.contains(key) || !key.starts_with(L"v:")) continue;
+        const auto normalized = ipc::NormalizeCatalogText(key.substr(2));
+        for (const auto label : {L"Pin to Quick access", L"固定到快速访问", L"固定到快速存取"})
+            if (normalized == ipc::NormalizeCatalogText(label)) repaired_aliases.insert(key);
+    }
     std::vector<SeenMenuItem> merged;
     merged.reserve(seen.size());
     for (auto& item : seen) {
-        if (ipc::IsHandlerCatalogKey(item.key)) {
-            merged.push_back(std::move(item));
-            continue;
-        }
-        const std::wstring canonical = ipc::CatalogKey(item.text, item.flyout);
+        std::wstring canonical = item.key;
+        if (old_quick_access(item)) {
+            repaired_aliases.insert(item.key);
+            canonical = quick_access;
+        } else if (display_key(item.key)) canonical = ipc::CatalogKey(item.text, item.flyout);
         if (canonical.empty()) continue;
         bool duplicate = false;
         for (const auto& kept : merged) {
@@ -364,13 +389,17 @@ void ContextMenuPrefs::MigrateSeenKeys() {
 
     std::unordered_map<std::wstring, bool> moved;
     moved.reserve(item_enabled.size());
+    const bool has_stable_choice = item_enabled.contains(std::wstring(quick_access));
     for (const auto& kv : item_enabled) {
         std::wstring key = kv.first;
-        if (!ipc::IsHandlerCatalogKey(key) && key.size() > 2 && key[1] == L':' &&
-            (key[0] == L'v' || key[0] == L'f')) {
+        if (repaired_aliases.contains(key)) {
+            if (has_stable_choice) continue;
+            key = quick_access;
+        } else if (display_key(key)) {
             key = key.substr(0, 2) + ipc::NormalizeCatalogText(key.substr(2));
         }
-        moved[key] = kv.second;
+        const auto [it, inserted] = moved.emplace(key, kv.second);
+        if (!inserted) it->second = it->second && kv.second;
     }
     item_enabled = std::move(moved);
 }

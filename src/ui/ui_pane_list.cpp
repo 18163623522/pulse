@@ -1,6 +1,7 @@
 #include "file_item_selection.h"
 // ui_pane_list.cpp — Pane, list, empty states, columns, and icons.
 #include "ui_renderer.h"
+#include "file_item_selection.h"
 #include "ui_renderer_internal.h"
 #include "../common/localization.h"
 #include "tab_shape.h"
@@ -2621,25 +2622,37 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     }
                     case ColumnKind::Size: {
                         const auto folder_size = vm.folder_size_labels.find(src);
+                        const std::wstring* size_text = &e.size_text;
+                        float size_left = left, size_avail = avail;
                         if (e.is_dir && folder_size != vm.folder_size_labels.end()) {
-                            draw_detail_text(fit(folder_size->second, avail), left, avail,
-                                             DWRITE_TEXT_ALIGNMENT_TRAILING);
-                            break;
+                            size_text = &folder_size->second;
+                            const bool action = *size_text == pulse::l10n::Get(pulse::l10n::StringId::FolderSizeCalculate);
+                            const bool hot = hover_region == static_cast<int>(HitTestResult::RowFolderSize) && hover_control_index == src;
+                            const auto ink = action ? (hot ? theme.accent : theme.text_secondary) :
+                                vm.folder_size_muted.contains(src) ? theme.text_secondary : theme.text;
+                            MakeBrush(dc, cut ? WithAlpha(ink, 0.55f) : ink, brTextSecondary_);
+                            if (vm.folder_size_running.contains(src) && avail >= 48.0f * scale_) {
+                                MakeBrush(dc, theme.accent, brAccent_);
+                                dc->FillEllipse(D2D1::Ellipse(D2D1::Point2F(left + 3.0f * scale_,
+                                    (cell.top + cell.bottom) * 0.5f), 2.0f * scale_, 2.0f * scale_), brAccent_.get());
+                                size_left += 12.0f * scale_; size_avail -= 12.0f * scale_;
+                            }
                         }
                         // Number right-aligned, unit in its own sub-column: digits line up.
-                        const size_t space = e.size_text.find_last_of(L' ');
+                        const size_t space = size_text->find_last_of(L' ');
                         const float unitW = kSizeUnitDip * scale_;
-                        if (space != std::wstring::npos && space > 0 && avail > unitW * 1.8f) {
-                            const std::wstring value = e.size_text.substr(0, space);
-                            const std::wstring unit = e.size_text.substr(space + 1);
-                            draw_detail_text(value, left, avail - unitW, DWRITE_TEXT_ALIGNMENT_TRAILING);
+                        const auto number = space == std::wstring::npos ? std::wstring() : size_text->substr(0, space);
+                        const bool numeric = !number.empty() && (iswdigit(number.front()) || number.front() == L'\u2265');
+                        if (numeric && size_avail > unitW * 1.8f && CellTextWidth(number) <= size_avail - unitW) {
+                            const std::wstring unit = size_text->substr(space + 1);
+                            draw_detail_text(number, size_left, size_avail - unitW, DWRITE_TEXT_ALIGNMENT_TRAILING);
                             MakeBrush(dc, WithAlpha(secondary, secondary.a * 0.72f), brTextSecondary_);
-                            draw_detail_text(unit, left + avail - unitW + 4.0f * scale_, unitW - 4.0f * scale_,
+                            draw_detail_text(unit, size_left + size_avail - unitW + 4.0f * scale_, unitW - 4.0f * scale_,
                                              DWRITE_TEXT_ALIGNMENT_LEADING);
-                            MakeBrush(dc, secondary, brTextSecondary_);
                         } else {
-                            draw_detail_text(fit(e.size_text, avail), left, avail, DWRITE_TEXT_ALIGNMENT_TRAILING);
+                            draw_detail_text(fit(*size_text, size_avail), size_left, size_avail, DWRITE_TEXT_ALIGNMENT_TRAILING);
                         }
+                        MakeBrush(dc, secondary, brTextSecondary_);
                         if (list_size_bar_ && !e.is_dir && e.size_value > 0 && !IsHighContrast()) {
                             // Log scale: 1 KB .. 100 GB spans the cell.
                             const double lg = std::log10(static_cast<double>(e.size_value));
@@ -2680,9 +2693,12 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                 }
                 const bool manual_size = e.is_dir &&
                     meta == pulse::l10n::Get(pulse::l10n::StringId::FolderSizeCalculate);
-                if (manual_size) MakeBrush(dc, theme.accent, brAccent_);
+                if (e.is_dir && vm.folder_size_labels.contains(src)) {
+                    const auto ink = manual_size || vm.folder_size_muted.contains(src) ? theme.text_secondary : theme.text;
+                    MakeBrush(dc, cut ? WithAlpha(ink, 0.55f) : ink, brTextSecondary_);
+                }
                 DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), compositor_->SmallFormat(),
-                    manual_size ? brAccent_.get() : brTextSecondary_.get(), meta,
+                    brTextSecondary_.get(), meta,
                     nameRc.left, nameRc.top + 25.0f * scale_,
                     std::max(0.0f, nameRc.right - nameRc.left), 22.0f * scale_);
             }
@@ -2695,9 +2711,10 @@ void MainRenderer::DrawList(const PaneViewModel& vm, float x, float y, float w, 
                     const auto alignment = format->GetTextAlignment();
                     format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
                     const bool manual = size->second == pulse::l10n::Get(pulse::l10n::StringId::FolderSizeCalculate);
-                    if (manual) MakeBrush(dc, theme.accent, brAccent_);
+                    const auto ink = manual || vm.folder_size_muted.contains(src) ? theme.text_secondary : theme.text;
+                    MakeBrush(dc, cut ? WithAlpha(ink, 0.55f) : ink, brTextSecondary_);
                     DrawTextEndEllipsis(dc, compositor_->DwriteFactory(), format,
-                        manual ? brAccent_.get() : brTextSecondary_.get(), size->second,
+                        brTextSecondary_.get(), size->second,
                         bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
                     format->SetTextAlignment(alignment);
                 }

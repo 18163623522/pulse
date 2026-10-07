@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <algorithm>
 #include <vector>
@@ -729,6 +730,7 @@ bool TestStaticMenuIdentity() {
     for (int scenario = 0; scenario != 5; ++scenario) {
         ContextMenuController controller;
         ContextMenuPrefs prefs;
+        prefs.persist = false;
         std::wstring invoked;
         ContextMenuController::ShellOperations operations;
         operations.query = [](auto, HWND, bool, bool, auto) { return 17u; };
@@ -756,7 +758,156 @@ bool TestStaticMenuIdentity() {
     return ok;
 }
 
+bool TestComMenuIdentity() {
+    using namespace pulse::app;
+    bool ok = true;
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        ContextMenuController controller;
+        ContextMenuPrefs prefs;
+        prefs.persist = false;
+        uint32_t invoked = 0;
+        std::wstring invoked_text;
+        ContextMenuController::ShellOperations operations;
+        operations.query = [](auto, HWND, bool, bool, auto) { return 17u; };
+        operations.invoke = [&](uint32_t, uint32_t id, auto, auto text) {
+            invoked = id;
+            invoked_text = text;
+        };
+        controller.SetShellOperations(std::move(operations));
+        controller.StartQuery(prefs, nullptr, {L"C:\\fake.txt"}, false, L".txt", false, {}, {});
+        pulse::ops::ShellMenuItem a, b;
+        a.id = 10; a.text = L"A"; a.verb = L"a"; a.child = true;
+        b.id = 11; b.text = L"B"; b.verb = L"b"; b.child = true;
+        controller.CompleteComQuery(17, {a,b}, GetTickCount64(), true);
+        controller.OpenMenu({});
+        a.id = scenario == 0 ? 11 : 20;
+        b.id = 10;
+        controller.CompleteComQuery(17, scenario == 2 ? std::vector<pulse::ops::ShellMenuItem>{b} :
+            std::vector<pulse::ops::ShellMenuItem>{a,b}, GetTickCount64());
+        controller.ExecuteShellCommand(CmdShellComBase + 10, {}, {});
+        ok &= Report("COM displayed A survives partial-to-full ID swap/shift or safely rejects removal",
+            scenario == 2 ? invoked == 0 : invoked == a.id && invoked_text == L"A");
+    }
+    return ok;
+}
+
+bool TestMenuQueryIdentity() {
+    using namespace pulse::app;
+    bool ok = true;
+    for (bool complete : {false, true}) {
+        ContextMenuController controller;
+        ContextMenuPrefs prefs;
+        prefs.persist = false;
+        uint32_t token = 0, closed = 0;
+        std::vector<bool> flags;
+        ContextMenuController::ShellOperations operations;
+        operations.query = [&](auto, HWND, bool, bool extended, auto) {
+            flags.push_back(extended); return ++token;
+        };
+        operations.close = [&](uint32_t old) { closed = old; };
+        controller.SetShellOperations(std::move(operations));
+        auto start = [&](bool extended) {
+            controller.StartQuery(prefs, nullptr, {L"C:\\fake.txt"}, false, L".txt", extended, {}, {});
+        };
+        start(false);
+        if (complete) controller.CompleteComQuery(token, {}, GetTickCount64());
+        start(true);
+        ok &= Report("Shift open replaces pending/completed normal prefetch and rejects stale reply",
+            token == 2 && closed == 1 && !controller.CompleteComQuery(1, {}, GetTickCount64()).accepted);
+        if (complete) controller.CompleteComQuery(token, {}, GetTickCount64());
+        start(false);
+        start(false);
+        ok &= Report("normal open replaces extended prefetch; matching reopen reuses session",
+            token == 3 && closed == 2 && flags == std::vector<bool>{false,true,false});
+        prefs.SetItemEnabled(pulse::ipc::HandlerCatalogKey(L"{test-handler}"), false);
+        start(false);
+        ok &= Report("changed handler configuration replaces prefetch", token == 4 && closed == 3);
+    }
+    return ok;
+}
+
+bool TestViewHitBounds() {
+    using namespace pulse::ui;
+    bool ok = true;
+    ViewLayout xl(ViewMode::ExtraLargeIcons, {0,0,900,900}, 20, 0, 0, 1);
+    ViewLayout list(ViewMode::List, {0,0,800,250}, 30, 0, 0, 1);
+    ok &= Report("XL right gutter and List bottom gutter reject neighboring items",
+        xl.HitTest(850,20) == -1 && list.HitTest(30,245) == -1);
+    bool contained = true;
+    for (int mode = 0; mode < 8; ++mode) {
+        for (float scale : {1.0f,1.5f,2.0f}) {
+            for (size_t count : {size_t{0},size_t{1},size_t{20},size_t{37}}) {
+                for (float scroll : {0.0f,123.0f}) {
+                    ViewLayout layout(ViewModeFromIndex(mode), {13,17,914,368}, count, scroll, scroll, scale);
+                    for (float y = 17; y < 368; y += 7) {
+                        for (float x = 13; x < 914; x += 11) {
+                            const int hit = layout.HitTest(x,y);
+                            if (hit < 0) continue;
+                            const auto rect = layout.ItemRect(hit);
+                            contained &= x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return Report("eight views, DPI, partial rows, empty lists and scrolling hit only containing rectangles", contained) && ok;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--context-query-key") {
+        pulse::app::ContextMenuController controller;
+        pulse::app::ContextMenuPrefs prefs;
+        prefs.persist = false;
+        uint32_t issued = 0;
+        std::vector<uint32_t> closed;
+        std::vector<bool> modes;
+        std::vector<std::wstring> disabled;
+        controller.SetShellOperations({
+            [&](std::vector<std::wstring>, HWND, bool, bool extended, std::vector<std::wstring> handlers) {
+                modes.push_back(extended); disabled = std::move(handlers); return ++issued;
+            },
+            [&](uint32_t token) { closed.push_back(token); }, {}, {}, {}
+        });
+        auto start = [&](bool extended, const wchar_t* path = L"C:\\private-no-access.txt") {
+            controller.StartQuery(prefs, nullptr, {path}, false, L".txt", extended, {}, {});
+        };
+        bool ok = true;
+        start(false); start(false);
+        ok &= Report("same hover query reuses its pending session", issued == 1 && closed.empty());
+        start(true);
+        ok &= Report("Shift open replaces non-extended hover session", issued == 2 && modes.back() && closed == std::vector<uint32_t>{1});
+        ok &= Report("old hover response cannot populate extended session",
+            !controller.CompleteComQuery(1, {}, GetTickCount64()).accepted);
+        ok &= Report("current extended response is accepted",
+            controller.CompleteComQuery(2, {}, GetTickCount64()).accepted);
+        start(true);
+        ok &= Report("completed query with unchanged mode remains reusable", issued == 2);
+        start(false);
+        ok &= Report("ordinary open replaces completed extended query", issued == 3 && !modes.back() && closed.back() == 2);
+        const auto handler = pulse::ipc::HandlerCatalogKey(L"{00000000-0000-0000-0000-000000000001}");
+        prefs.SetItemEnabled(handler, false);
+        start(false);
+        ok &= Report("disabled-handler configuration is sent through a fresh session",
+            issued == 4 && disabled.size() == 1 && closed.back() == 3);
+        ok &= Report("old configuration completion is rejected",
+            !controller.CompleteComQuery(3, {}, GetTickCount64()).accepted);
+        start(false);
+        ok &= Report("unchanged handler set reuses its session", issued == 4);
+        prefs.SetItemEnabled(handler, true);
+        start(false);
+        ok &= Report("enabling the handler opens a new session", issued == 5 && disabled.empty());
+        start(false, L"C:\\different-private-path.txt");
+        ok &= Report("changed selection still opens a new session", issued == 6);
+        controller.Close(); start(false);
+        ok &= Report("closed session is never reused on reopen", issued == 7);
+        controller.Close();
+        return ok ? 0 : 1;
+    }
+
+    if (argc == 2 && std::wstring(argv[1]) == L"--view-hit-bounds") return TestViewHitBounds() ? 0 : 1;
+    if (argc == 2 && std::wstring(argv[1]) == L"--com-menu-identity") return TestComMenuIdentity() ? 0 : 1;
+    if (argc == 2 && std::wstring(argv[1]) == L"--menu-query-identity") return TestMenuQueryIdentity() ? 0 : 1;
     if (argc == 2 && std::wstring(argv[1]) == L"--network-locations-view")
         return TestNetworkLocationsView() ? 0 : 1;
     if (argc == 2 && std::wstring(argv[1]) == L"--layout-active-pane")

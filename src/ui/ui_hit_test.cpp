@@ -93,6 +93,8 @@ int MainRenderer::SettingsSliderValueAt(const WindowViewModel& vm, const D2D1_RE
 HitTestResult MainRenderer::HitTest(const WindowViewModel& vm, const D2D1_RECT_F& rect, float x, float y) const {
     HitTestResult r;
     if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return r;
+    // Embedded hosts own the title strip and footer controls.
+    if (embedded_ && (y < title_bar_height_ || y >= rect.bottom - status_height_)) return r;
 
     if (vm.change_popover.visible) {
         const auto popup = ChangePopoverRect(vm.change_popover, rect, scale_);

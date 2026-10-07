@@ -4,6 +4,11 @@
 #include <string>
 
 namespace pulse::app {
+#ifdef PULSE_INTEGRATION_TEST
+using IntegrationWriteHook = bool (*)(const std::wstring&, const std::wstring&);
+void SetIntegrationWriteHookForTesting(IntegrationWriteHook hook);
+#endif
+
 
 enum class ShellIntegrationKind { Folders, WinE, ThisPc, Directory, Drive };
 

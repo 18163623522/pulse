@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace pulse::ui {
 
@@ -31,7 +32,8 @@ public:
     // caller presents DirectWrite. Pass the same format used by PaintEdit so
     // click-to-caret uses the same cluster positions as the displayed text.
     LRESULT CallEditDefaultMouse(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                                 IDWriteTextFormat* format = nullptr);
+                                   IDWriteTextFormat* format = nullptr);
+    void SynchronizeEditSelection(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LumaTextRenderer();
     ~LumaTextRenderer();
     LumaTextRenderer(const LumaTextRenderer&) = delete;
@@ -54,6 +56,11 @@ public:
     void RecordFallback() noexcept;
 
 private:
+    void TrackEdit(HWND hwnd);
+    void SyncEditSelection(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+    static LRESULT CALLBACK EditSelectionProc(HWND hwnd, UINT message, WPARAM wparam,
+                                              LPARAM lparam, UINT_PTR id, DWORD_PTR data);
+    std::vector<HWND> tracked_edits_;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

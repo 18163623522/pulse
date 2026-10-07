@@ -61,6 +61,8 @@ void MainRenderer::SetCompositor(Compositor* comp) {
 
 void MainRenderer::InvalidateTypography() {
     ClearTextWidthCache();
+    cell_text_widths_.clear();
+    auto_widths_scale_ = -1.0f;
     sized_icon_formats_.clear();
     preview_mono_format_.reset();
     painter_.InvalidateTypography();
@@ -83,9 +85,9 @@ void MainRenderer::SetScale(float scale) {
         ClearTextWidthCache();
     }
     scale_ = scale;
-    title_bar_height_ = kTitleBarHeight * scale;
-    toolbar_height_ = (vertical_tabs_ ? 44.0f : 88.0f) * scale;
-    status_height_ = 28.0f * scale;
+    title_bar_height_ = (embedded_ ? embedded_top_dip_ : kTitleBarHeight) * scale;
+    toolbar_height_ = (vertical_tabs_ || embedded_ ? 44.0f : 88.0f) * scale;
+    status_height_ = (embedded_ ? embedded_bottom_dip_ : 28.0f) * scale;
     sidebar_width_ = sidebar_width_dip_ * scale;
     pane_header_height_ = 40.0f * scale;
     column_header_height_ = 32.0f * scale;
@@ -94,6 +96,15 @@ void MainRenderer::SetScale(float scale) {
     control_gap_ = 4.0f * scale;
     painter_.SetScale(scale);
     icon_cache_.SetScale(scale);
+}
+
+void MainRenderer::SetEmbedded(float top_dip, float bottom_dip) {
+    embedded_ = true;
+    vertical_tabs_ = false;
+    embedded_top_dip_ = top_dip;
+    embedded_bottom_dip_ = bottom_dip;
+    SetDetailsPanelVisible(false);
+    SetScale(scale_);
 }
 
 float MainRenderer::EffectiveSidebarWidth(float window_width) const {
@@ -536,7 +547,9 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
     const bool image_mode = vm.window_effect == WindowEffect::None &&
                             !vm.background_image.empty() && !IsHighContrast();
     bool backdrop_drawn = false;
-    if (image_mode) {
+    if (embedded_) {
+        // The host window owns the backdrop; only the shared sheet is tinted.
+    } else if (image_mode) {
         backdrop_drawn = material_.DrawSourceCover(dc, rect, vm.background_image,
                                                    WallpaperBlurDip(vm.wallpaper_blur) * scale_);
     } else {
@@ -570,7 +583,7 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         tint_background({rect.left, sheetTop, rect.right, rect.bottom}, theme.surface_sheet, sheet_alpha_);
     }
 
-    DrawTitleBar(vm, rect, theme);
+    if (!embedded_) DrawTitleBar(vm, rect, theme);
     if (vm.settings_open) {
         preview_handler_.Sync(notify_hwnd_, {}, L"", 0, 0, 0, 0, vm.dark,
                               theme.bg, theme.text, false);
@@ -585,7 +598,7 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
         else preview_handler_.Sync(notify_hwnd_, {}, L"", 0, 0, 0, 0, vm.dark,
                                    theme.bg, theme.text, false);
         if (peek) DrawSidebarPeek(vm, rect, theme);
-        DrawStatusBar(vm, rect, theme);
+        if (!embedded_) DrawStatusBar(vm, rect, theme);
     }
 
     // Drag action badge (ui.md §7.8): tooltip-style flyout near the cursor.
@@ -657,8 +670,11 @@ void MainRenderer::Render(const WindowViewModel& vm, const D2D1_RECT_F& rect,
             ? 10.0f * scale_ + line_h * static_cast<float>(tip_lines.size()) : 28.0f * scale_;
         const float bx = std::clamp(vm.tooltip_x + 12.0f * scale_, 8.0f * scale_,
             std::max(8.0f * scale_, rect.right - bw - 8.0f * scale_));
-        const float tipY = vm.hover_region == HitTestResult::StatusBarCancelSearch
+        float tipY = vm.hover_region == HitTestResult::StatusBarCancelSearch
             ? rect.bottom - status_height_ - bh - 8.0f * scale_ : vm.tooltip_y + 18.0f * scale_;
+        if (vm.hover_region == HitTestResult::RowFolderSize && tipY + bh > rect.bottom - 8.0f * scale_ &&
+            vm.tooltip_y - bh - 18.0f * scale_ >= 8.0f * scale_)
+            tipY = vm.tooltip_y - bh - 18.0f * scale_;
         const float by = std::clamp(tipY, 8.0f * scale_,
             std::max(8.0f * scale_, rect.bottom - bh - 8.0f * scale_));
         const D2D1_RECT_F tipRc = D2D1::RectF(bx, by, bx + bw, by + bh);
@@ -807,12 +823,13 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         const bool connect = active || raised;
         ChromeTabShape shape;
         shape.top_radius = theme.radius_control * scale_;
-        shape.bottom_radius = 8.0f * scale_;
+        // Concentric with the neighboring inactive tab: outer radius = inner + gap.
+        shape.bottom_radius = shape.top_radius + control_gap_;
         shape.connect_bottom = connect;
         const float tabTop = tabY;
-        // Opaque tabs overlap the sheet by a pixel; translucent ones must abut it.
-        const float tabBottom = connect ? (sheet_alpha_ < 1.0f ? std::round(h) : h + 1.0f)
-                                        : (tabY + tabH);
+        // Use the same sheet edge for both opacity modes; overlap shifts the arc center.
+        const float tabBottom = connect ? std::round(h)
+                                        : (std::round(h) - control_gap_);
         const D2D1_RECT_F tabRc = D2D1::RectF(left, tabTop, left + tabW, tabBottom);
         if (raised) {
             D2D1_RECT_F shadow = tabRc;
@@ -975,28 +992,7 @@ void MainRenderer::DrawTitleBar(const WindowViewModel& vm, const D2D1_RECT_F& re
         }
     }
 
-    auto tab_left_at = [&](int i) -> float {
-        if (inDragRun(i)) return vm.tab_drag_x + static_cast<float>(i - dragI) * strip.pitch;
-        const float extra = i < static_cast<int>(strip.extra.size())
-            ? strip.extra[static_cast<size_t>(i)] : 0.0f;
-        return strip.x0
-            + (static_cast<float>(i) + vm.tabs[static_cast<size_t>(i)].x_offset) * strip.pitch
-            + extra;
-    };
-    const int connected = dragI >= 0 ? dragI : activeI;
-    if (connected >= 0 && connected < static_cast<int>(vm.tabs.size())) {
-        const float connW = vm.tabs[static_cast<size_t>(connected)].pinned
-            ? (vm.show_pinned_tab_names ? kTabPinnedNamedW : kTabPinnedW) * scale_ : strip.w;
-        const float shoulder = 8.0f * scale_;
-        const float cut_l = tab_left_at(connected) - shoulder;
-        const float cut_r = tab_left_at(connected) + connW + shoulder;
-        if (cut_l > 0.0f)
-            FillRect(dc, brStrokeDivider_.get(), 0.0f, h - 1.0f, cut_l, 1.0f);
-        if (cut_r < rect.right)
-            FillRect(dc, brStrokeDivider_.get(), cut_r, h - 1.0f, rect.right - cut_r, 1.0f);
-    } else {
-        FillRect(dc, brStrokeDivider_.get(), 0.0f, h - 1.0f, rect.right, 1.0f);
-    }
+    // The tab and sheet form one surface; a straight rule here breaks the shoulders.
 
     x = strip.end_x;
     // New tab button follows the final rest slot (not the sliding tabs).

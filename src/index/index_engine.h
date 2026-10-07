@@ -403,6 +403,8 @@ private:
     }
     void SetStatus(std::wstring s);
     bool IsExcludedPath(std::wstring_view path) const;
+    void PublishExcludedPaths(const IndexConfig& config,
+                              const std::function<void()>& locked_action = {});
     static bool ShouldSkipName(std::wstring_view name);
     void RefreshSubtreeVisibilityLocked(int32_t root, DeltaLog* delta);
     void PingNotify(bool force = false);
@@ -452,6 +454,7 @@ private:
     wchar_t index_dir_letter_ = 0;
     std::atomic<bool> merging_{false};
     size_t struct_changes_ = 0;
+    bool subtree_intervals_valid_ = true;
     ULONGLONG last_merge_tick_ = 0;
     ULONGLONG merge_retry_after_tick_ = 0;
     ULONGLONG last_struct_tick_ = 0;

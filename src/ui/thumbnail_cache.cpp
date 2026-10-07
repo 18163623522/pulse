@@ -9,6 +9,12 @@
 #include <psapi.h>
 
 namespace pulse::ui {
+uint64_t ThumbnailCache::TakeRetryDeadline() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto deadline = draw_retry_deadline_;
+    draw_retry_deadline_ = 0;
+    return deadline;
+}
 namespace {
 std::atomic<uint32_t> g_preview_cache_sequence{1};
 
@@ -59,6 +65,11 @@ uint32_t ThumbnailCache::ResponseTimeoutMs(const std::wstring& path,
     return 8000;
 }
 
+DocumentImageSession::DocumentImageSession() : identity([] {
+    static std::atomic<uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}()) {}
+
 ThumbnailCache::ThumbnailCache(size_t budget_bytes, size_t max_items)
     : budget_bytes_(std::max<size_t>(budget_bytes, 1)),
       max_items_(std::max<size_t>(max_items, 1)) {
@@ -89,17 +100,38 @@ void ThumbnailCache::Reset() {
     if (worker_.joinable()) worker_.join();
     StopChild();
     std::lock_guard lock(mutex_); queue_.clear(); pending_.clear(); items_.clear(); lru_.clear(); folder_requests_.clear();
-    still_by_identity_.clear(); transient_failures_.clear();
+    still_by_identity_.clear(); transient_failures_.clear(); retry_interest_.clear();
     cache_bytes_ = 0; dc_ = nullptr; latest_details_identity_.clear();
+    draw_retry_deadline_ = 0;
     epoch_.fetch_add(1, std::memory_order_relaxed);
 }
+void ThumbnailCache::BeginFrame() {
+    std::lock_guard lock(mutex_);
+    track_retry_interest_ = true;
+    retry_interest_.clear();
+}
+
+uint64_t ThumbnailCache::NextRetryDeadline() {
+    std::lock_guard lock(mutex_);
+    uint64_t next = 0;
+    for (const auto& key : retry_interest_) {
+        const auto it = items_.find(key);
+        if (it == items_.end()) continue;
+        const auto& item = it->second;
+        if (item.failed && item.transient && item.retry_at && !pending_.contains(key))
+            next = next ? (std::min)(next, item.retry_at) : item.retry_at;
+    }
+    return next;
+}
+
 void ThumbnailCache::Evict() {
     epoch_.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lock(mutex_);
     queue_.clear(); pending_.clear(); items_.clear(); lru_.clear(); folder_requests_.clear();
-    still_by_identity_.clear(); transient_failures_.clear();
+    still_by_identity_.clear(); transient_failures_.clear(); retry_interest_.clear();
     cache_bytes_ = 0;
     latest_details_identity_.clear();
+    draw_retry_deadline_ = 0;
 }
 
 bool ThumbnailCache::Palette(const std::wstring& path, uint32_t pixel_size, uint64_t modified,
@@ -174,18 +206,28 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
                                        PreviewViewport* viewport,
                                        uint32_t* text_encoding,
                                        bool align_artwork_bottom, D2D1_RECT_F* artwork_rect,
-                                       uint32_t* media_duration_ms, preview::Integrity* integrity) {
+                                       uint32_t* media_duration_ms, preview::Integrity* integrity,
+                                       const std::shared_ptr<DocumentImageSession>& document) {
     if (integrity) { *integrity = {}; integrity->state = preview::IntegrityState::Loading; }
     if (artwork_rect) *artwork_rect = dest;
     if (media_duration_ms) *media_duration_ms = 0;
     if (!dc || path.empty() || pixels < 24) return PreviewDrawResult::Failed;
-    const std::wstring key = Key(path, pixels, modified, size, frame_index);
+    if (document && !document->active.load()) return PreviewDrawResult::Failed;
+    const std::wstring document_key = document ? L":document:" + std::to_wstring(document->identity) : L"";
+    const std::wstring key = Key(path, pixels, modified, size, frame_index) + document_key;
     {
         std::lock_guard lock(mutex_);
-        const std::wstring identity = Key(path, 0, modified, size);
+        if (track_retry_interest_) retry_interest_.insert(key);
+        const std::wstring identity = Key(path, 0, modified, size) + document_key;
         if (direct_preview) SelectDetailsLocked(identity);
         auto queue_request = [&] {
             if (pending_.contains(key)) return;
+            for (auto old = queue_.begin(); old != queue_.end();) {
+                if (old->document && !old->document->active.load()) {
+                    pending_.erase(old->key);
+                    old = queue_.erase(old);
+                } else ++old;
+            }
             const auto dot = path.find_last_of(L'.');
             const bool spreadsheet = direct_preview && dot != std::wstring::npos &&
                 (_wcsicmp(path.c_str() + dot, L".xlsx") == 0 || _wcsicmp(path.c_str() + dot, L".xlsm") == 0);
@@ -204,6 +246,8 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
             request.id = next_id_++; request.generation = generation;
             request.pixels = pixels; request.attrs = attrs;
             request.kind = ipc::PreviewRequestKind::Content;
+            request.document = document;
+            if (document) request.flags |= ipc::kPreviewRequestFlagDocumentImage;
             request.details = direct_preview; request.frame_index = frame_index;
             request.epoch = epoch_.load(std::memory_order_relaxed);
             request.timeout_ms = ResponseTimeoutMs(path, request.kind);
@@ -294,9 +338,16 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
             }
             if (item.failed) {
                 if (item.transient && GetTickCount64() >= item.retry_at) queue_request();
-                if (!viewport && !(pan_x && pan_y)) {
+                if (item.transient && !pending_.contains(key) &&
+                    (!draw_retry_deadline_ || item.retry_at < draw_retry_deadline_))
+                    draw_retry_deadline_ = item.retry_at;
+                if (!viewport && !(pan_x && pan_y) && frame_index == 0) {
                     if (Item* stale = StaleBitmap(identity, key)) {
                         if (media_duration_ms) *media_duration_ms = stale->duration_ms;
+                        if (decoded_width) *decoded_width = stale->w;
+                        if (decoded_height) *decoded_height = stale->h;
+                        if (source_width) *source_width = stale->source_width;
+                        if (source_height) *source_height = stale->source_height;
                         DrawContained(dc, stale->bitmap.get(), stale->w, stale->h, dest, opacity,
                             stale->artwork_bounds, align_artwork_bottom, artwork_rect);
                         return PreviewDrawResult::Bitmap;
@@ -311,6 +362,10 @@ PreviewDrawResult ThumbnailCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F
         if (!viewport && !(pan_x && pan_y) && frame_index == 0) {
             if (Item* stale = StaleBitmap(identity, key)) {
                 if (media_duration_ms) *media_duration_ms = stale->duration_ms;
+                if (decoded_width) *decoded_width = stale->w;
+                if (decoded_height) *decoded_height = stale->h;
+                if (source_width) *source_width = stale->source_width;
+                if (source_height) *source_height = stale->source_height;
                 DrawContained(dc, stale->bitmap.get(), stale->w, stale->h, dest, opacity,
                     stale->artwork_bounds, align_artwork_bottom, artwork_rect);
                 return PreviewDrawResult::Bitmap;
@@ -393,6 +448,10 @@ bool ThumbnailCache::StoreResult(const Request& req, Item result) {
     std::lock_guard lock(mutex_);
     // An old decode must not remove a replacement request queued after Evict().
     if (req.epoch != epoch_.load(std::memory_order_relaxed)) return false;
+    if (req.document && !req.document->active.load()) {
+        pending_.erase(req.key);
+        return false;
+    }
     if (req.flags & ipc::kPreviewRequestFlagFolderThumbnail) {
         const auto current = folder_requests_.find(req.key);
         if (current == folder_requests_.end() || current->second != req.id) return false;
@@ -517,6 +576,11 @@ bool ThumbnailCache::IsTransientResponse(bool transport_ok, const Request& reque
 }
 
 bool ThumbnailCache::FolderRequestCurrent(const Request& request) {
+    if (request.document && !request.document->active.load()) {
+        std::lock_guard lock(mutex_);
+        pending_.erase(request.key);
+        return false;
+    }
     if (!(request.flags & ipc::kPreviewRequestFlagFolderThumbnail)) return true;
     std::lock_guard lock(mutex_);
     const auto it = folder_requests_.find(request.key);

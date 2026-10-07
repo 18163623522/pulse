@@ -32,6 +32,7 @@ constexpr int64_t kMaxDuration = 30ll * 60 * 10000000;  // 30 min in 100 ns
 
 // Media Foundation's verdict: Unreadable lets the FFmpeg pack try instead.
 enum class MfResult { Done, Unreadable, Failed };
+std::atomic<unsigned> waveform_workers{0};
 }  // namespace
 
 struct AudioWaveform::Shared {
@@ -47,9 +48,19 @@ AudioWaveform::~AudioWaveform() { Reset(); }
 void AudioWaveform::Start(const std::wstring& path) {
     Reset();
     state_ = std::make_shared<Shared>();
+    unsigned count = waveform_workers.load();
+    while (count < 2 && !waveform_workers.compare_exchange_weak(count, count + 1)) {}
+    if (count >= 2) { state_->failed = true; return; }
     try {
-        std::thread(Run, state_, path).detach();
+        std::thread([state = state_, path] {
+            struct Release { ~Release() { --waveform_workers; } } release;
+            try { Run(state, path); } catch (...) {
+                std::lock_guard lock(state->mutex);
+                state->failed = true;
+            }
+        }).detach();
     } catch (...) {
+        --waveform_workers;
         state_->failed = true;
     }
 }
@@ -181,7 +192,7 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
     constexpr size_t kBuckets = AudioWaveform::kBuckets;
     constexpr uint32_t kRate = 8000;   // loudness only: mono 8 kHz is plenty for 600 buckets
     FfmpegMediaInfo info;
-    if (!ProbeFfmpegMedia(ffmpeg_exe, path, info) || !info.audio) return false;
+    if (stop.load() || !ProbeFfmpegMedia(ffmpeg_exe, path, info, &stop) || !info.audio || stop.load()) return false;
     if (info.duration <= 0 || info.duration > kMaxDuration) return false;
     const double total = static_cast<double>(info.duration) / 1e7 * kRate;
     const std::wstring args = L"-hide_banner -nostdin -v error -i " + ffmpeg::QuoteArgument(ffmpeg::InputArgument(path)) +
@@ -192,7 +203,19 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
     options.stdout_buffer = 64 * 1024;
     options.discard_stderr = true;
     ffmpeg::Process process;
-    if (!process.Start(ffmpeg_exe, args, options)) return false;
+    if (stop.load() || !process.Start(ffmpeg_exe, args, options)) return false;
+    std::atomic<bool> expired{false};
+    std::jthread watchdog([&](std::stop_token token) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!token.stop_requested()) {
+            if (stop.load() || std::chrono::steady_clock::now() >= deadline) {
+                expired = !stop.load();
+                process.Terminate();
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    });
     WaveformLevels levels(kBuckets);
     uint64_t done = 0;
     int16_t samples[8192];
@@ -222,7 +245,7 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
     }
     if (stop.load()) return true;   // abandoned: nothing to show, nothing failed
     process.Wait(2000);
-    if (!done) return false;
+    if (!done || expired) return false;
     publish(levels.Levels(), 1.0f);
     return true;
 }
@@ -230,6 +253,7 @@ bool FfmpegWaveform(const std::wstring& ffmpeg_exe, const std::wstring& path, co
 void AudioWaveform::Run(std::shared_ptr<Shared> state, std::wstring path) {
     const auto publish = [&](const std::vector<float>& levels, float progress) {
         std::lock_guard lock(state->mutex);
+        if (state->stop) return;
         for (size_t i = 0; i < kBuckets && i < levels.size(); ++i) state->peaks[i] = levels[i];
         state->progress = progress;
     };

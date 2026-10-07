@@ -1,4 +1,5 @@
 #include "global_search_window.h"
+#include "global_search_result_state.h"
 #include "../ui/FluentTokens.h"
 #include "resource.h"
 #include "../ui/empty_state_layout.h"
@@ -85,7 +86,7 @@ struct GlobalSearchWindow::Impl {
     index::IndexClient filenames;
     index::NetworkAgentClient network;
     index::SearchResult local_result, network_result;
-    bool local_ready = false, network_ready = false;
+    app::GlobalProviderStatus providers;
     index::ContentSearchClient contents;
     ComPtr<ID2D1Factory> factory;
     ComPtr<ID2D1RenderTarget> target;
@@ -137,8 +138,9 @@ struct GlobalSearchWindow::Impl {
     float ListTop() const { return 136 + grow; }
     int PageSize() const { return std::max(1, static_cast<int>((height - Header() - kTabs - kFooter) / kRow)); }
     void ClampSelection(bool reveal_selection = true) {
-        selected = std::clamp(selected, 0, std::max(0, static_cast<int>(rows.size()) - 1));
-        if (reveal_selection) {
+        if (rows.empty()) selected = -1;
+        else if (selected >= 0) selected = std::min(selected, static_cast<int>(rows.size()) - 1);
+        if (reveal_selection && selected >= 0) {
             if (selected < first) first = selected;
             if (selected >= first + PageSize()) first = selected - PageSize() + 1;
         }
@@ -164,7 +166,7 @@ struct GlobalSearchWindow::Impl {
         GetWindowTextW(edit, query.data(), count + 1);
         query.resize(static_cast<size_t>(count));
         rows.clear(); selected = first = 0; total = 0; error.clear(); truncated = false;
-        local_result = {}; network_result = {}; local_ready = network_ready = false;
+        local_result = {}; network_result = {}; providers = {};
         if (!query.empty() && !composing) { busy = true; SetTimer(hwnd, kDebounce, 180, nullptr); }
         Invalidate();
     }
@@ -193,6 +195,7 @@ struct GlobalSearchWindow::Impl {
         }
     }
     void MergeFilenames() {
+        const auto position = app::GlobalSearchPosition::Capture(rows, selected, first);
         rows.clear();
         index::Query request;
         request.needle = search_pinyin ? query : L"nopinyin: " + query;
@@ -200,14 +203,30 @@ struct GlobalSearchWindow::Impl {
         const auto merged = index::MergeSearchResults(request, local_result, network_result, true);
         for (const auto& hit : merged.hits) rows.push_back({hit.name, hit.path, {}, hit.is_dir});
         total = merged.total;
-        truncated = total > rows.size(); busy = !(local_ready && network_ready);
+        truncated = total > rows.size(); busy = providers.Busy();
+        error = providers.Error() ? Text(rows.empty() ? StringId::GlobalSearchFailed : StringId::SearchIncomplete) : std::wstring{};
         if (!busy) KillTimer(hwnd, kConnectTimeout);
-        ClampSelection(false); Invalidate();
+        const int restored = position.Selection(rows);
+        selected = restored; first = position.First(rows);
+        ClampSelection(false);
+        if (restored < 0) selected = -1;
+        Invalidate();
     }
-    void Open(bool location) {
+    void TimeoutFilenames() {
+        providers.Timeout();
+        MergeFilenames();
+    }
+    void AcceptFilenames(bool from_network, uint32_t id, index::SearchResult result) {
+        if (id != generation || content_mode) return;
+        providers.Accept(from_network, result.error);
+        if (from_network) network_result = std::move(result);
+        else local_result = std::move(result);
+        MergeFilenames();
+    }
+    void Open(bool location, void (*open_result)(std::wstring, bool) = OpenResult) {
         if (rows.empty() || selected < 0 || selected >= static_cast<int>(rows.size())) return;
         auto path = rows[static_cast<size_t>(selected)].path;
-        Hide(); OpenResult(std::move(path), location);
+        Hide(); open_result(std::move(path), location);
     }
     // Leading/trailing blanks would only make the main window's query differ
     // from what the popup searched for.
@@ -259,7 +278,8 @@ struct GlobalSearchWindow::Impl {
             return true;
         }
         if (key == VK_UP || key == VK_DOWN || key == VK_PRIOR || key == VK_NEXT) {
-            selected += key == VK_UP ? -1 : key == VK_DOWN ? 1 : key == VK_PRIOR ? -PageSize() : PageSize();
+            if (selected < 0) selected = key == VK_UP || key == VK_PRIOR ? static_cast<int>(rows.size()) - 1 : 0;
+            else selected = std::max(0, selected + (key == VK_UP ? -1 : key == VK_DOWN ? 1 : key == VK_PRIOR ? -PageSize() : PageSize()));
             ClampSelection(); Invalidate(); return true;
         }
         if (key == VK_TAB) { content_mode = !content_mode; Changed(); return true; }
@@ -466,6 +486,12 @@ struct GlobalSearchWindow::Impl {
         }
         target->SetDpi(96 * scale, 96 * scale);
     }
+    std::wstring FooterStatus() const {
+        if (!error.empty()) return rows.empty() ? L"" : error;
+        return busy ? Text(StringId::GlobalSearchLoading)
+                    : std::to_wstring(total) + Text(StringId::GlobalSearchResults);
+    }
+
     void Paint() {
         PAINTSTRUCT paint{}; BeginPaint(hwnd, &paint);
         if (EnsureTarget()) {
@@ -550,7 +576,7 @@ struct GlobalSearchWindow::Impl {
                 Fill({width - 4, top, width - 1, top + thumb}, muted, 1.5f);
             }
             Fill({0, bottom, width, bottom + 1}, line);
-            Label(!error.empty() ? error : busy ? Text(StringId::GlobalSearchLoading) : std::to_wstring(total) + Text(StringId::GlobalSearchResults), {25, bottom + 8, 155, height - 8}, 12, muted);
+            Label(FooterStatus(), {25, bottom + 8, 155, height - 8}, 12, muted);
             if (truncated && handoff) {
                 // Too many hits for the popup: point at the main window, which pages through all of them.
                 const float keys_left = DrawKeys(bottom, muted, accent, true);
@@ -595,7 +621,7 @@ struct GlobalSearchWindow::Impl {
             if (wp == kDebounce) Search();
             else if (wp == kConnectTimeout) {
                 KillTimer(hwnd, kConnectTimeout);
-                if (busy && !content_mode) { busy = false; error = Text(StringId::GlobalSearchFailed); Invalidate(); }
+                if (busy && !content_mode) TimeoutFilenames();
             } else if (wp == kScopeTooltipTimer) {
                 KillTimer(hwnd, kScopeTooltipTimer);
                 if (scope_hover && current_only && !current_folder_tip.empty()) {
@@ -649,15 +675,15 @@ struct GlobalSearchWindow::Impl {
         case kIndexStatus: Invalidate(); return 0;
         case kIndexResult: {
             index::SearchResult result;
-            if (filenames.TakeResult(static_cast<uint32_t>(wp), result) && wp == generation && !content_mode && IsWindowVisible(hwnd)) {
-                error.clear(); local_result = std::move(result); local_ready = true; MergeFilenames();
+            if (filenames.TakeResult(static_cast<uint32_t>(wp), result) && IsWindowVisible(hwnd)) {
+                AcceptFilenames(false, static_cast<uint32_t>(wp), std::move(result));
             }
             return 0;
         }
         case kNetworkResult: {
             index::SearchResult result;
-            if (network.TakeResult(static_cast<uint32_t>(wp), result) && wp == generation && !content_mode && IsWindowVisible(hwnd)) {
-                error.clear(); network_result = std::move(result); network_ready = true; MergeFilenames();
+            if (network.TakeResult(static_cast<uint32_t>(wp), result) && IsWindowVisible(hwnd)) {
+                AcceptFilenames(true, static_cast<uint32_t>(wp), std::move(result));
             }
             return 0;
         }
@@ -665,6 +691,7 @@ struct GlobalSearchWindow::Impl {
             index::ContentSearchUpdate update;
             while (contents.TakeUpdate(update)) {
                 if (update.progress.generation != generation || !content_mode || !IsWindowVisible(hwnd)) continue;
+                const bool had_rows = !rows.empty();
                 for (auto& hit : update.hits) {
                     if (rows.size() >= kMaximumResults) break;
                     rows.push_back({std::move(hit.name), std::move(hit.path), std::move(hit.snippet), false});
@@ -672,6 +699,7 @@ struct GlobalSearchWindow::Impl {
                 total = rows.size(); truncated = update.progress.truncated;
                 busy = !update.progress.done;
                 if (update.progress.error && update.progress.error != ERROR_CANCELLED) error = Text(StringId::GlobalSearchFailed);
+                if (!had_rows && !rows.empty()) selected = 0;
                 ClampSelection(false); Invalidate();
             }
             return 0;
@@ -718,10 +746,6 @@ struct GlobalSearchWindow::Impl {
             if (!edit) { DestroyWindow(hwnd); hwnd = nullptr; return false; }
             SetWindowTheme(edit, L"", L"");
             EnsureTarget();
-            // Match the address editor: uploaded layered bitmaps can disappear
-            // below the parent's composition surface on some display stacks.
-            // LumaText paints into the redirected child DC instead.
-            SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA);
             ShowWindow(edit, SW_SHOW);
             SetWindowSubclass(edit, EditProc, 1, reinterpret_cast<DWORD_PTR>(this));
             SendMessageW(edit, EM_SETLIMITTEXT, 2048, 0);

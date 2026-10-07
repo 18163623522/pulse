@@ -6,6 +6,7 @@
 
 namespace pulse {
 struct LiveNetworkSearch {
+    index::Query query;
     uint64_t session_id = 0;
     std::wstring key;
     std::wstring folder;

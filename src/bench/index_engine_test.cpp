@@ -21,6 +21,168 @@ struct UsnStreamTestAccess {
 };
 
 struct EngineTestAccess {
+    static bool ExclusionConcurrencyFixture() {
+        SetMachineIndexScope(false);
+        Engine engine;
+        engine.fixture_root_ = L"C:\\Pulse-exclusion-test-not-enumerated";
+        engine.running_ = false;
+        const std::vector<std::wstring> snapshot(2048, L"C:\\excluded-fixture");
+        engine.excluded_paths_ = snapshot;
+        std::atomic<bool> entered{false}, finished{false};
+        bool preserved = false;
+        std::thread rebuild;
+        {
+            std::shared_lock lock(engine.mutex_);
+            rebuild = std::thread([&] {
+                entered = true;
+                engine.FullRebuild("cold_start");
+                finished = true;
+            });
+            while (!entered) std::this_thread::yield();
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            preserved = !finished && engine.excluded_paths_ == snapshot &&
+                engine.IsExcludedPath(L"C:\\excluded-fixture\\child.txt");
+        }
+        rebuild.join();
+        const bool replaced = finished && engine.excluded_paths_.empty();
+        std::atomic<bool> stop{false}, invalid{false};
+        std::atomic<unsigned> reads{0};
+        auto reader = [&] {
+            while (!stop) {
+                {
+                    std::shared_lock lock(engine.mutex_);
+                    const auto size = engine.excluded_paths_.size();
+                    const bool excluded = engine.IsExcludedPath(L"C:\\excluded-fixture\\child.txt");
+                    if ((size != 0 && size != snapshot.size()) || excluded != (size != 0)) invalid = true;
+                    ++reads;
+                }
+                std::this_thread::yield();
+            }
+        };
+        std::thread first(reader), second(reader);
+        while (reads < 100) std::this_thread::yield();
+        for (int i = 0; i < 100; ++i) {
+            {
+                std::unique_lock lock(engine.mutex_);
+                engine.excluded_paths_ = snapshot;
+            }
+            // Exercise the production configuration replacement, with scanning
+            // cancelled so this fixture never enumerates a user's volume.
+            engine.FullRebuild("cold_start");
+        }
+        stop = true;
+        first.join(); second.join();
+        std::cout << (preserved ? "[PASS] " : "[FAIL] ") << "production rebuild cannot replace exclusions held by an active reader\n";
+        std::cout << (replaced ? "[PASS] " : "[FAIL] ") << "production replacement completes after reader releases its lock\n";
+        std::cout << (!invalid && reads >= 100 ? "[PASS] " : "[FAIL] ")
+            << "two concurrent readers see coherent exclusions across 100 production replacements; reads=" << reads << '\n';
+        return preserved && replaced && !invalid && reads >= 100;
+    }
+    static bool AuditQueryFixture() {
+        bool ok = true;
+        auto check = [&](bool value, const char* label) {
+            std::cout << (value ? "[PASS] " : "[FAIL] ") << label << "\n";
+            ok = value && ok;
+        };
+        const auto root = std::filesystem::absolute(std::filesystem::path("bench_data") /
+            ("index-audit-" + std::to_string(GetCurrentProcessId())));
+        std::filesystem::create_directories(root);
+        const auto cache = root / "valid.bin";
+        {
+            Engine fixture;
+            fixture.AddForTest(L"C:\\fixture\\paper.pdf", L"paper.pdf", false, 5);
+            fixture.AddForTest(L"C:\\fixture\\foobar", L"foobar", false, 10);
+            fixture.AddForTest(L"C:\\fixture\\1.txt", L"1.txt", false, 1);
+            fixture.AddForTest(L"C:\\fixture\\12.txt", L"12.txt", false, 12);
+            fixture.AddForTest(L"C:\\other\\anchor.bin", L"anchor.bin", false, 3);
+            fixture.ready_ = true;
+            check(Save(fixture, cache.wstring()), "save isolated mapped-query fixture");
+        }
+        {
+            Engine incremental, cold;
+            check(Load(incremental, cache.wstring()) && Load(cold, cache.wstring()), "load production mapped fixture");
+            for (const auto& pair : std::vector<std::pair<std::wstring, std::wstring>>{
+                    {L"ext:p", L"ext:pdf"}, {L"size:<1", L"size:<10"},
+                    {L"\"foo", L"\"foobar"}, {L"!1", L"!12"}, {L"p", L"pa"},
+                    {L"ext:txt;p", L"ext:txt;pdf"}, {L"foo|p", L"foo|pa"}}) {
+                Query q; q.needle = pair.first; q.limit = 100; q.rank = false;
+                incremental.InvalidateFilterLocked(); incremental.Search(q);
+                q.needle = pair.second;
+                cold.InvalidateFilterLocked();
+                auto warm = incremental.Search(q), fresh = cold.Search(q);
+                std::vector<std::wstring> a, b;
+                for (const auto& hit : warm.hits) a.push_back(hit.path);
+                for (const auto& hit : fresh.hits) b.push_back(hit.path);
+                check(warm.total == fresh.total && a == b, "incremental query equals cold mapped query");
+            }
+            incremental.AddForTest(L"C:\\fixture\\paper.pdf", L"paper.pdf", false, 7);
+            for (const auto& needle : {L"\"paper.pdf\"", L"p", L"nopinyin: paper"}) {
+                Query q; q.needle = needle; q.limit = 100; q.rank = false;
+                auto result = incremental.Search(q);
+                check(result.total == 1 && result.hits.size() == 1, "patched base hit appears once");
+            }
+            const std::wstring old_name = L"fixture\\paper.pdf", new_name = L"other\\paper.pdf";
+            const size_t first_bytes = (offsetof(FILE_NOTIFY_INFORMATION, FileName) + old_name.size() * sizeof(wchar_t) + 3) & ~size_t{3};
+            std::vector<BYTE> move(first_bytes + offsetof(FILE_NOTIFY_INFORMATION, FileName) + new_name.size() * sizeof(wchar_t));
+            auto old_event = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(move.data());
+            old_event->NextEntryOffset = static_cast<DWORD>(first_bytes);
+            old_event->Action = FILE_ACTION_RENAMED_OLD_NAME;
+            old_event->FileNameLength = static_cast<DWORD>(old_name.size() * sizeof(wchar_t));
+            memcpy(old_event->FileName, old_name.data(), old_event->FileNameLength);
+            auto new_event = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(move.data() + first_bytes);
+            new_event->Action = FILE_ACTION_RENAMED_NEW_NAME;
+            new_event->FileNameLength = static_cast<DWORD>(new_name.size() * sizeof(wchar_t));
+            memcpy(new_event->FileName, new_name.data(), new_event->FileNameLength);
+            incremental.ApplyNotifyLocked(L"C:\\", move.data(), static_cast<DWORD>(move.size()));
+            Query moved; moved.needle = L"ext:pdf"; moved.path_prefix = L"C:\\fixture";
+            check(incremental.Search(moved).total == 0, "moved mapped node excluded from old DFS interval");
+            moved.path_prefix = L"C:\\other";
+            check(incremental.Search(moved).total == 1, "generic scoped scan finds node moved into another DFS interval");
+            std::wstring deep = L"C:\\deep";
+            for (int i = 0; i < 90; ++i) deep += L"\\d";
+            incremental.AddForTest(deep, L"d", true);
+            const auto id = incremental.ResolvePathLocked(deep);
+            check(id >= 0 && incremental.BuildPathLocked(id) == deep, "deep path preserves drive and all ancestors");
+        }
+        {
+            const auto file = root / L"attributes.dat";
+            std::ofstream(file, std::ios::binary) << "1";
+            Engine attributes;
+            attributes.AddForTest(file.wstring(), L"attributes.dat", false, 1);
+            attributes.ready_ = true;
+            Query q; q.needle = L"attributes size:<5";
+            check(attributes.Search(q).total == 1, "attribute filter cache seeded");
+            std::ofstream(file, std::ios::binary | std::ios::trunc) << "1234567890";
+            const std::wstring relative = file.filename().wstring();
+            std::vector<BYTE> packet(offsetof(FILE_NOTIFY_INFORMATION, FileName) + relative.size() * sizeof(wchar_t));
+            auto notification = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(packet.data());
+            notification->Action = FILE_ACTION_MODIFIED;
+            notification->FileNameLength = static_cast<DWORD>(relative.size() * sizeof(wchar_t));
+            memcpy(notification->FileName, relative.data(), notification->FileNameLength);
+            attributes.ApplyNotifyLocked(root.wstring(), packet.data(), static_cast<DWORD>(packet.size()));
+            check(attributes.Search(q).total == 0, "actual file attribute notification invalidates cached size filter");
+        }
+        std::ifstream input(cache, std::ios::binary);
+        std::vector<char> original((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        input.close();
+        if (original.size() >= sizeof(DiskHeader)) {
+            DiskHeader header{}; memcpy(&header, original.data(), sizeof(header));
+            const size_t offset = static_cast<size_t>(header.prefix1_off & ~(1ull << 63));
+            for (int scenario = 0; scenario < 3; ++scenario) {
+                auto damaged = original;
+                const uint32_t value = scenario == 0 ? UINT32_MAX : scenario == 1 ? 1u : header.node_count;
+                const size_t at = scenario == 0 ? offset + 98 * sizeof(uint32_t) : scenario == 1 ? offset :
+                    offset + 65537 * sizeof(uint32_t);
+                if (at + sizeof(value) > damaged.size()) { check(false, "bad-cache fixture bounds"); continue; }
+                memcpy(damaged.data() + at, &value, sizeof(value));
+                const auto path = root / ("bad-" + std::to_string(scenario) + ".bin");
+                std::ofstream output(path, std::ios::binary); output.write(damaged.data(), static_cast<std::streamsize>(damaged.size())); output.close();
+                check(!ValidateCache(path.wstring()), "production loader rejects malformed bucket or posting ID");
+            }
+        } else check(false, "mapped cache contains header");
+        std::filesystem::remove_all(root);
+        return ok;
+    }
     static bool ValidateCache(const std::wstring& path) {
         Engine engine;
         std::unique_ptr<Engine::MappedFile> mapped;
@@ -839,6 +1001,8 @@ void CheckSearch(Engine& e) {
 #include "index_quiet_diagnostics_fixture.h"
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--exclusion-concurrency-only") return EngineTestAccess::ExclusionConcurrencyFixture() ? 0 : 1;
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--audit-query-only") return EngineTestAccess::AuditQueryFixture() ? 0 : 1;
     if (argc == 3 && std::wstring_view(argv[1]) == L"--validate-cache") return EngineTestAccess::ValidateCache(argv[2]) ? 0 : 1;
     if (argc == 4 && std::wstring_view(argv[1]) == L"--diagnostic-cache") {
         if (!pulse::diagnostics::runtime::Initialize(argv[3], "test")) return 2;

@@ -8,6 +8,7 @@ bool EnsureMenu(AppState& s);
 void CopySelectedPath(AppState& s);
 void CreateNewItem(AppState& s, bool folder);
 void QueueTagAds(AppState& s, std::vector<app::TagAdsUpdate> updates);
+bool DeleteTagAndRefreshViews(AppState& s, const app::TagId& tag_id);
 std::vector<app::TagAdsUpdate> BuildTagAdsUpdates(
         const app::PlacesCatalog& places, const std::vector<std::wstring>& paths,
         bool include_descendants = false);
@@ -28,6 +29,15 @@ void TrayStartContentCompare(AppState& s);
 // Opens the stand-alone text compare window for the two staged files.
 void TrayOpenTextDiff(AppState& s);
 void ShowCreateTagPicker(AppState& s, POINT screen_pt);
+#ifdef PULSE_WITH_SELFTEST
+struct CreateTagPickerChoice { int command = 0; std::wstring name; bool committed = false; };
+struct CreateTagPickerTestIo {
+    std::function<CreateTagPickerChoice(const std::vector<ui::FluentMenuItem>&,
+        std::function<std::vector<ui::FluentMenuItem>(const std::wstring&)>)> menu;
+    std::function<bool(uint32_t&)> color;
+};
+CreateTagPickerTestIo* SetCreateTagPickerTestIo(CreateTagPickerTestIo* io);
+#endif
 void ShowTagSidebarMenu(AppState& s, const app::TagId& tag_id, POINT screen_pt);
 void DispatchMenuCommand(AppState& s, int cmd);
 bool ClipboardHasFiles();

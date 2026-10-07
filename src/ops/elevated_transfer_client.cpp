@@ -1,4 +1,4 @@
-﻿#include "elevated_transfer_client.h"
+#include "elevated_transfer_client.h"
 #include "../ipc/elevated_transfer_transport.h"
 #include "../ipc/elevated_transfer_messages.h"
 #include "../common/path_utils.h"
@@ -100,7 +100,10 @@ static ShellTransferResult RunAuthorizedRequest(elevated::Kind kind, const eleva
             sent_cancel = true;
             if (!WriteFrame(session.pipe.Get(), session.process.Get(), session.nonce, Kind::Cancel, sequence, {})) return false;
         }
-        const bool paused = !sent_cancel && callbacks.paused && callbacks.paused();
+        // Cancel already wakes the worker. Do not send a redundant Resume or
+        // a conflict reply after the request's one terminal control message.
+        if (sent_cancel) return true;
+        const bool paused = callbacks.paused && callbacks.paused();
         if (paused != was_paused) {
             was_paused = paused;
             if (!WriteFrame(session.pipe.Get(), session.process.Get(), session.nonce, paused ? Kind::Pause : Kind::Resume, sequence, {})) return false;
@@ -120,9 +123,13 @@ static ShellTransferResult RunAuthorizedRequest(elevated::Kind kind, const eleva
                 const auto conflict = ReadConflict(reader);
                 if (!reader.Done()) break;
                 const auto answer = cancel.load() || !callbacks.conflict ? ElevatedConflictAnswer{} : callbacks.conflict(conflict);
-                // Apply a newly requested pause before releasing the worker's
-                // conflict wait, otherwise a small item can finish first.
+                // A conflict cancel and the operation Cancel button use one
+                // protocol entry point. The host may clear PendingConflict as
+                // soon as Cancel is read, so a later reply must not follow it.
+                if (answer.choice == ConflictChoice::Cancel) cancel.store(true);
+                // Apply a newly requested pause before releasing the worker.
                 if (!tick()) break;
+                if (sent_cancel) continue;
                 Writer response; response.Number(conflict.token); response.Number(static_cast<uint32_t>(answer.choice));
                 response.Number<uint32_t>(answer.apply_to_all ? 1 : 0);
                 if (!WriteFrame(session.pipe.Get(), session.process.Get(), session.nonce, Kind::ConflictReply, sequence, response)) break;
@@ -151,18 +158,22 @@ static ShellTransferResult RunAuthorizedRequest(elevated::Kind kind, const eleva
 }
 ShellTransferResult TransferWithElevatedHelper(const std::vector<std::wstring>& sources,
     const std::wstring& destination, bool move, HWND owner, std::atomic<bool>& cancel,
-    ShellCollisionPolicy policy, ElevatedTransferCallbacks callbacks) {
+    ShellCollisionPolicy policy, ElevatedTransferCallbacks callbacks, const std::wstring& target_name) {
     using namespace elevated;
     ShellTransferResult result;
     if (cancel.load()) { result.hr = HRESULT_FROM_WIN32(ERROR_CANCELLED); result.cancelled = true; return result; }
     if (sources.empty() || !SafePath(destination)) { result.hr = E_INVALIDARG; result.error = L"The destination is not a supported absolute filesystem path."; return result; }
     if (sources.size() > kMaxPaths) { result.hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW); result.error = L"An authorized transfer supports at most 4096 selected items per request."; return result; }
     for (const auto& source : sources) if (!SafePath(source)) { result.hr = E_INVALIDARG; result.error = L"A source is not a supported absolute filesystem path."; return result; }
+    if (!SafeTransferName(target_name, sources.size(), move)) {
+        result.hr = E_INVALIDARG; result.error = L"An explicit move destination must be one safe leaf name for one source."; return result;
+    }
     Writer request;
     request.Number<uint32_t>(move ? 1 : 0); request.Number(static_cast<uint32_t>(policy));
     request.Number<uint32_t>(callbacks.verify_copies ? 1 : 0);
     request.Text(destination); request.Number(static_cast<uint32_t>(sources.size()));
     for (const auto& source : sources) request.Text(source);
+    request.Text(target_name);
     if (!request.good) { result.hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW); result.error = L"The selected paths exceed the authorized transfer request limit of 1 MiB."; return result; }
     return RunAuthorizedRequest(Kind::Transfer, request, owner, cancel, std::move(callbacks));
 }

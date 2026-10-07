@@ -13,26 +13,38 @@
 #include <cstdio>
 #include <map>
 #include <mutex>
-#include <optional>
 #include <type_traits>
+#include <algorithm>
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+#include "shell_window_registry_test.h"
+#endif
 
 namespace pulse::app {
 
 using Microsoft::WRL::ComPtr;
 
 struct ShellWindowRegistry::Shared {
+    ShellWindowRegistry::CreateWindows create = nullptr;
     HWND window = nullptr;
     DWORD window_thread = 0;   // owns `window`; Register pairs with RegisterPending by it
     UINT select_message = 0;
     std::mutex mutex;
-    std::optional<std::vector<ShellWindowEntry>> pending;
-    DWORD thread_id = 0;
+    std::vector<ShellWindowEntry> desired;
+    uint64_t revision = 1;
+    HANDLE wake = nullptr;
+    ~Shared() { if (wake) CloseHandle(wake); }
     std::atomic<bool> stopping{false};
 };
 
 namespace {
 
-constexpr UINT kWakeMessage = WM_APP + 1;   // thread message: a new wanted set or Stop
+constexpr DWORD kRetryFirstMs = 250;
+constexpr DWORD kRetryMaxMs = 5000;
+bool Disconnected(HRESULT hr) {
+    return hr == RPC_E_DISCONNECTED || hr == CO_E_OBJNOTCONNECTED ||
+        hr == HRESULT_FROM_WIN32(RPC_S_SERVER_UNAVAILABLE) || hr == RPC_E_SERVER_DIED ||
+        hr == RPC_E_SERVER_DIED_DNE;
+}
 
 } // namespace
 
@@ -79,11 +91,15 @@ struct PidlDeleter {
 using UniquePidl = std::unique_ptr<std::remove_pointer_t<PIDLIST_ABSOLUTE>, PidlDeleter>;
 
 UniquePidl FolderPidl(const std::wstring& path) {
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+    return UniquePidl(ShellRegistryTestFolder(path));
+#else
     PIDLIST_ABSOLUTE pidl = nullptr;
     const HRESULT hr = path.empty()
         ? SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &pidl)
         : SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr);
     return SUCCEEDED(hr) ? UniquePidl(pidl) : UniquePidl();
+#endif
 }
 
 std::wstring PidlName(PCIDLIST_ABSOLUTE pidl, SIGDN kind) {
@@ -379,203 +395,261 @@ private:
 class Worker {
 public:
     explicit Worker(ShellWindowRegistry::Shared& shared) : shared_(shared) {}
-    ~Worker() { RevokeAll(); }
-    Worker(const Worker&) = delete;
-    Worker& operator=(const Worker&) = delete;
-
+    ~Worker() {
+        // Stop is best-effort cleanup, never an unbounded retry loop.
+        while (!registered_.empty()) {
+            const auto key = registered_.begin()->first;
+            Revoke(key);
+            registered_.erase(key);
+        }
+    }
     void Apply() {
+        const auto now = GetTickCount64();
         {
             std::lock_guard<std::mutex> lock(shared_.mutex);
-            if (shared_.pending) {
-                wanted_ = std::move(*shared_.pending);
-                shared_.pending.reset();
+            if (revision_ != shared_.revision) {
+                revision_ = shared_.revision;
+                wanted_ = shared_.desired;
                 dirty_ = true;
+                due_ = 0;
+                retry_ms_ = kRetryFirstMs;
             }
         }
-        if (!dirty_) return;
-        // No Explorer shell (yet): keep the set and retry on the next publish.
-        if (!windows_) {
-            const HRESULT hr = CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows_));
-            TraceShellWindows(L"CoCreateInstance(ShellWindows) hr=0x%08x", static_cast<unsigned>(hr));
-            if (FAILED(hr)) return;
-        }
-        TraceShellWindows(L"apply wanted=%zu registered=%zu", wanted_.size(), registered_.size());
-        dirty_ = false;
-        for (const ShellWindowAction& action : PlanShellWindowChanges(Current(), wanted_)) {
-            switch (action.kind) {
-            case ShellWindowActionKind::Revoke: Revoke(action.key); break;
-            case ShellWindowActionKind::Register: Register(action.key, action.path); break;
-            case ShellWindowActionKind::Navigate: Navigate(action.key, action.path); break;
+        if (!dirty_ || shared_.stopping || now < due_) return;
+        HRESULT failure = S_OK;
+        if (!windows_ && (!wanted_.empty() || !registered_.empty())) {
+            if (shared_.create) failure = shared_.create(&windows_);
+            else {
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+            failure = ShellRegistryTestCreate(&windows_);
+#else
+            failure = CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows_));
+#endif
             }
         }
+        if (SUCCEEDED(failure)) {
+            std::vector<uint64_t> removed;
+            for (const auto& [key, entry] : registered_) {
+                if (entry.revoking || std::none_of(wanted_.begin(), wanted_.end(),
+                    [&](const auto& value) { return value.key == key; })) removed.push_back(key);
+            }
+            for (const auto key : removed) {
+                if (shared_.stopping) return;
+                const auto hr = Revoke(key);
+                if (FAILED(hr)) failure = hr;
+                if (Disconnected(hr)) break;
+            }
+            if (!Disconnected(failure)) for (const auto& wanted : wanted_) {
+                if (shared_.stopping) return;
+                const auto hr = Advance(wanted.key, wanted.path);
+                if (FAILED(hr)) failure = hr;
+                if (Disconnected(hr)) break;
+            }
+        }
+        if (Disconnected(failure)) {
+            for (auto& [key, entry] : registered_) {
+                (void)key;
+                if (entry.view) entry.view->SetFolder(UniquePidl());
+            }
+            registered_.clear();
+            windows_.Reset();
+        }
+        dirty_ = FAILED(failure);
+        if (dirty_) {
+            const auto delay = retry_ms_;
+            due_ = GetTickCount64() + delay;
+            retry_ms_ = (std::min)(retry_ms_ * 2, kRetryMaxMs);
+            TraceShellWindows(L"retry revision=%llu hr=0x%08x delay=%lu", revision_,
+                static_cast<unsigned>(failure), delay);
+        } else {
+            due_ = 0;
+            retry_ms_ = kRetryFirstMs;
+        }
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+        std::vector<ShellWindowEntry> acknowledged;
+        for (const auto& [key, entry] : registered_)
+            if (entry.ready) acknowledged.push_back({key, entry.path});
+        ShellRegistryTestApplied(acknowledged);
+#endif
     }
-
-    void RevokeAll() {
-        while (!registered_.empty()) Revoke(registered_.begin()->first);
-        windows_.Reset();
+    DWORD WaitMs() const {
+        if (!dirty_) return INFINITE;
+        const auto now = GetTickCount64();
+        return now >= due_ ? 0 : static_cast<DWORD>((std::min)(due_ - now, ULONGLONG(kRetryMaxMs)));
     }
-
 private:
     struct Registered {
-        long cookie = 0;             // RegisterPending
-        long window_cookie = 0;      // Register (normally the same window entry)
+        long cookie = 0, window_cookie = 0;
+        bool pending = false, bound = false, ready = false, revoking = false;
         std::wstring path;
         ComPtr<FolderView> view;
         ComPtr<BrowserApp> app;
     };
-
-    std::vector<ShellWindowEntry> Current() const {
-        std::vector<ShellWindowEntry> current;
-        current.reserve(registered_.size());
-        for (const auto& [key, entry] : registered_) current.push_back({key, entry.path});
-        return current;
-    }
-
-    void Register(uint64_t key, const std::wstring& path) {
+    HRESULT Advance(uint64_t key, const std::wstring& path) {
+        auto& entry = registered_[key];
+        if (entry.revoking) return E_PENDING;
+        if (entry.ready && _wcsicmp(entry.path.c_str(), path.c_str()) == 0) return S_OK;
         UniquePidl folder = FolderPidl(path);
-        TraceShellWindows(L"register key=%llx path=%s pidl=%d", static_cast<unsigned long long>(key), path.c_str(),
-              folder ? 1 : 0);
-        if (!folder) return;
+        if (!folder) return HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
         VARIANT location;
         VariantInit(&location);
-        if (FAILED(InitVariantFromBuffer(folder.get(), ILGetSize(folder.get()), &location))) return;
-        VARIANT root;
-        VariantInit(&root);
-        Registered entry;
-        entry.path = path;
-        // Pending first: SHOpenFolderAndSelectItems that just launched Pulse
-        // for this folder only asks windows registered as pending for it.
-        // Register then turns that entry into the window, matched by the
-        // thread that owns the hwnd (the UI thread, not this one); a
-        // mismatch leaves a pending entry the shell waits on until timeout.
-        HRESULT hr = windows_->RegisterPending(static_cast<long>(shared_.window_thread), &location, &root,
-                                               SWC_BROWSER, &entry.cookie);
-        if (SUCCEEDED(hr)) {
-            entry.view.Attach(new FolderView(key, shared_.window, shared_.select_message));
-            entry.view->SetFolder(std::move(folder));
-            ComPtr<FolderDocument> document;
-            document.Attach(new FolderDocument(entry.view.Get()));
-            entry.app.Attach(new BrowserApp(shared_.window, document.Get(), entry.view.Get()));
-            hr = windows_->Register(entry.app.Get(), HandleToLong(shared_.window), SWC_BROWSER,
-                                    &entry.window_cookie);
-            TraceShellWindows(L"Register hr=0x%08x pending_cookie=%ld window_cookie=%ld", static_cast<unsigned>(hr),
-                  entry.cookie, entry.window_cookie);
-            if (SUCCEEDED(hr)) windows_->OnNavigate(entry.cookie, &location);
-            else windows_->Revoke(entry.cookie);
-        } else {
-            TraceShellWindows(L"RegisterPending hr=0x%08x", static_cast<unsigned>(hr));
+        HRESULT hr = InitVariantFromBuffer(folder.get(), ILGetSize(folder.get()), &location);
+        if (FAILED(hr)) return hr;
+        if (!entry.pending && !shared_.stopping) {
+            VARIANT root; VariantInit(&root);
+            hr = windows_->RegisterPending(static_cast<long>(shared_.window_thread), &location,
+                &root, SWC_BROWSER, &entry.cookie);
+            entry.pending = SUCCEEDED(hr);
+        }
+        if (SUCCEEDED(hr) && !entry.bound && !shared_.stopping) {
+            if (!entry.view) {
+                entry.view.Attach(new FolderView(key, shared_.window, shared_.select_message));
+                entry.view->SetFolder(UniquePidl(ILCloneFull(folder.get())));
+                ComPtr<FolderDocument> document;
+                document.Attach(new FolderDocument(entry.view.Get()));
+                entry.app.Attach(new BrowserApp(shared_.window, document.Get(), entry.view.Get()));
+            }
+            hr = windows_->Register(entry.app.Get(), HandleToLong(shared_.window), SWC_BROWSER, &entry.window_cookie);
+            entry.bound = SUCCEEDED(hr);
+        }
+        if (SUCCEEDED(hr) && !shared_.stopping) {
+            hr = windows_->OnNavigate(entry.cookie, &location);
+            if (SUCCEEDED(hr)) {
+                entry.view->SetFolder(std::move(folder));
+                entry.path = path;
+                entry.ready = true;
+            }
         }
         VariantClear(&location);
-        if (SUCCEEDED(hr)) registered_[key] = std::move(entry);
+        return hr;
     }
-
-    void Navigate(uint64_t key, const std::wstring& path) {
-        const auto it = registered_.find(key);
-        if (it == registered_.end()) return;
-        UniquePidl folder = FolderPidl(path);
-        if (!folder) {
-            Revoke(key);   // no shell folder any more (deleted, offline share)
-            return;
+    HRESULT Revoke(uint64_t key) {
+        const auto found = registered_.find(key);
+        if (found == registered_.end()) return S_OK;
+        auto& entry = found->second;
+        entry.revoking = true;
+        entry.ready = false;
+        if (entry.view) entry.view->SetFolder(UniquePidl());
+        if (windows_ && entry.pending) {
+            const auto hr = windows_->Revoke(entry.cookie);
+            if (FAILED(hr)) return hr;
+            entry.pending = false;
+            if (entry.bound && entry.window_cookie == entry.cookie) entry.bound = false;
         }
-        VARIANT location;
-        VariantInit(&location);
-        if (FAILED(InitVariantFromBuffer(folder.get(), ILGetSize(folder.get()), &location))) return;
-        it->second.view->SetFolder(std::move(folder));
-        it->second.path = path;
-        const HRESULT hr = windows_->OnNavigate(it->second.cookie, &location);
-        TraceShellWindows(L"navigate key=%llx path=%s hr=0x%08x", static_cast<unsigned long long>(key), path.c_str(),
-              static_cast<unsigned>(hr));
-        VariantClear(&location);
-    }
-
-    void Revoke(uint64_t key) {
-        const auto it = registered_.find(key);
-        if (it == registered_.end()) return;
-        TraceShellWindows(L"revoke key=%llx", static_cast<unsigned long long>(key));
-        if (windows_) {
-            windows_->Revoke(it->second.cookie);
-            if (it->second.window_cookie && it->second.window_cookie != it->second.cookie)
-                windows_->Revoke(it->second.window_cookie);
+        if (windows_ && entry.bound) {
+            const auto hr = windows_->Revoke(entry.window_cookie);
+            if (FAILED(hr)) return hr;
+            entry.bound = false;
         }
-        // The shell may still hold the objects; an emptied view selects nothing.
-        if (it->second.view) it->second.view->SetFolder(UniquePidl());
-        registered_.erase(it);
+        registered_.erase(found);
+        return S_OK;
     }
-
     ShellWindowRegistry::Shared& shared_;
     ComPtr<IShellWindows> windows_;
     std::map<uint64_t, Registered> registered_;
     std::vector<ShellWindowEntry> wanted_;
+    uint64_t revision_ = 0;
     bool dirty_ = false;
+    ULONGLONG due_ = 0;
+    DWORD retry_ms_ = kRetryFirstMs;
 };
 
 DWORD WINAPI RegistryThread(void* param) {
     std::shared_ptr<ShellWindowRegistry::Shared> shared =
         std::move(*static_cast<std::shared_ptr<ShellWindowRegistry::Shared>*>(param));
     delete static_cast<std::shared_ptr<ShellWindowRegistry::Shared>*>(param);
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    TraceShellWindows(L"thread start CoInitializeEx hr=0x%08x", static_cast<unsigned>(init));
+    HRESULT init = E_FAIL;
+    DWORD init_delay = kRetryFirstMs;
+    while (!shared->stopping) {
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+        init = ShellRegistryTestInitialize();
+#else
+        init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+#endif
+        if (SUCCEEDED(init)) break;
+        WaitForSingleObject(shared->wake, init_delay);
+        init_delay = (std::min)(init_delay * 2, kRetryMaxMs);
+    }
     if (FAILED(init)) return 1;
     {
-        // Create the message queue before the first Apply: a Publish that
-        // failed to post earlier is still waiting in `pending`.
         MSG msg{};
         PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
         Worker worker(*shared);
-        if (!shared->stopping) worker.Apply();
-        while (!shared->stopping && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-            if (!msg.hwnd && msg.message == kWakeMessage) {
-                if (!shared->stopping) worker.Apply();
-                continue;
+        while (!shared->stopping) {
+            worker.Apply();
+            if (shared->stopping) break;
+            const auto result = MsgWaitForMultipleObjectsEx(1, &shared->wake, worker.WaitMs(),
+                QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (result == WAIT_FAILED) break;
+            while (!shared->stopping && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) { shared->stopping = true; break; }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
-            // COM delivers the shell's calls through this loop.
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
         }
-    }   // ~Worker revokes everything while COM is still up
+    }
     CoUninitialize();
     return 0;
 }
 
 } // namespace
 
-ShellWindowRegistry::ShellWindowRegistry(HWND window, UINT select_message)
+ShellWindowRegistry::ShellWindowRegistry(HWND window, UINT select_message, CreateWindows create)
     : shared_(std::make_shared<Shared>()) {
+    shared_->create = create;
     shared_->window = window;
     shared_->window_thread = GetWindowThreadProcessId(window, nullptr);
     shared_->select_message = select_message;
-    auto* param = new std::shared_ptr<Shared>(shared_);
-    DWORD thread_id = 0;
-    thread_ = CreateThread(nullptr, 0, &RegistryThread, param, 0, &thread_id);
-    if (!thread_) {
-        delete param;
-        return;
-    }
-    std::lock_guard<std::mutex> lock(shared_->mutex);
-    shared_->thread_id = thread_id;
 }
 
 ShellWindowRegistry::~ShellWindowRegistry() { Stop(); }
 
-void ShellWindowRegistry::Publish(std::vector<ShellWindowEntry> wanted) {
+bool ShellWindowRegistry::Running() const {
+    return thread_ && WaitForSingleObject(thread_, 0) == WAIT_TIMEOUT;
+}
+
+void ShellWindowRegistry::EnsureRunning() {
+    if (shared_->stopping) return;
+    if (thread_) {
+        if (WaitForSingleObject(thread_, 0) == WAIT_TIMEOUT) return;
+        CloseHandle(thread_);
+        thread_ = nullptr;
+    }
+    const auto now = GetTickCount64();
+    if (now < next_start_) return;
+    next_start_ = now + start_retry_ms_;
+    start_retry_ms_ = (std::min)(start_retry_ms_ * 2, kRetryMaxMs);
+    if (!shared_->wake) shared_->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!shared_->wake) return;
+    auto* param = new std::shared_ptr<Shared>(shared_);
     DWORD thread_id = 0;
+#ifdef PULSE_SHELL_WINDOW_REGISTRY_TEST
+    thread_ = ShellRegistryTestStart(&RegistryThread, param, &thread_id);
+#else
+    thread_ = CreateThread(nullptr, 0, &RegistryThread, param, 0, &thread_id);
+#endif
+    if (!thread_) delete param;
+    else start_retry_ms_ = kRetryFirstMs;
+}
+
+void ShellWindowRegistry::Publish(std::vector<ShellWindowEntry> wanted) {
+    bool changed = false;
     {
         std::lock_guard<std::mutex> lock(shared_->mutex);
-        shared_->pending = std::move(wanted);
-        thread_id = shared_->thread_id;
+        if (shared_->desired != wanted) {
+            shared_->desired = std::move(wanted);
+            ++shared_->revision;
+            changed = true;
+        }
     }
-    if (thread_id) PostThreadMessageW(thread_id, kWakeMessage, 0, 0);
+    EnsureRunning();
+    if (changed && shared_->wake) SetEvent(shared_->wake);
 }
 
 void ShellWindowRegistry::Stop(DWORD timeout_ms) {
-    if (!thread_) return;
     shared_->stopping = true;
-    DWORD thread_id = 0;
-    {
-        std::lock_guard<std::mutex> lock(shared_->mutex);
-        thread_id = shared_->thread_id;
-    }
-    if (thread_id) PostThreadMessageW(thread_id, kWakeMessage, 0, 0);
+    if (shared_->wake) SetEvent(shared_->wake);
+    if (!thread_) return;
     WaitForSingleObject(thread_, timeout_ms);
     CloseHandle(thread_);
     thread_ = nullptr;

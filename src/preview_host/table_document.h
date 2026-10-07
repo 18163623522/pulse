@@ -5,7 +5,7 @@
 //   PULSETBL\t1
 //   S\t<kind>\t<name>\t<columns>\t<rows>\t<truncated>\t<detail>\t<header>
 //       kind: "csv" or "xlsx"; rows/columns: what follows in R records;
-//       truncated: 1 when the file has more rows/columns than were sent;
+//       truncated: 1 when rows, columns, fields or payload were clipped;
 //       detail: CSV delimiter name ("comma", "semicolon", "tab", "pipe");
 //       header: 1 when the first row is a header row (CSV heuristic).
 //   R\t<cell>\t<cell>...   one per row of the preceding sheet; a cell that

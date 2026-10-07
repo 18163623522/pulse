@@ -1,3 +1,4 @@
+#include "pane_column_input.h"
 // app_input.cpp — extracted from app_main.cpp.
 #include "quick_access.h"
 #include "app_prompts.h"
@@ -427,15 +428,25 @@ DWORD DropExecute(AppState& s, const std::vector<std::wstring>& sources,
     if (from_temp && effect == DROPEFFECT_MOVE && (allowed & DROPEFFECT_COPY) &&
         (key_state & MK_SHIFT) == 0 && preferred_effect != DROPEFFECT_MOVE)
         effect = DROPEFFECT_COPY;
-    std::vector<std::wstring> staged = sources;
-    if (!temp_dir.empty() && effect == DROPEFFECT_COPY)
-        app::StageDropSources(sources, temp_dir, stage_root, staged);
-
-    ops::OpRequest req;
-    req.type = (effect == DROPEFFECT_MOVE) ? ops::OpType::Move : ops::OpType::Copy;
-    req.dest_dir = fs::NormalizePath(dest);
-    for (auto& p : staged) req.sources.push_back(fs::NormalizePath(p));
-    if (!SubmitWithConflictResolution(s, std::move(req))) return DROPEFFECT_NONE;
+    bool submitted = false;
+    auto submit = [&](const std::vector<std::wstring>& prepared) {
+        ops::OpRequest req;
+        req.type = (effect == DROPEFFECT_MOVE) ? ops::OpType::Move : ops::OpType::Copy;
+        req.dest_dir = fs::NormalizePath(dest);
+        for (const auto& p : prepared) req.sources.push_back(fs::NormalizePath(p));
+        submitted = SubmitWithConflictResolution(s, std::move(req));
+    };
+    if (!temp_dir.empty() && effect == DROPEFFECT_COPY) {
+        const auto result = app::SubmitStagedDrop(sources, temp_dir, stage_root, submit);
+        if (result.error) {
+            wchar_t error[128]{};
+            swprintf_s(error, l10n::Get(l10n::StringId::ErrorCodeFormat).c_str(), result.error);
+            s.notification_toast.Show(s.hwnd, l10n::Get(l10n::StringId::OpCopyFailed),
+                result.source + L"\n" + error, false);
+            return DROPEFFECT_NONE;
+        }
+    } else submit(sources);
+    if (!submitted) return DROPEFFECT_NONE;
     if (s.trayDragOut) RememberTrayDest(s, dest);
     return effect;
 }
@@ -502,6 +513,7 @@ void ClampScroll(AppState& s) {
     app::FillPaneViewModel(pane, *s.pane, &s.places);
     const float maxScrollX = s.renderer.MaxScrollXForPane(pane, FocusedPaneRect(s));
     tab->scroll_x = std::clamp(tab->scroll_x, 0.0f, maxScrollX);
+    s.scrollTargetX = std::clamp(s.scrollTargetX, 0.0f, maxScrollX);
 }
 
 void EnsureRowVisible(AppState& s, app::Tab& tab, int index) {
@@ -596,7 +608,9 @@ void HandleListRowClick(AppState& s, int index, bool ctrl, bool shift) {
     if (shift) {
         const int anchor = tab->selection_anchor >= 0 ? tab->selection_anchor
             : (tab->selected_index >= 0 ? tab->selected_index : index);
-        tab->SelectRange(anchor, index);
+        ui::PaneViewModel view;
+        app::FillPaneViewModel(view, *s.pane, &s.places);
+        tab->SelectRange(anchor, index, &view);
     } else if (ctrl) {
         // A selected item remains part of the drag payload. Only a completed
         // Ctrl-click (without a drag) removes it from the selection.
@@ -864,10 +878,13 @@ void TickTabTransitions(AppState& s) {
 
 void UpdateSmoothScroll(AppState& s);
 
-void StartSmoothScroll(AppState& s, float delta) {
+void StartSmoothScroll(AppState& s, float delta, bool horizontal) {
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
     ClampScroll(s);
+
+    if (s.scrollAnimating && s.scrollHorizontal != horizontal) CancelScrollAnimation(s);
+    s.scrollHorizontal = horizontal;
 
     // Preserve the distance from earlier wheel pulses. Restarting from the
     // partially animated position discards most of a fast wheel gesture.
@@ -875,12 +892,22 @@ void StartSmoothScroll(AppState& s, float delta) {
         UpdateSmoothScroll(s);
     } else {
         s.scrollTargetY = tab->scroll_y;
+        s.scrollTargetX = tab->scroll_x;
         s.scrollLastUpdateTime = std::chrono::steady_clock::now();
     }
 
-    const float maxScroll = MaxScrollForActivePane(s);
-    s.scrollTargetY = std::clamp(s.scrollTargetY + delta, 0.0f, maxScroll);
+    if (horizontal) {
+        ui::PaneViewModel pane;
+        app::FillPaneViewModel(pane, *s.pane, &s.places);
+        const float maximum = s.renderer.MaxScrollXForPane(pane, FocusedPaneRect(s));
+        s.scrollTargetX = std::clamp(s.scrollTargetX + delta, 0.0f, maximum);
+    } else {
+        const float maximum = MaxScrollForActivePane(s);
+        s.scrollTargetY = std::clamp(s.scrollTargetY + delta, 0.0f, maximum);
+    }
     s.scrollAnimating = true;
+    if (s.framePump.Running()) s.framePump.Arm();
+    else if (s.hwnd) InvalidateRect(s.hwnd, nullptr, FALSE);
     MaybePrefetchSearchPage(s);
 }
 
@@ -894,16 +921,18 @@ void UpdateSmoothScroll(AppState& s) {
         0.0, 50.0);
     s.scrollLastUpdateTime = now;
 
-    const float remaining = s.scrollTargetY - tab->scroll_y;
+    float& position = s.scrollHorizontal ? tab->scroll_x : tab->scroll_y;
+    const float target = s.scrollHorizontal ? s.scrollTargetX : s.scrollTargetY;
+    const float remaining = target - position;
     if (std::abs(remaining) <= 0.35f) {
-        tab->scroll_y = s.scrollTargetY;
+        position = target;
         s.scrollAnimating = false;
     } else {
         // Exponential response is independent of timer jitter and accepts a
         // moving target without resetting its easing curve on every pulse.
         const float response = 1.0f - static_cast<float>(
             std::exp(-elapsed / AppState::kScrollResponseMs));
-        tab->scroll_y += remaining * response;
+        position += remaining * response;
     }
     ClampScroll(s);
 }
@@ -992,10 +1021,12 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 D2D1_RECT_F paneRect = s->renderer.ContentRect(
                     static_cast<float>(s->compositor.Width()),
                     static_cast<float>(s->compositor.Height()));
+                const ui::PaneViewModel* resizeView = &resizeVm.pane;
                 if (s->columnResizePane >= 0 &&
                     s->columnResizePane < static_cast<int>(resizeVm.pane_slots.size())) {
                     const auto& resizeSlot = resizeVm.pane_slots[
                         static_cast<size_t>(s->columnResizePane)];
+                    resizeView = &resizeSlot.pane;
                     paneRect = s->renderer.PaneBodyBounds(resizeSlot.pane, resizeSlot.rect);
                 } else {
                     paneRect = s->renderer.PaneBodyBounds(resizeVm.pane, paneRect);
@@ -1003,19 +1034,8 @@ LRESULT HandleMouseMove(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 app::Pane* resizePane = PaneAtSlot(*s, s->columnResizePane);
                 app::Tab* resizeTab = resizePane ? resizePane->ActiveTab() : nullptr;
                 if (resizeTab) {
-                    std::wstring kind;
-                    app::ParsePulsePath(resizeTab->current_path, &kind, nullptr);
-                    if (kind == L"search") {
-                        resizeTab->search_column_dividers =
-                            s->renderer.ResizeSearchColumnDivider(
-                                paneRect, resizeTab->search_column_dividers,
-                                s->columnResizeIndex, static_cast<float>(mx));
-                    } else {
-                        resizeTab->details_column_dividers =
-                            s->renderer.ResizeDetailsColumnDivider(
-                                paneRect, resizeTab->details_column_dividers,
-                                s->columnResizeIndex, static_cast<float>(mx));
-                    }
+                    app::ResizePaneColumn(*resizeTab, *resizeView, s->renderer, paneRect,
+                                          s->columnResizeIndex, static_cast<float>(mx));
                 }
                 s->hoverRegion = static_cast<int>(ui::HitTestResult::ColumnDivider);
                 s->hoverControlIndex = s->columnResizeIndex;
@@ -2462,7 +2482,11 @@ LRESULT HandleLButtonDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARA
             InvalidateRect(hwnd, nullptr, FALSE);
         } else if (hit.region == ui::HitTestResult::RowFolderSize && hit.index >= 0) {
             if (app::Tab* tab = ActiveTab(*s)) {
-                s->folderSizes.Calculate(EntryFullPath(*tab, hit.index));
+                const auto path = EntryFullPath(*tab, hit.index);
+                const auto work = s->folderSizes.GetWork(path);
+                if (work.manual && work.Running()) s->folderSizes.Cancel(path);
+                else s->folderSizes.Calculate(path);
+                s->tooltipText.clear();
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
         } else if (hit.region == ui::HitTestResult::RowStar && hit.index >= 0) {
@@ -2906,13 +2930,10 @@ LRESULT HandleLButtonDblClk(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPA
             app::Tab* fitTab = fitPane ? fitPane->ActiveTab() : nullptr;
             if (fitTab && hit.pane_index >= 0 &&
                 hit.pane_index < static_cast<int>(vm.pane_slots.size())) {
-                std::wstring kind;
-                app::ParsePulsePath(fitTab->current_path, &kind, nullptr);
-                s->renderer.AutoFitColumnDivider(
-                    s->renderer.PaneBodyBounds(vm.pane_slots[static_cast<size_t>(hit.pane_index)].pane,
-                        vm.pane_slots[static_cast<size_t>(hit.pane_index)].rect),
-                    fitTab->details_column_dividers, kind == L"search",
-                    fitTab->search_column_dividers, hit.index);
+                const auto& fitView = vm.pane_slots[static_cast<size_t>(hit.pane_index)].pane;
+                app::AutoFitPaneColumn(*fitTab, fitView, s->renderer,
+                    s->renderer.PaneBodyBounds(fitView,
+                        vm.pane_slots[static_cast<size_t>(hit.pane_index)].rect), hit.index);
                 if (s->renameIndex >= 0) LayoutRenameOverlay(*s);
             }
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -3650,13 +3671,8 @@ LRESULT HandleMouseWheel(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             return 0;
         }
         if (wheelTab && wheelTab->view_mode == ui::ViewMode::List) {
-            ui::PaneViewModel pane;
-            app::FillPaneViewModel(pane, *s->pane, &s->places);
-            const float maxX = s->renderer.MaxScrollXForPane(pane, FocusedPaneRect(*s));
-            wheelTab->scroll_x = std::clamp(wheelTab->scroll_x -
-                (static_cast<float>(delta) / WHEEL_DELTA) * 220.0f * s->scale,
-                0.0f, maxX);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            StartSmoothScroll(*s,
+                -(static_cast<float>(delta) / WHEEL_DELTA) * 220.0f * s->scale, true);
             return 0;
         }
         UINT wheelLines = 3;
@@ -3808,7 +3824,7 @@ LRESULT HandleKeyDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     const int dy = wParam == VK_UP ? -1 : (wParam == VK_DOWN ? 1 : 0);
                     const int next = s->renderer.MoveViewIndex(vm.pane, FocusedPaneRect(*s),
                                                                 view, dx, dy);
-                    tab->MoveFocus(vm.pane.SourceIndex(next), shift);
+                    tab->MoveFocus(vm.pane.SourceIndex(next), shift, &vm.pane);
                     EnsureRowVisible(*s, *tab, tab->selected_index);
                 }
             }
@@ -3821,7 +3837,7 @@ LRESULT HandleKeyDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     int view = vm.pane.ViewIndex(tab->selected_index);
                     if (view < 0) view = 0;
                     const int next = std::min(n - 1, view + page);
-                    tab->MoveFocus(vm.pane.SourceIndex(next), shift);
+                    tab->MoveFocus(vm.pane.SourceIndex(next), shift, &vm.pane);
                     EnsureRowVisible(*s, *tab, tab->selected_index);
                 }
             }
@@ -3834,20 +3850,20 @@ LRESULT HandleKeyDown(AppState* s, HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     int view = vm.pane.ViewIndex(tab->selected_index);
                     if (view < 0) view = 0;
                     const int next = std::max(0, view - page);
-                    tab->MoveFocus(vm.pane.SourceIndex(next), shift);
+                    tab->MoveFocus(vm.pane.SourceIndex(next), shift, &vm.pane);
                     EnsureRowVisible(*s, *tab, tab->selected_index);
                 }
             }
         } else if (wParam == VK_HOME) {
             CancelScrollAnimation(*s);
             if (vm.pane.EntryCount() > 0) {
-                tab->MoveFocus(vm.pane.SourceIndex(0), shift);
+                tab->MoveFocus(vm.pane.SourceIndex(0), shift, &vm.pane);
                 tab->scroll_y = 0;
             }
         } else if (wParam == VK_END) {
             CancelScrollAnimation(*s);
             if (vm.pane.EntryCount() > 0) {
-                tab->MoveFocus(vm.pane.SourceIndex(static_cast<int>(vm.pane.EntryCount()) - 1), shift);
+                tab->MoveFocus(vm.pane.SourceIndex(static_cast<int>(vm.pane.EntryCount()) - 1), shift, &vm.pane);
                 EnsureRowVisible(*s, *tab, tab->selected_index);
                 s->scrollTargetY = tab->scroll_y;
                 MaybePrefetchSearchPage(*s);

@@ -48,6 +48,8 @@ constexpr uint32_t kPreviewRequestFlagRichText = 1u << 2;
 constexpr uint32_t kPreviewRequestFlagFolderThumbnail = 1u << 3;
 constexpr uint32_t kPreviewRequestFlagFolderRefresh = 1u << 4;
 constexpr uint32_t kPreviewRequestFlagFolderSingle = 1u << 5;
+// Resolve document image metadata inside the cancellable preview host.
+constexpr uint32_t kPreviewRequestFlagDocumentImage = 1u << 6;
 constexpr uint32_t kPreviewMaxTextChars = 32768;
 constexpr uint32_t kPreviewMaxArchiveChars = 512u * 1024u;
 constexpr uint32_t kPreviewMaxTableChars = 2u * 1024u * 1024u;

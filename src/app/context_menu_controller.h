@@ -90,12 +90,15 @@ private:
     uint32_t token_ = 0;
     std::vector<std::wstring> paths_;
     bool background_ = false;
+    bool extended_ = false;
+    std::vector<std::wstring> disabled_handlers_;
     bool menu_open_ = false;
     bool com_ready_ = false;
     std::vector<ops::ShellMenuItem> com_items_;
     std::vector<ops::ShellMenuItem> menu_com_items_;
     std::vector<StaticVerb> static_verbs_;
     std::vector<StaticVerb> menu_static_verbs_;
+    bool display_snapshot_valid_ = false;
     std::wstring extension_;
     std::vector<ui::FluentMenuItem> base_items_;
     std::unordered_map<std::wstring, std::vector<StaticVerb>> static_cache_;

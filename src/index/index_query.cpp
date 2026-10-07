@@ -13,12 +13,6 @@ namespace {
 
 const wchar_t* Lut() { return FoldTable(); }
 
-int CountChar(std::wstring_view s, wchar_t c) {
-    int n = 0;
-    for (wchar_t ch : s) if (ch == c) ++n;
-    return n;
-}
-
 bool HasWild(std::wstring_view s) {
     return s.find(L'*') != std::wstring_view::npos || s.find(L'?') != std::wstring_view::npos;
 }
@@ -712,17 +706,19 @@ int RankName(const wchar_t* s, uint32_t n, bool is_dir, const CompiledQuery& q) 
 }
 
 bool QueryCanNarrow(std::wstring_view prev, std::wstring_view next) {
-    if (prev.empty() || next.size() < prev.size()) return false;
+    if (prev.empty()) return false;
     const auto previous = ParseQuery(prev);
     const auto following = ParseQuery(next);
-    if (!QueryHasPinyin(previous) && QueryHasPinyin(following)) return false;
-    for (const auto& group : previous.groups)
-        for (const auto& term : group)
-            if (term.pinyin && term.name_not) return false; // extending an exclusion broadens results
-    if (next.substr(0, prev.size()) != prev) return false;
-    if (CountChar(next, L'|') != CountChar(prev, L'|')) return false;
-    if (CountChar(next, L'!') < CountChar(prev, L'!')) return false;
-    return true;
+    // Only a positive literal substring extension proves set containment.
+    // Textual prefixes of filters, exclusions and exact names can broaden it.
+    if (!QueryIsSimpleName(previous) || !QueryIsSimpleName(following) ||
+        previous.content.present() || following.content.present() ||
+        previous.path_prefix != following.path_prefix) return false;
+    const auto& before = previous.groups[0][0];
+    const auto& after = following.groups[0][0];
+    if (before.name_how != NameHow::Substring || after.name_how != NameHow::Substring ||
+        before.pinyin || after.pinyin || before.name.empty()) return false;
+    return after.name.starts_with(before.name);
 }
 
 CompiledQuery ParseQuery(std::wstring_view raw) {

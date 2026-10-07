@@ -180,6 +180,20 @@ void DropEmptyKeys(std::wstring key) {
     }
 }
 
+bool Flush(const std::wstring& key, bool missing_ok = false) {
+    HKEY handle = nullptr;
+    const LONG opened = RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_QUERY_VALUE, &handle);
+    if (missing_ok && (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND)) return true;
+    if (opened != ERROR_SUCCESS) return false;
+    const LONG result = RegFlushKey(handle);
+    RegCloseKey(handle);
+    return result == ERROR_SUCCESS;
+}
+
+bool WriteDurable(const std::wstring& key, const std::wstring& name, const Value& value) {
+    return Write(key, name, value) && Flush(key);
+}
+
 bool LegacyResidue(std::vector<Binding>& bindings, std::vector<Value>& current) {
     bindings.clear();
     current.clear();
@@ -219,7 +233,134 @@ bool LegacyResidue(std::vector<Binding>& bindings, std::vector<Value>& current) 
     return true;
 }
 
+bool ReadLegacyRepair(std::vector<Binding>& bindings, Snapshot& journal, bool& exists) {
+    bindings.clear();
+    std::vector<Value> expected;
+    for (const auto* group : {L"Directory", L"Drive", L"WinE", L"ThisPc"}) {
+        const auto entries = Bindings(group, L"");
+        for (size_t i = 0; i < entries.size(); ++i) {
+            bindings.push_back(entries[i]);
+            const bool absent = i == 0 || (i == 1 &&
+                (group == std::wstring_view(L"Directory") || group == std::wstring_view(L"Drive")));
+            expected.push_back(absent ? Value{} : entries[i].desired);
+        }
+    }
+    Value stored;
+    if (!Read(std::wstring(kBackupRoot) + L"LegacyOrphanRepair", L"Snapshot", stored)) return false;
+    exists = stored.exists;
+    if (!exists) return true;
+    if (!Decode(stored, bindings.size(), journal)) return false;
+    for (size_t i = 0; i < bindings.size(); ++i)
+        if (!journal.before[i].known || !journal.written[i].known ||
+            !SameValue(journal.before[i], expected[i]) || journal.written[i].exists) return false;
+    return true;
+}
+
+struct UpgradeJournal {
+    Value stored;
+    Snapshot original;
+    Snapshot changes;
+    Snapshot next;
+};
+
+Value EncodeUpgrade(const UpgradeJournal& journal) {
+    return Encode(Snapshot{{journal.stored, Encode(journal.changes)},
+                           {Encode(journal.original), Encode(journal.next)}});
+}
+
+bool DecodeUpgrade(const Value& encoded, size_t count, UpgradeJournal& journal) {
+    Snapshot envelope;
+    if (!Decode(encoded, 2, envelope)) return false;
+    journal.stored = envelope.before[0];
+    return Decode(envelope.before[1], count, journal.changes) &&
+        Decode(envelope.written[0], count, journal.original) &&
+        Decode(envelope.written[1], count, journal.next);
+}
+
+bool JournalForExecutable(const UpgradeJournal& journal, const std::wstring& exe) {
+    return ShellCommandTargetsExecutable(Text(journal.original.written[0]), exe) ||
+           ShellCommandTargetsExecutable(Text(journal.next.written[0]), exe);
+}
+
+bool FinishUpgrade(const std::wstring& group, const UpgradeJournal& journal, bool restore) {
+    const auto bindings = Bindings(group, L"");
+    const auto key = std::wstring(kBackupRoot) + group;
+    // A previous journal write may have failed to flush. Never mutate Classes
+    // until this invocation has confirmed that the recovery proof is durable.
+    Value proof;
+    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, EncodeUpgrade(journal)) || !Flush(key)) return false;
+    Value stored;
+    if (!Read(key, L"Snapshot", stored) ||
+        (!SameValue(stored, journal.stored) && !SameValue(stored, Encode(journal.next)) &&
+         !(restore && !stored.exists))) return false;
+    std::vector<Value> target = journal.changes.written;
+    bool exact = true;
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        if (restore && (SameValue(journal.changes.before[i], journal.original.written[i]) ||
+                        SameValue(journal.changes.before[i], journal.next.written[i]) ||
+                        !SameValue(journal.changes.before[i], journal.changes.written[i]))) {
+            target[i] = journal.original.before[i];
+            exact = target[i].known && exact;
+        }
+        Value current;
+        if (!Read(bindings[i].key, bindings[i].name, current) ||
+            (!SameValue(current, journal.changes.before[i]) &&
+             !SameValue(current, journal.changes.written[i]) &&
+             !(restore && SameValue(current, target[i])))) return false;
+    }
+    // Restore the command last so an ordinary write failure retains its anchor.
+    for (size_t n = 0; n < bindings.size(); ++n) {
+        const size_t i = restore ? bindings.size() - 1 - n : n;
+        Value current;
+        if (!Read(bindings[i].key, bindings[i].name, current)) return false;
+        if (SameValue(current, target[i])) continue;
+        if (!SameValue(current, journal.changes.before[i]) &&
+            !SameValue(current, journal.changes.written[i])) return false;
+        if (!Write(bindings[i].key, bindings[i].name, target[i])) return false;
+    }
+    for (const auto& binding : bindings)
+        if (!Flush(binding.key, true)) return false;
+    if (!WriteDurable(key, L"Snapshot", restore ? Value{} : Encode(journal.next))) return false;
+    if (!WriteDurable(key, L"PendingUpgrade", Value{})) return false;
+    if (!WriteDurable(key, L"UpgradeJournal", Value{})) return false;
+    return exact;
+}
+
+void RollbackUpgrade(const std::wstring& group, const UpgradeJournal& journal) {
+    const auto bindings = Bindings(group, L"");
+    const auto key = std::wstring(kBackupRoot) + group;
+    Value proof;
+    // Once the journal has been removed, the new Snapshot is already durable.
+    // A failing final flush must not start a fresh, unjournaled compensation.
+    if (!Read(key, L"UpgradeJournal", proof) || !SameValue(proof, EncodeUpgrade(journal))) return;
+    bool restored = true;
+    for (size_t i = bindings.size(); i-- > 0;) {
+        if (i == 0 && !restored) break;
+        Value current;
+        if (!Read(bindings[i].key, bindings[i].name, current)) { restored = false; continue; }
+        if (SameValue(current, journal.changes.before[i])) continue;
+        if (!SameValue(current, journal.changes.written[i])) { restored = false; continue; }
+        restored = Write(bindings[i].key, bindings[i].name, journal.changes.before[i]) && restored;
+    }
+    if (!restored) return;
+    for (const auto& binding : bindings)
+        if (!Flush(binding.key, true)) return;
+    if (WriteDurable(key, L"Snapshot", journal.stored))
+        WriteDurable(key, L"UpgradeJournal", Value{});
+}
+
 bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
+    const auto journal_key = std::wstring(kBackupRoot) + group;
+    Value pending_journal;
+    if (!Read(journal_key, L"UpgradeJournal", pending_journal)) return false;
+    if (pending_journal.exists) {
+        UpgradeJournal journal;
+        if (!DecodeUpgrade(pending_journal, Bindings(group, exe).size(), journal) ||
+            !JournalForExecutable(journal, exe)) return false;
+        if (on && !ShellCommandTargetsExecutable(Text(journal.next.written[0]), exe)) return false;
+        if (!FinishUpgrade(group, journal, !on)) return false;
+        if (!on) return true;
+    }
     const auto bindings = Bindings(group, exe);
     std::vector<Value> current(bindings.size());
     for (size_t i = 0; i < bindings.size(); ++i)
@@ -253,7 +394,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
             }
         }
         const Value encoded = Encode(next);
-        if (!SameValue(encoded, stored) && !Write(backup_key, L"Snapshot", encoded)) return false;
+        if (!SameValue(encoded, stored) && !WriteDurable(backup_key, L"Snapshot", encoded)) return false;
         for (size_t i = 0; i < bindings.size(); ++i) {
             if (SameValue(current[i], bindings[i].desired)) continue;
             Value checked;
@@ -261,6 +402,7 @@ bool ApplyGroup(const std::wstring& group, const std::wstring& exe, bool on) {
                 !Write(bindings[i].key, bindings[i].name, bindings[i].desired)) {
                 bool rolled_back = true;
                 for (size_t j = i + 1; j-- > 0;) {
+                    if (j == 0 && !rolled_back) break;
                     if (!Read(bindings[j].key, bindings[j].name, checked)) rolled_back = false;
                     else if (SameValue(checked, bindings[j].desired))
                         rolled_back = Write(bindings[j].key, bindings[j].name, current[j]) && rolled_back;
@@ -356,6 +498,10 @@ bool HasShellIntegrationOwnership(ShellIntegrationKind kind, const std::wstring&
     if (exe.empty()) return false;
     for (const auto& group : Groups(kind)) {
         const auto bindings = Bindings(group, exe);
+        Value pending;
+        UpgradeJournal journal;
+        if (Read(std::wstring(kBackupRoot) + group, L"UpgradeJournal", pending) && pending.exists &&
+            DecodeUpgrade(pending, bindings.size(), journal) && JournalForExecutable(journal, exe)) return true;
         const auto& binding = bindings.front();
         Value actual;
         if (!Read(binding.key, binding.name, actual)) continue;
@@ -379,38 +525,52 @@ bool HasShellIntegrationOwnership(ShellIntegrationKind kind, const std::wstring&
 
 bool HasLegacyShellIntegrationResidue() {
     std::vector<Binding> bindings;
+    Snapshot journal;
+    bool exists = false;
+    if (!ReadLegacyRepair(bindings, journal, exists)) {
+        std::vector<Value> current;
+        return LegacyResidue(bindings, current);
+    }
+    if (exists) {
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            Value actual;
+            if (journal.before[i].exists && Read(bindings[i].key, bindings[i].name, actual) &&
+                SameValue(actual, journal.before[i])) return true;
+        }
+        return false;
+    }
     std::vector<Value> current;
     return LegacyResidue(bindings, current);
 }
 
 bool RepairLegacyShellIntegrationResidue() {
     std::vector<Binding> bindings;
-    std::vector<Value> current;
-    if (!LegacyResidue(bindings, current)) return false;
+    Snapshot journal;
+    bool exists = false;
+    if (!ReadLegacyRepair(bindings, journal, exists)) return false;
     // Retain an exact backup before deleting anything. Never overwrite an
     // earlier repair record, including after an interrupted repair.
     const std::wstring backup_key = std::wstring(kBackupRoot) + L"LegacyOrphanRepair";
-    const Value encoded = Encode(Snapshot{current, std::vector<Value>(current.size())});
-    Value existing;
-    if (!Read(backup_key, L"Snapshot", existing) ||
-        (existing.exists && !SameValue(existing, encoded)) ||
-        (!existing.exists && !Write(backup_key, L"Snapshot", encoded))) return false;
-    std::vector<Binding> checked_bindings;
-    std::vector<Value> checked;
-    if (!LegacyResidue(checked_bindings, checked) || checked != current) return false;
+    if (!exists) {
+        std::vector<Value> current;
+        if (!LegacyResidue(bindings, current)) return false;
+        journal = Snapshot{current, std::vector<Value>(current.size())};
+        if (!WriteDurable(backup_key, L"Snapshot", Encode(journal))) return false;
+    } else if (!Flush(backup_key)) return false;
+    bool remaining = false;
     for (size_t i = 0; i < bindings.size(); ++i) {
-        if (!current[i].exists) continue;
         Value actual;
-        if (!Read(bindings[i].key, bindings[i].name, actual) || !SameValue(actual, current[i]) ||
-            !Write(bindings[i].key, bindings[i].name, Value{})) {
-            // A failed repair must not strand a new partial pattern that no
-            // longer satisfies the conservative full-signature check.
-            for (size_t j = 0; j <= i; ++j) {
-                if (current[j].exists && Read(bindings[j].key, bindings[j].name, actual) && !actual.exists)
-                    Write(bindings[j].key, bindings[j].name, current[j]);
-            }
-            return false;
-        }
+        if (!Read(bindings[i].key, bindings[i].name, actual) ||
+            (actual.exists && !SameValue(actual, journal.before[i]))) return false;
+        remaining = remaining || actual.exists;
+    }
+    if (!remaining) return false;
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        Value actual;
+        if (!Read(bindings[i].key, bindings[i].name, actual)) return false;
+        if (!actual.exists) continue;
+        if (!SameValue(actual, journal.before[i]) ||
+            !WriteDurable(bindings[i].key, bindings[i].name, Value{})) return false;
     }
     for (const auto& binding : bindings) DropEmptyKeys(binding.key);
     return true;
@@ -421,6 +581,13 @@ bool PrepareShellIntegrationUpgrade(ShellIntegrationKind kind, const std::wstrin
     bool ok = true;
     for (const auto& group : Groups(kind)) {
         const auto bindings = Bindings(group, exe);
+        Value pending_journal;
+        if (!Read(std::wstring(kBackupRoot) + group, L"UpgradeJournal", pending_journal)) { ok = false; continue; }
+        if (pending_journal.exists) {
+            UpgradeJournal journal;
+            ok = DecodeUpgrade(pending_journal, bindings.size(), journal) && JournalForExecutable(journal, exe) && ok;
+            continue; // The durable journal already owns this upgrade's backup.
+        }
         std::vector<Value> current(bindings.size());
         bool readable = true;
         for (size_t i = 0; i < bindings.size(); ++i)
@@ -462,12 +629,22 @@ bool UpgradeShellIntegration(ShellIntegrationKind kind, const std::wstring& prev
     for (const auto& group : Groups(kind)) {
         const auto old = Bindings(group, previous_exe);
         const auto wanted = Bindings(group, exe);
+        const std::wstring backup_key = std::wstring(kBackupRoot) + group;
+        Value pending_journal;
+        if (!Read(backup_key, L"UpgradeJournal", pending_journal)) { ok = false; continue; }
+        if (pending_journal.exists) {
+            UpgradeJournal journal;
+            if (!DecodeUpgrade(pending_journal, old.size(), journal) ||
+                !ShellCommandTargetsExecutable(Text(journal.original.written[0]), previous_exe) ||
+                !ShellCommandTargetsExecutable(Text(journal.next.written[0]), exe)) { ok = false; continue; }
+            ok = FinishUpgrade(group, journal, false) && ok;
+            continue;
+        }
         std::vector<Value> current(old.size());
         bool readable = true;
         for (size_t i = 0; i < old.size(); ++i)
             readable = Read(old[i].key, old[i].name, current[i]) && readable;
         if (!readable) { ok = false; continue; }
-        const std::wstring backup_key = std::wstring(kBackupRoot) + group;
         Value stored;
         if (!Read(backup_key, L"Snapshot", stored)) { ok = false; continue; }
         Snapshot snapshot;
@@ -498,26 +675,23 @@ bool UpgradeShellIntegration(ShellIntegrationKind kind, const std::wstring& prev
             }
         }
         const auto previous_written = snapshot.written;
+        UpgradeJournal journal;
+        journal.stored = stored;
+        journal.original = snapshot;
+        journal.changes.before = current;
+        journal.changes.written = current;
         for (size_t i = 0; i < wanted.size(); ++i) snapshot.written[i] = wanted[i].desired;
-        if (!Write(backup_key, L"Snapshot", Encode(snapshot))) { ok = false; continue; }
+        journal.next = snapshot;
         for (size_t i = 0; i < wanted.size(); ++i) {
             if (current[i].exists && !SameValue(current[i], previous_written[i]) &&
                 !(restored_by_uninstaller && SameValue(current[i], snapshot.before[i]))) continue;
-            Value checked;
-            if (!Read(wanted[i].key, wanted[i].name, checked) || !SameValue(checked, current[i]) ||
-                !Write(wanted[i].key, wanted[i].name, wanted[i].desired)) {
-                bool rolled_back = true;
-                for (size_t j = i + 1; j-- > 0;) {
-                    if (!Read(wanted[j].key, wanted[j].name, checked)) rolled_back = false;
-                    else if (SameValue(checked, wanted[j].desired))
-                        rolled_back = Write(wanted[j].key, wanted[j].name, current[j]) && rolled_back;
-                }
-                if (rolled_back) Write(backup_key, L"Snapshot", stored);
-                ok = false;
-                break;
-            }
+            journal.changes.written[i] = wanted[i].desired;
         }
-        if (ok) Write(backup_key, L"PendingUpgrade", Value{});
+        if (!WriteDurable(backup_key, L"UpgradeJournal", EncodeUpgrade(journal))) { ok = false; continue; }
+        if (!FinishUpgrade(group, journal, false)) {
+            RollbackUpgrade(group, journal);
+            ok = false;
+        }
     }
     return ok;
 }

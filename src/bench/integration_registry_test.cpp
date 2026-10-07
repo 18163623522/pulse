@@ -5,6 +5,22 @@
 #include <aclapi.h>
 
 namespace {
+#ifdef PULSE_INTEGRATION_TEST
+int writes = 0;
+bool FailEnableAndRollback(const std::wstring&, const std::wstring&) {
+    ++writes;
+    return writes != 4 && writes != 5;
+}
+struct InterruptedUpgrade {};
+bool InterruptUpgrade(const std::wstring&, const std::wstring&) {
+    if (++writes == 3) throw InterruptedUpgrade{};
+    return true;
+}
+bool FailRepairAndRollback(const std::wstring&, const std::wstring&) {
+    ++writes;
+    return writes != 3 && writes != 4;
+}
+#endif
 int failures = 0;
 void Check(bool ok, const char* label) { std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", label); if (!ok) ++failures; }
 struct Value { bool exists = false; DWORD type = REG_NONE; std::vector<BYTE> bytes; bool operator==(const Value&) const = default; };
@@ -205,6 +221,47 @@ int wmain() {
         Check(restored_acl && ApplyShellIntegration(ShellIntegrationKind::Directory,exe,false) && Read(command)==protected_original,"partial restore can be retried without losing original values");
     }
     if (denied_acl) LocalFree(denied_acl); if (descriptor) LocalFree(descriptor); if (protected_key) RegCloseKey(protected_key);
+#ifdef PULSE_INTEGRATION_TEST
+    for (bool retry_upgrade : {false, true}) {
+        Clear(); Set(command, L"", L"original manager.exe %1");
+        const auto original_upgrade = Read(command);
+        Check(ApplyShellIntegration(ShellIntegrationKind::Directory, exe, true), "upgrade interruption fixture owns original command");
+        writes = 0;
+        SetIntegrationWriteHookForTesting(InterruptUpgrade);
+        bool interrupted = false;
+        try { UpgradeShellIntegration(ShellIntegrationKind::Directory, exe, next); }
+        catch (const InterruptedUpgrade&) { interrupted = true; }
+        SetIntegrationWriteHookForTesting(nullptr);
+        Check(interrupted && ReadShellIntegration(ShellIntegrationKind::Directory, exe),
+              "interruption after new snapshot commit retains old command and old ownership journal");
+        const auto& owner = retry_upgrade ? next : exe;
+        const bool recovered = !retry_upgrade || UpgradeShellIntegration(ShellIntegrationKind::Directory, exe, next);
+        Check(recovered && ApplyShellIntegration(ShellIntegrationKind::Directory, owner, false) && Read(command) == original_upgrade,
+              "interrupted upgrade supports direct restore or upgrade retry without losing original association");
+    }
+    Clear(); SetLegacyOrphans(); writes = 0;
+    SetIntegrationWriteHookForTesting(FailRepairAndRollback);
+    const bool repaired_with_failure = RepairLegacyShellIntegrationResidue();
+    SetIntegrationWriteHookForTesting(nullptr);
+    Check(!repaired_with_failure && HasLegacyShellIntegrationResidue(),
+          "partial legacy repair remains discoverable using its exact backup");
+    Check(RepairLegacyShellIntegrationResidue() && !HasLegacyShellIntegrationResidue(),
+          "retry resumes partial legacy repair without requiring original full signature");
+    Clear();
+    Set(command, L"", L"third-party.exe %1");
+    Set(command, L"DelegateExecute", L"third-party-delegate");
+    Set(shell, L"", L"browse");
+    const auto rollback_command = Read(command), rollback_delegate = Read(command, L"DelegateExecute");
+    writes = 0;
+    SetIntegrationWriteHookForTesting(FailEnableAndRollback);
+    const bool enabled_with_failure = ApplyShellIntegration(ShellIntegrationKind::Directory, exe, true);
+    SetIntegrationWriteHookForTesting(nullptr);
+    Check(!enabled_with_failure && HasShellIntegrationOwnership(ShellIntegrationKind::Directory, exe),
+          "enable and compensation failures retain command ownership anchor");
+    Check(ApplyShellIntegration(ShellIntegrationKind::Directory, exe, false) &&
+          Read(command) == rollback_command && Read(command, L"DelegateExecute") == rollback_delegate,
+          "retry after failed enable compensation restores original command and delegate");
+#endif
     RegOverridePredefKey(HKEY_CURRENT_USER,nullptr); RegCloseKey(root);
     const LONG cleanup=RegDeleteTreeW(HKEY_CURRENT_USER,sandbox.c_str());
     Check(cleanup==ERROR_SUCCESS, "isolated registry fixture removed");

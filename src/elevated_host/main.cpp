@@ -1,4 +1,4 @@
-﻿#include "../ipc/elevated_transfer_transport.h"
+#include "../ipc/elevated_transfer_transport.h"
 #include "../ipc/elevated_transfer_messages.h"
 #include "../common/path_utils.h"
 #include "../ops/elevated_delete.h"
@@ -21,11 +21,16 @@ int Run(DWORD parent_id, const Nonce& nonce) {
     const auto parent_image = ProcessImage(parent.Get());
 #ifdef PULSE_ELEVATED_TEST_HOST
     const auto expected = std::filesystem::path(own_image).parent_path() / L"pulse_elevated_session_test.exe";
+    const auto audit_expected = std::filesystem::path(own_image).parent_path() / L"pulse_transfer_audit_test.exe";
 #else
     if (!IsElevated(GetCurrentProcess())) return 3;
     const auto expected = std::filesystem::path(own_image).parent_path() / L"pulse.exe";
 #endif
-    if (!path::EqualInsensitive(parent_image, expected.wstring())) return 3;
+    if (!path::EqualInsensitive(parent_image, expected.wstring())
+#ifdef PULSE_ELEVATED_TEST_HOST
+        && !path::EqualInsensitive(parent_image, audit_expected.wstring())
+#endif
+        ) return 3;
     const auto name = PipeName(parent_id, nonce);
     Handle pipe(CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr));
@@ -80,7 +85,8 @@ int Run(DWORD parent_id, const Nonce& nonce) {
                     auto source = reader.Text(); if (!SafePath(source)) valid = false;
                     request.sources.push_back(std::move(source));
                 }
-                if (!valid || !reader.Done()) break;
+                request.new_name = reader.Text();
+                if (!valid || !SafeTransferName(request.new_name, count, move != 0) || !reader.Done()) break;
                 // This request exposes only Copy/Move. No journal, arbitrary verb,
                 // shell menu, process termination or command execution is accepted.
                 request.is_undo = true;
@@ -173,6 +179,7 @@ int Run(DWORD parent_id, const Nonce& nonce) {
         HANDLE waits[]{changed.Get(), parent.Get()};
         const DWORD waited = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (waited != WAIT_OBJECT_0) break;
+        (void)manager.DrainFinishedTasks();
         const uint64_t request = active_request.load(), task = active_task.load();
         if (!request) continue;
         if (deleting.load()) {

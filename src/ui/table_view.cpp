@@ -194,6 +194,7 @@ void TableView::Clear() {
     spreadsheet_ = false;
     row_offsets_.clear();
     sheet_ = 0;
+    first_visible_sheet_ = 0;
     response_sheet_ = 0;
     sel_valid_ = false;
     drag_ = Drag::None;
@@ -558,10 +559,32 @@ void TableView::Draw(ID2D1DeviceContext* dc, IDWriteFactory2* factory, const D2D
             const bool selected = sel_valid_ && static_cast<int>(c) >= sc0 && static_cast<int>(c) <= sc1;
             if (selected) fill(R(col_left(c), head.top, col_left(c + 1), head.bottom), sel_fill);
             const std::wstring label = hdr ? s.cells[0][c] : ColumnName(c);
+            const float cw = s.col_x[c + 1] - s.col_x[c] - g.pad * 2.0f;
+            auto layout = CellLayout(label, true, false, cw);
+            if (layout) layout->SetMaxHeight(head.bottom - head.top);
+            if (hdr && layout) {
+                for (const auto& match : matches) {
+                    size_t row = 0, col = 0;
+                    uint32_t in_cell = 0;
+                    if (!OffsetToCell(match.start, row, col, in_cell) || row != 0 || col != c) continue;
+                    const uint32_t len = (std::min)(match.length, static_cast<uint32_t>(label.size()) - (std::min)(in_cell, static_cast<uint32_t>(label.size())));
+                    UINT32 count = 0;
+                    layout->HitTestTextRange(in_cell, len, 0, 0, nullptr, 0, &count);
+                    if (!count) continue;
+                    std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
+                    if (FAILED(layout->HitTestTextRange(in_cell, len, 0, 0, metrics.data(), count, &count))) continue;
+                    b->SetColor(match.current ? HexColor(0xF59E0B, 0.85f) : HexColor(0xFACC15, dark ? 0.45f : 0.55f));
+                    for (UINT32 i = 0; i < count; ++i) {
+                        const float left = col_left(c) + g.pad + metrics[i].left;
+                        const float right = (std::min)(left + metrics[i].width, col_left(c + 1) - g.pad);
+                        if (right > left) dc->FillRoundedRectangle(D2D1::RoundedRect(R(left, head.top + 4.0f * k,
+                            right, head.bottom - 4.0f * k), 2.0f * k, 2.0f * k), b);
+                    }
+                }
+            }
             b->SetColor(theme.text);
-            dc->DrawTextW(label.data(), static_cast<UINT32>(label.size()), bold_.Get(),
-                          R(col_left(c) + g.pad, head.top, col_left(c + 1) - g.pad, head.bottom), b,
-                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            if (layout) dc->DrawTextLayout(D2D1::Point2F(col_left(c) + g.pad, head.top), layout.Get(), b,
+                                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
         dc->PopAxisAlignedClip();
         if (hdr) {
@@ -635,32 +658,45 @@ void TableView::Draw(ID2D1DeviceContext* dc, IDWriteFactory2* factory, const D2D
         dc->DrawTextW(L"›", 1, text_.Get(), next_sheet_, b);
         float x = g.tabs.left + 60.0f * k;
         const float limit = (std::max)(x, g.tabs.right - size_w - 28.0f * k);
-        dc->PushAxisAlignedClip(R(x, g.tabs.top, limit, g.tabs.bottom), D2D1_ANTIALIAS_MODE_ALIASED);
-        for (size_t i = sheet_; i < sheets_.size() && x < limit; ++i) {
-            const bool on = i == sheet_;
-            WrlPtr<IDWriteTextLayout> layout;
-            const std::wstring& name = sheets_[i].name;
-            factory->CreateTextLayout(name.data(), static_cast<UINT32>(name.size()), small_.Get(), 400.0f * k, 24.0f * k, &layout);
-            if (!layout) continue;
-            if (on) {
-                DWRITE_TEXT_RANGE all{0, static_cast<UINT32>(name.size())};
-                layout->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, all);
+        // Keep earlier tabs visible when they fit; selection is not a scroll origin.
+        std::vector<WrlPtr<IDWriteTextLayout>> layouts(sheets_.size());
+        std::vector<float> widths(sheets_.size(), 24.0f * k);
+        float selected_extent = 0.0f;
+        for (size_t i = 0; i < sheets_.size(); ++i) {
+            const auto& name = sheets_[i].name;
+            factory->CreateTextLayout(name.data(), static_cast<UINT32>(name.size()), small_.Get(),
+                400.0f * k, 24.0f * k, &layouts[i]);
+            if (layouts[i]) {
+                if (i == sheet_) layouts[i]->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                    DWRITE_TEXT_RANGE{0, static_cast<UINT32>(name.size())});
+                DWRITE_TEXT_METRICS metrics{};
+                layouts[i]->GetMetrics(&metrics);
+                widths[i] = (std::min)(metrics.width, 240.0f * k) + 24.0f * k;
             }
-            DWRITE_TEXT_METRICS m{};
-            layout->GetMetrics(&m);
-            const float w = (std::min)(m.width, 240.0f * k) + 24.0f * k;
+            if (i <= sheet_) selected_extent += widths[i] + 2.0f * k;
+        }
+        first_visible_sheet_ = 0;
+        while (first_visible_sheet_ < sheet_ && selected_extent - 2.0f * k > limit - x)
+            selected_extent -= widths[first_visible_sheet_++] + 2.0f * k;
+        dc->PushAxisAlignedClip(R(x, g.tabs.top, limit, g.tabs.bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+        for (size_t i = first_visible_sheet_; i < sheets_.size() && x < limit; ++i) {
+            const bool on = i == sheet_;
+            auto& layout = layouts[i];
+            const float w = widths[i];
             const D2D1_RECT_F tab = R(x, g.tabs.top + 6.0f * k, x + w, g.tabs.bottom - 5.0f * k);
             tab_rects_.push_back(R(tab.left, tab.top, (std::min)(tab.right, limit), tab.bottom));
-            if (on || static_cast<int>(i - sheet_) == hover_tab_) {
+            if (on || static_cast<int>(i - first_visible_sheet_) == hover_tab_) {
                 b->SetColor(on ? (dark ? D2D1::ColorF(1, 1, 1, 0.09f) : HexColor(0xFFFFFF))
                                : (dark ? D2D1::ColorF(1, 1, 1, 0.05f) : D2D1::ColorF(0, 0, 0, 0.04f)));
                 dc->FillRoundedRectangle(D2D1::RoundedRect(tab, 5.0f * k, 5.0f * k), b);
             }
             b->SetColor(on ? theme.text : WithAlpha(theme.text, 0.7f));
-            layout->SetMaxWidth(w - 24.0f * k);
-            dc->PushAxisAlignedClip(tab, D2D1_ANTIALIAS_MODE_ALIASED);
-            dc->DrawTextLayout(D2D1::Point2F(tab.left + 12.0f * k, (tab.top + tab.bottom) * 0.5f - 12.0f * k), layout.Get(), b);
-            dc->PopAxisAlignedClip();
+            if (layout) {
+                layout->SetMaxWidth(w - 24.0f * k);
+                dc->PushAxisAlignedClip(tab, D2D1_ANTIALIAS_MODE_ALIASED);
+                dc->DrawTextLayout(D2D1::Point2F(tab.left + 12.0f * k, (tab.top + tab.bottom) * 0.5f - 12.0f * k), layout.Get(), b);
+                dc->PopAxisAlignedClip();
+            }
             x += w + 2.0f * k;
         }
         dc->PopAxisAlignedClip();
@@ -871,7 +907,7 @@ bool TableView::MouseDown(float x, float y, bool shift) {
         return true;
     }
     for (size_t i = 0; i < tab_rects_.size(); ++i)
-        if (inside(tab_rects_[i], 0.0f)) { SwitchSheet(sheet_ + i); return true; }
+        if (inside(tab_rects_[i], 0.0f)) { SwitchSheet(first_visible_sheet_ + i); return true; }
     const Geometry g = Measure();
     if (spreadsheet_ && y >= g.tabs.top) return true;
     if (vthumb_.bottom > vthumb_.top && inside(vthumb_, 4.0f * scale_)) {

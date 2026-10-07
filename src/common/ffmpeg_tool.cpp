@@ -78,7 +78,8 @@ bool Process::Start(const std::wstring& exe, const std::wstring& arguments, cons
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
     std::vector<uint8_t> attr_storage(attr_size);
     auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_storage.data());
-    const bool attrs_ok = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) &&
+    const bool attrs_initialized = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) != FALSE;
+    const bool attrs_ok = attrs_initialized &&
         UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
                                   inherited_count * sizeof(HANDLE), nullptr, nullptr);
     STARTUPINFOEXW si{};
@@ -89,7 +90,30 @@ bool Process::Start(const std::wstring& exe, const std::wstring& arguments, cons
     si.StartupInfo.hStdError = err_write;
     si.lpAttributeList = attrs_ok ? attrs : nullptr;
 
+    const auto cleanup = [&] {
+        if (attrs_initialized) DeleteProcThreadAttributeList(attrs);
+        CloseHandle(out_write);
+        if (err_write != null_in) CloseHandle(err_write);
+        CloseHandle(null_in);
+    };
+    const auto failed = [&](DWORD error) {
+        if (out_) { CloseHandle(out_); out_ = nullptr; }
+        if (err_) { CloseHandle(err_); err_ = nullptr; }
+        if (job_) { CloseHandle(job_); job_ = nullptr; }
+        SetLastError(error);
+        return false;
+    };
+    if (!attrs_ok) {
+        const DWORD error = GetLastError();
+        cleanup();
+        return failed(error);
+    }
     job_ = CreateJobObjectW(nullptr, nullptr);
+    if (!job_) {
+        const DWORD error = GetLastError();
+        cleanup();
+        return failed(error);
+    }
     if (job_) {
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
@@ -97,7 +121,11 @@ bool Process::Start(const std::wstring& exe, const std::wstring& arguments, cons
             (options.memory_limit ? JOB_OBJECT_LIMIT_PROCESS_MEMORY : 0);
         limits.BasicLimitInformation.ActiveProcessLimit = 1;
         limits.ProcessMemoryLimit = options.memory_limit;
-        SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+        if (!SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            const DWORD error = GetLastError();
+            cleanup();
+            return failed(error);
+        }
     }
 
     std::wstring command = QuoteArgument(exe) + L" " + arguments;
@@ -109,24 +137,17 @@ bool Process::Start(const std::wstring& exe, const std::wstring& arguments, cons
                                         directory.empty() ? nullptr : directory.c_str(),
                                         &si.StartupInfo, &pi) != FALSE;
     const DWORD error = GetLastError();
-    if (attrs_ok) DeleteProcThreadAttributeList(attrs);
-    CloseHandle(out_write);
-    if (err_write != null_in) CloseHandle(err_write);
-    CloseHandle(null_in);
-    if (!started) {
-        CloseHandle(out_); out_ = nullptr;
-        if (err_) { CloseHandle(err_); err_ = nullptr; }
-        if (job_) { CloseHandle(job_); job_ = nullptr; }
-        SetLastError(error);
-        return false;
-    }
-    if (job_ && !AssignProcessToJobObject(job_, pi.hProcess)) {
-        // Nested-job restrictions on old systems: Terminate still works.
-        CloseHandle(job_);
-        job_ = nullptr;
+    cleanup();
+    if (!started) return failed(error);
+    if (!AssignProcessToJobObject(job_, pi.hProcess) || ResumeThread(pi.hThread) == DWORD(-1)) {
+        const DWORD start_error = GetLastError();
+        TerminateProcess(pi.hProcess, start_error);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return failed(start_error);
     }
     process_ = pi.hProcess;
-    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     return true;
 }
@@ -173,8 +194,14 @@ DWORD Process::ExitCode() const {
 }
 
 uint32_t ParseDurationMs(std::string_view log) {
-    const size_t at = log.find("Duration: ");
-    if (at == std::string_view::npos) return 0;
+    size_t at = 0;
+    while (at < log.size() && !log.substr(at).starts_with("  Duration: ")) {
+        at = log.find('\n', at);
+        if (at == std::string_view::npos) return 0;
+        ++at;
+    }
+    if (at == log.size()) return 0;
+    at += 2;
     unsigned h = 0, m = 0, s = 0, frac = 0;
     char buffer[24]{};
     const std::string_view value = log.substr(at + 10, 16);
@@ -193,17 +220,28 @@ uint32_t ParseDurationMs(std::string_view log) {
 }
 
 namespace {
+std::string_view StreamLine(std::string_view log, std::string_view kind) {
+    for (size_t start = 0; start < log.size();) {
+        const size_t end = log.find('\n', start);
+        const auto line = log.substr(start, end == std::string_view::npos ? log.size() - start : end - start);
+        if (line.starts_with("  Stream #")) {
+            // Metadata and its continuation lines are indented further. Only
+            // accept the type immediately following the stream's identifier.
+            const size_t type = line.find(": ", 10);
+            if (type != std::string_view::npos && line.substr(type + 2).starts_with(std::string(kind) + ": ") &&
+                line.find("(attached pic)") == std::string_view::npos)
+                return line.substr(type + 2);
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
 // Lines of real video streams (cover art excluded).
 template <typename F>
 bool ForEachVideoLine(std::string_view log, F&& visit) {
-    size_t at = log.find("Video: ");
-    while (at != std::string_view::npos) {
-        const size_t end = log.find('\n', at);
-        const std::string_view line = log.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
-        if (line.find("(attached pic)") == std::string_view::npos && visit(line)) return true;
-        at = log.find("Video: ", at + 7);
-    }
-    return false;
+    const auto line = StreamLine(log, "Video");
+    return !line.empty() && visit(line);
 }
 } // namespace
 
@@ -260,14 +298,7 @@ void ParseSampleAspect(std::string_view log, UINT& num, UINT& den) {
 }
 
 bool HasStream(std::string_view log, std::string_view kind) {
-    if (kind == "Video") return ForEachVideoLine(log, [](std::string_view) { return true; });
-    const std::string needle = std::string(kind) + ": ";
-    for (size_t at = log.find("Stream #"); at != std::string_view::npos; at = log.find("Stream #", at + 8)) {
-        const size_t end = log.find('\n', at);
-        if (log.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at).find(needle) !=
-            std::string_view::npos) return true;
-    }
-    return false;
+    return !StreamLine(log, kind).empty();
 }
 
 } // namespace pulse::ffmpeg

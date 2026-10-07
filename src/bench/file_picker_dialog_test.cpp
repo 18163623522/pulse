@@ -70,7 +70,9 @@ using Driver = std::function<bool(HWND, const std::atomic<bool>&)>;
 Outcome Run(const FolderPickerSpec& spec, const Driver& drive, bool legacy = false) {
     Outcome outcome;
     std::atomic<bool> done = false;
+    const HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
     std::thread driver([&] {
+        if (!SetThreadDesktop(desktop)) return;
         HWND hwnd = nullptr;
         if (Until([&] {
                 hwnd = OwnPicker();
@@ -126,10 +128,18 @@ bool HasPaths(const Outcome& outcome, const std::vector<std::wstring>& expected)
 }
 } // namespace
 
-int wmain(int argc, wchar_t** argv) {
-    if (argc != 2 || std::wstring_view(argv[1]) != L"--interaction") {
-        std::puts("Use --interaction to run process-owned file picker UI regression cases.");
+int RunFilePickerDialogTest(int argc, wchar_t** argv) {
+    const bool input_surfaces = argc == 2 && std::wstring_view(argv[1]) == L"--input-surfaces";
+    if (!input_surfaces && (argc != 2 || std::wstring_view(argv[1]) != L"--interaction")) {
+        std::puts("Use --interaction or --input-surfaces for scoped file picker regression cases.");
         return 2;
+    }
+    // Surface regression runs without activating any window on the user's desktop.
+    if (input_surfaces) {
+        const auto name = L"PulsePickerInputs_" + std::to_wstring(GetCurrentProcessId());
+        HDESK desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+        if (!desktop || !SetThreadDesktop(desktop)) return 3;
+        // Windows releases this process-owned desktop when the test exits.
     }
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 3;
     pulse::compat::EnableDpiAwareness();
@@ -142,6 +152,41 @@ int wmain(int argc, wchar_t** argv) {
     };
     try {
         Fixture fixture;
+        if (input_surfaces) {
+            FolderPickerSpec spec;
+            spec.mode = PickerMode::File;
+            spec.initial_path = fixture.root.wstring();
+            const auto outcome = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
+                wchar_t snapshot[32768]{};
+                if (GetEnvironmentVariableW(L"PULSE_PICKER_TEST_SNAPSHOT", snapshot, 32768)) {
+                    SetPropW(hwnd, L"Pulse.PickerTestSnapshot", snapshot);
+                    Send(hwnd, WM_PAINT);
+                    check("embedded picker snapshot is saved", std::filesystem::exists(snapshot));
+                }
+                bool passed = true;
+                for (const int id : {kPathId, kFilenameId, kSearchId}) {
+                    HWND edit = GetDlgItem(hwnd, id);
+                    DWORD flags = 0;
+                    BYTE alpha = 0;
+                    const bool redirected = edit && GetLayeredWindowAttributes(edit, nullptr, &alpha, &flags) &&
+                        (flags & LWA_ALPHA) && alpha == 255;
+                    check("picker input inherits redirected surface from shared control", redirected);
+                    const bool typed = edit && SetText(edit, L"Typed 中文") && Text(edit) == L"Typed 中文";
+                    check("picker input retains Unicode editing", typed);
+                    passed = passed && redirected && typed;
+                }
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return passed;
+            });
+            check("picker input check closes without selecting or changing files", outcome.driven && !outcome.picked);
+            const auto picked = Run(spec, [&](HWND hwnd, const std::atomic<bool>&) {
+                HWND filename = GetDlgItem(hwnd, kFilenameId);
+                return filename && SetText(filename, L"alpha.txt") && Send(filename, WM_KEYDOWN, VK_RETURN);
+            });
+            check("embedded picker accepts a typed filename", HasPaths(picked, {(fixture.root / L"alpha.txt").wstring()}));
+            CoUninitialize();
+            return failures ? 1 : 0;
+        }
         const auto path = [&](const wchar_t* name) { return (fixture.root / name).wstring(); };
         FolderPickerSpec spec;
         spec.mode = PickerMode::File;

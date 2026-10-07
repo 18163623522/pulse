@@ -168,6 +168,8 @@ struct PaneViewModel {
     std::unordered_map<int, ChangeBadge> change_badges;
     std::unordered_map<int, std::wstring> folder_size_labels;
     std::unordered_set<int> folder_size_actions;
+    std::unordered_set<int> folder_size_muted;
+    std::unordered_set<int> folder_size_running;
     ChangeBadge title_change_badge;
     bool is_changes = false;
     std::wstring change_empty_text, change_status_text;
@@ -421,6 +423,7 @@ struct TrayDeckView {
     float open = 0.0f;               // 0..1 drag-over highlight
     float spread = 0.0f;             // 0..1 peeking layers fan out (stack hovered)
     float thumb_dip = 48.0f;         // thumbnail edge (settings: staging tray icon size)
+    bool hidden = false;             // host has no staging tray (file picker)
     int hovered = -1;                // live display index under the cursor (0 = top)
     std::vector<TrayDestView> dests; // recent drop folders, newest first (max 3)
     int stale_count = 0;             // staged items moved/deleted outside Pulse
@@ -987,6 +990,7 @@ class MainRenderer {
     friend struct PaneHeaderIconTest;
     friend struct FolderSizesUiTest;
     friend struct ColumnResizeUiTest;
+    friend struct UiModuleAuditTest;
 public:
     MainRenderer();
 
@@ -1008,9 +1012,15 @@ public:
     // Vertical tabs: the address row lives in the title bar, so the toolbar
     // keeps only its command row.
     void SetVerticalTabs(bool on) {
-        vertical_tabs_ = on;
-        toolbar_height_ = (on ? 44.0f : 88.0f) * scale_;
+        vertical_tabs_ = on && !embedded_;
+        toolbar_height_ = (vertical_tabs_ || embedded_ ? 44.0f : 88.0f) * scale_;
     }
+    // Hosted inside another window (the file picker): no title bar, tabs,
+    // command row, status bar or details panel; only the address row, the
+    // sidebar and the pane. `top_dip` is the host's own strip above the
+    // address row and `bottom_dip` its footer below the panes.
+    void SetEmbedded(float top_dip, float bottom_dip);
+    bool Embedded() const { return embedded_; }
     bool VerticalTabs() const { return vertical_tabs_; }
     // Collapse/expand; `animate` eases the width (skipped when the system
     // turns animations off). Re-setting the current state is a no-op.
@@ -1490,6 +1500,9 @@ private:
     ThumbnailCache details_cache_{48ull * 1024ull * 1024ull, 24};
     PreviewHandlerHost preview_handler_;
     HWND notify_hwnd_ = nullptr;
+    bool embedded_ = false;
+    float embedded_top_dip_ = 0.0f;
+    float embedded_bottom_dip_ = 0.0f;
     float scale_ = 1.0f;
     float title_bar_height_ = kTitleBarHeight;
     float toolbar_height_ = 88.0f;

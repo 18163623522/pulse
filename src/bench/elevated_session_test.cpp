@@ -1,4 +1,4 @@
-﻿#include "../ops/elevated_transfer_client.h"
+#include "../ops/elevated_transfer_client.h"
 #include "../common/path_utils.h"
 #include <filesystem>
 #include <fstream>
@@ -8,7 +8,25 @@ namespace {
 std::string Read(const std::filesystem::path& path) { std::ifstream in(path); return {std::istreambuf_iterator<char>(in), {}}; }
 void Write(const std::filesystem::path& path, const char* text) { std::ofstream out(path); out << text; }
 }
+int RunReviewTransferTests();
+int RunReviewTemplateTests();
+int RunReviewRoutingTests();
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring(argv[1]) == L"--review-routing") return RunReviewRoutingTests();
+    if (argc == 2 && std::wstring(argv[1]) == L"--review-template") return RunReviewTemplateTests();
+    if (argc >= 3 && std::wstring(argv[1]) == L"--template-child") {
+        // Isolated argv recorder only: never open the selected path or launch a helper.
+        std::ofstream output(std::filesystem::path(argv[2]), std::ios::binary);
+        const uint32_t count = static_cast<uint32_t>(argc - 3);
+        output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        for (int i = 3; i < argc; ++i) {
+            const std::wstring value(argv[i]); const uint32_t size = static_cast<uint32_t>(value.size());
+            output.write(reinterpret_cast<const char*>(&size), sizeof(size));
+            output.write(reinterpret_cast<const char*>(value.data()), size * sizeof(wchar_t));
+        }
+        return output ? 0 : 2;
+    }
+    if (argc == 2 && std::wstring(argv[1]) == L"--review-transfer") return RunReviewTransferTests();
     if (argc == 3 && std::wstring(argv[1]) == L"--orphan-child") {
         const std::filesystem::path fixture(argv[2]);
         const auto source = fixture / L"orphan_source", target = fixture / L"orphan_target";

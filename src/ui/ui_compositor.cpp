@@ -220,7 +220,7 @@ bool Compositor::PresentLumaEdit(HWND hwnd, IDWriteTextFormat* format,
                                  const D2D1_COLOR_F& foreground,
                                  const D2D1_COLOR_F& background) {
     if (!hwnd) return false;
-#if defined(PULSE_TEST_LUMATEXT_PRESENT_FAILURE)
+#if defined(PULSE_TEST_LUMATEXT_PRESENT_FAILURE) || defined(PULSE_WITH_SELFTEST)
     if (GetEnvironmentVariableW(L"PULSE_TEST_LUMATEXT_PRESENT_FAILURE", nullptr, 0)) return false;
 #endif
     // LWA_ALPHA children use Windows' redirected surface. Mixing that mode
@@ -244,6 +244,10 @@ LRESULT Compositor::CallLumaEditMouse(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
 bool Compositor::LumaTextAvailable() const noexcept {
     return lumaText_ && lumaText_->Enabled();
+}
+
+void Compositor::SynchronizeEditSelection(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (lumaText_) lumaText_->SynchronizeEditSelection(hwnd, msg, wParam, lParam);
 }
 
 bool Compositor::LumaTextEnabled() const noexcept {

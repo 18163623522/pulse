@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <windows.h>
 #include <atomic>
 #include <functional>
@@ -21,9 +21,10 @@ struct ShellTransferResult {
 using ShellTransferProgress = std::function<void(const std::wstring&, float)>;
 
 // Read-only, conservative probes. False does not guarantee descendant access.
-bool TargetNeedsElevation(const std::wstring& destination);
+bool TargetNeedsElevation(const std::wstring& destination,
+                          DWORD required_access = FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY);
 bool NeedsShellTransfer(const std::vector<std::wstring>& sources,
-                        const std::wstring& destination, bool move);
+                        const std::wstring& destination, bool move, const std::wstring& target_name = {});
 // Must run on an initialized STA worker, never on the UI thread. Shell owns
 // elevation/conflict UI; cancellation is observed at Shell progress callbacks.
 ShellTransferResult TransferWithShell(const std::vector<std::wstring>& sources,

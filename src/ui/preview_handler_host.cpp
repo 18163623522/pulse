@@ -791,6 +791,22 @@ void PreviewHandlerHost::Sync(HWND owner, const D2D1_RECT_F& bounds, const std::
     Publish(true, owner, target, path, identity, attrs, immediate);
 }
 
+uint64_t PreviewHandlerHost::NextWatchdogDeadline() const {
+    const auto worker = worker_;
+    if (!worker) return 0;
+    std::lock_guard<std::mutex> lock(worker->mutex);
+    const bool superseded = !last_enabled_ || worker->working_identity != last_identity_;
+    const uint64_t budget = superseded ? CommandBudgetMs() : SlowOpenBudgetMs();
+    uint64_t next = 0;
+    if (worker->opens_started.load() > worker->opens_finished.load())
+        next = worker->open_started_tick.load() + budget;
+    if (worker->applied_version.load() != worker->command_version) {
+        const auto command = worker->command_tick + budget;
+        next = next ? (std::min)(next, command) : command;
+    }
+    return next;
+}
+
 void PreviewHandlerHost::ReapRetired() {
     for (auto it = retired_.begin(); it != retired_.end();) {
         const HANDLE thread = (*it)->thread;
@@ -798,6 +814,40 @@ void PreviewHandlerHost::ReapRetired() {
         else ++it;
     }
 }
+
+uint64_t PreviewHandlerHost::NextDeadline() const {
+    const auto worker = worker_;
+    if (!worker) return 0;
+    std::lock_guard<std::mutex> lock(worker->mutex);
+    const auto budget = !last_enabled_ || worker->working_identity != last_identity_
+        ? CommandBudgetMs() : SlowOpenBudgetMs();
+    uint64_t deadline = 0;
+    if (worker->opens_started.load(std::memory_order_acquire) >
+        worker->opens_finished.load(std::memory_order_acquire))
+        deadline = worker->open_started_tick.load(std::memory_order_acquire) + budget;
+    if (worker->applied_version.load(std::memory_order_acquire) != worker->command_version) {
+        const auto command = worker->command_tick + budget;
+        if (!deadline || command < deadline) deadline = command;
+    }
+    // The worker may have accepted its delayed open but not yet entered COM.
+    // Keep one wake scheduled across that gap; completed opens report Shown/Failed.
+    if (!deadline && worker->state.load(std::memory_order_acquire) == State::Loading)
+        deadline = GetTickCount64() + CommandBudgetMs();
+    return deadline;
+}
+
+#ifdef PULSE_WITH_SELFTEST
+void PreviewHandlerHost::PrimeStalledOpenForTest() {
+    Reset();
+    worker_ = std::make_shared<WorkerState>();
+    worker_->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    worker_->opens_started = 1;
+    worker_->open_started_tick = GetTickCount64() - CommandBudgetMs() + 150;
+    worker_->provider_path = L"private.pulse-deadline-test";
+    worker_->state = State::Loading;
+    last_enabled_ = false;
+}
+#endif
 
 bool PreviewHandlerHost::RetireStalledApartment(const std::wstring& requested_identity,
                                                bool requested) {

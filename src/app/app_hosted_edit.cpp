@@ -113,13 +113,12 @@ void PlaceHostedEdit(HWND hwnd, HWND owner, const D2D1_RECT_F& cell, float scale
 
 HWND CreateHostedEdit(AppState& s, SUBCLASSPROC proc) {
     EnsureEditVisuals(s);
-    HWND hwnd = ui::CreateChildEdit(s.hwnd);
+    HWND hwnd = ui::CreateRedirectedChildEdit(s.hwnd);
     if (!hwnd) return nullptr;
     SetWindowTheme(hwnd, L"", L"");
     // All hosted editors use redirected surfaces: uploaded
     // layered bitmaps can disappear under the main composition surface.
     // Their procedures suppress native drawing and present LumaText to the DC.
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     SendMessageW(hwnd, WM_SETFONT, (WPARAM)s.editFont, TRUE);
     SetWindowSubclass(hwnd, proc, 1, reinterpret_cast<DWORD_PTR>(&s));
     return hwnd;
@@ -451,6 +450,7 @@ void HideRenameOverlay(AppState& s, bool commit) {
                 req.new_name = buf;
                 tab->pending_selected_name = buf;
                 tab->pending_selected_names = { buf };
+                tab->pending_selection_revision = tab->selection_revision;
                 // The renamed row keeps its place even if the refresh beats
                 // the watcher event (#13).
                 tab->held_renames.push_back({tab->EntryAt(index).name, buf});
@@ -463,6 +463,11 @@ void HideRenameOverlay(AppState& s, bool commit) {
     if (s.hwnd) SetFocus(s.hwnd);
     s.renameIgnoreKillFocus = false;
     InvalidateRect(s.hwnd, nullptr, FALSE);
+    // Start no editor here: a fresh snapshot will choose the next successful
+    // creation after this editor and its kill-focus handling are fully closed.
+    if (auto* tab = ActiveTab(s); tab && app::PendingCreateRenameIntent(
+        tab->create_rename_intents, tab->current_path, tab->view_generation))
+        RefreshActiveTab(s, RefreshReason::OperationCompleted);
 }
 
 bool TagRenameCell(AppState& s, const app::TagId& tag_id, D2D1_RECT_F& cell) {

@@ -67,6 +67,7 @@ public:
     std::wstring SelectionText() const;
 
 private:
+    friend struct TableViewTestAccess;
     struct Sheet {
         std::wstring name, detail;
         bool truncated = false, header = false;
@@ -108,6 +109,7 @@ private:
     std::vector<Sheet> sheets_;
     std::vector<uint32_t> row_offsets_;  // plain_ offset of each cells[] row
     size_t sheet_ = 0;
+    size_t first_visible_sheet_ = 0;
     size_t response_sheet_ = 0;
     size_t total_sheets_ = 0, loaded_sheets_ = 0;
     bool spreadsheet_ = false;

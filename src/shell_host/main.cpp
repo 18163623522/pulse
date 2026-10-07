@@ -15,6 +15,7 @@
 #include "packaged_ctx_handlers.h"
 #include "../common/current_user_security.h"
 #include "../common/path_utils.h"
+#include "../common/recycle_index.h"
 #include "../common/crash_reporter.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -361,45 +362,32 @@ std::wstring CanonPath(std::wstring p) {
 }
 
 bool ReadRecycleOriginal(const std::wstring& i_path, std::wstring& original) {
-    HANDLE h = CreateFileW(i_path.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER sz{};
-    if (!GetFileSizeEx(h, &sz) || sz.QuadPart < 28 || sz.QuadPart > 64 * 1024) {
-        CloseHandle(h);
+    original.clear();
+    pulse::recycle::IndexRecord record;
+    if (!pulse::recycle::ReadIndex(i_path, record)) return false;
+    original = std::move(record.original_path);
+    return true;
+}
+
+// The production caller validates the current user's recycle-root identity
+// before reaching this step. Tests use only their own isolated $I/$R fixtures.
+bool RestoreSelectedRecyclePayload(const std::wstring& payload, std::wstring& error) {
+    std::wstring index = payload;
+    const size_t slash = index.find_last_of(L"\\/");
+    if (slash == std::wstring::npos || slash + 2 >= index.size()) return false;
+    index[slash + 2] = L'I';
+    std::wstring original;
+    if (!ReadRecycleOriginal(index, original)) {
+        error = L"无法读取所选回收站条目";
         return false;
     }
-    std::vector<BYTE> buf(static_cast<size_t>(sz.QuadPart));
-    DWORD read = 0;
-    const BOOL ok = ReadFile(h, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
-    CloseHandle(h);
-    if (!ok || read < 28) return false;
-
-    uint64_t ver = 0;
-    memcpy(&ver, buf.data(), 8);
-    if (ver == 2) {
-        uint32_t nchars = 0;
-        memcpy(&nchars, buf.data() + 24, 4);
-        if (nchars == 0 || nchars > 32768) return false;
-        const size_t need = 28ull + static_cast<size_t>(nchars) * 2ull;
-        size_t bytes = static_cast<size_t>(nchars) * 2ull;
-        if (need > buf.size()) {
-            if (buf.size() <= 28) return false;
-            bytes = buf.size() - 28;
-            nchars = static_cast<uint32_t>(bytes / 2);
-        }
-        original.assign(reinterpret_cast<const wchar_t*>(buf.data() + 28), nchars);
-        while (!original.empty() && original.back() == L'\0') original.pop_back();
-        return !original.empty();
+    const std::wstring dest = ToParsingPath(original);
+    if (!MoveFileExW(payload.c_str(), dest.c_str(), 0)) {
+        error = L"还原失败（目标可能已存在）";
+        return false;
     }
-    if (ver == 1) {
-        const size_t maxn = (std::min)((buf.size() - 24) / 2, static_cast<size_t>(260));
-        const wchar_t* p = reinterpret_cast<const wchar_t*>(buf.data() + 24);
-        original.assign(p, wcsnlen(p, maxn));
-        return !original.empty();
-    }
-    return false;
+    DeleteFileW(index.c_str());
+    return true;
 }
 
 bool RestoreOneFromRecycle(const std::wstring& payload, std::wstring& error) {
@@ -436,22 +424,7 @@ bool RestoreOneFromRecycle(const std::wstring& payload, std::wstring& error) {
         error = L"无法唯一确定回收站版本，请在回收站中选择具体条目";
         return false;
     }
-    std::wstring index = payload;
-    const size_t slash = index.find_last_of(L"\\/");
-    if (slash == std::wstring::npos || slash + 2 >= index.size()) return false;
-    index[slash + 2] = L'I';
-    std::wstring original;
-    if (!ReadRecycleOriginal(index, original)) {
-        error = L"无法读取所选回收站条目";
-        return false;
-    }
-    const std::wstring dest = ToParsingPath(original);
-    if (!MoveFileExW(payload.c_str(), dest.c_str(), 0)) {
-        error = L"还原失败（目标可能已存在）";
-        return false;
-    }
-    DeleteFileW(index.c_str());
-    return true;
+    return RestoreSelectedRecyclePayload(payload, error);
 }
 
 HRESULT ExecuteRestore(const std::vector<std::wstring>& paths, std::wstring& error) {
@@ -968,6 +941,16 @@ bool SessionCloseRequested(uint32_t sid) {
 }
 
 struct HandlerWorker {
+    HandlerWorker() = default;
+    HandlerWorker(const HandlerWorker&) = delete;
+    HandlerWorker& operator=(const HandlerWorker&) = delete;
+    // Owners either join first or deliberately release a stuck worker. Never
+    // destroy a worker while its thread can still access its data/events.
+    ~HandlerWorker() {
+        if (done_event) CloseHandle(done_event);
+        if (exit_event) CloseHandle(exit_event);
+        if (thread) CloseHandle(thread);
+    }
     pulse::shell::CtxHandlerDesc desc;
     std::vector<std::wstring> paths;
     bool background = false;
@@ -1053,6 +1036,22 @@ DWORD WINAPI HandlerWorkerThread(LPVOID param) {
     }
 }
 
+// Kept in one production entry point so acquisition failures can be exercised
+// without registering or invoking any installed context-menu handler.
+struct HandlerWorkerApi {
+    decltype(&CreateEventW) create_event = ::CreateEventW;
+    decltype(&CreateThread) create_thread = ::CreateThread;
+};
+
+bool StartHandlerWorker(HandlerWorker& worker, const HandlerWorkerApi& api = {}) {
+    worker.done_event = api.create_event(nullptr, TRUE, FALSE, nullptr);
+    if (!worker.done_event) return false;
+    worker.exit_event = api.create_event(nullptr, TRUE, FALSE, nullptr);
+    if (!worker.exit_event) return false;
+    worker.thread = api.create_thread(nullptr, 0, HandlerWorkerThread, &worker, 0, nullptr);
+    return worker.thread != nullptr;
+}
+
 // A handler still inside QueryContextMenu gets this long after the session
 // ends. A thread cannot be stopped safely, so then it is given up on: its
 // worker leaks with it, and the host recycles itself once idle (#65).
@@ -1094,7 +1093,16 @@ void JoinHandlerWorkers(std::vector<std::unique_ptr<HandlerWorker>>& workers) {
     workers.clear();
 }
 
-DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
+// The coordinator can be tested with one controlled worker, without loading
+// installed providers or writing the user's host diagnostic log.
+struct CtxSessionApi {
+    decltype(&pulse::shell::EnumerateCtxHandlers) enumerate = pulse::shell::EnumerateCtxHandlers;
+    decltype(&BuildCtxMenu) fallback = BuildCtxMenu;
+    decltype(&HostLog) log = HostLog;
+    HandlerWorkerApi worker;
+};
+
+DWORD CtxSessionThreadImpl(LPVOID param, const CtxSessionApi& api = {}) {
     std::unique_ptr<CtxSessionData> data(static_cast<CtxSessionData*>(param));
     const uint32_t sid = data->session_id;
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
@@ -1146,7 +1154,7 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
             pending_invoke.reset(reinterpret_cast<CtxInvokeMsg*>(m.lParam));
     };
 
-    auto handlers = pulse::shell::EnumerateCtxHandlers(
+    auto handlers = api.enumerate(
         data->background, data->paths.front(), data->disabled_clsids);
     if (TestStuckHandlerFor(data->paths.front()) &&
         std::find(data->disabled_clsids.begin(), data->disabled_clsids.end(),
@@ -1158,6 +1166,8 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
     if (handlers.size() > MAXIMUM_WAIT_OBJECTS)
         handlers.resize(MAXIMUM_WAIT_OBJECTS);
 
+    // Ownership transfer after starting a thread must not allocate/throw.
+    workers.reserve(handlers.size());
     UINT next_id = kCtxIdFirst;
     for (const auto& handler : handlers) {
         if (next_id + kIdsPerHandler > kCtxIdLast) break;
@@ -1169,14 +1179,8 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
         worker->id_first = next_id;
         worker->id_last = next_id + kIdsPerHandler - 1;
         worker->qcm_flags = qcm_flags;
-        worker->done_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        worker->exit_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         next_id += kIdsPerHandler;
-        worker->thread = CreateThread(nullptr, 0, HandlerWorkerThread, worker.get(), 0, nullptr);
-        if (!worker->thread || !worker->done_event || !worker->exit_event) {
-            if (worker->done_event) SetEvent(worker->done_event);
-            continue;
-        }
+        if (!StartHandlerWorker(*worker, api.worker)) continue;
         workers.push_back(std::move(worker));
     }
 
@@ -1251,19 +1255,19 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
         pump_session_messages();
         items = collect_items();
     } else {
-        BuildCtxMenu(*data, &fallback_menu, &fallback_hmenu, items);
+        api.fallback(*data, &fallback_menu, &fallback_hmenu, items);
     }
 
     const uint32_t elapsed = static_cast<uint32_t>(GetTickCount64() - started);
     wchar_t timing[160];
     swprintf_s(timing, L"QueryContextMenu %ums items=%zu handlers=%zu background=%d",
                elapsed, items.size(), workers.size(), data->background ? 1 : 0);
-    HostLog(timing);
+    api.log(timing);
     if (elapsed >= 500) {
         wchar_t slow[192];
         swprintf_s(slow, L"slow handler %ums path=%ls", elapsed,
                    data->paths.empty() ? L"" : data->paths.front().c_str());
-        HostLog(slow);
+        api.log(slow);
     }
     SendCtxItems(sid, items, 0, collect_slow());
 
@@ -1300,7 +1304,10 @@ DWORD WINAPI CtxSessionThreadImpl(LPVOID param) {
                      L"context menu invoke failed");
     };
 
-    bool done = workers.empty() && fallback_menu == nullptr;
+    // The query pump may already have consumed WM_CTX_CLOSE. Its durable state
+    // must survive this phase transition, otherwise no message remains to wake
+    // the 120-second wait below. Preserve an already accepted pending invoke.
+    bool done = SessionCloseRequested(sid) || (workers.empty() && fallback_menu == nullptr);
     if (pending_invoke) {
         dispatch_invoke(std::move(pending_invoke));
         done = true;

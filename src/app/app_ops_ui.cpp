@@ -53,11 +53,12 @@ bool ErrorHas(const std::wstring& error, const wchar_t* simplified) {
 }
 } // namespace
 
-bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request) {
+bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request, uint64_t* task_id) {
     // Copy/move conflict discovery is part of the transfer worker's recursive
     // scan. The UI only consumes immutable conflict snapshots.
-    s.ops.Submit(std::move(request));
-    return true;
+    const auto id = s.ops.Submit(std::move(request));
+    if (task_id) *task_id = id;
+    return id != 0;
 }
 
 // Tell the user that staged items which vanished were left out.
@@ -105,20 +106,27 @@ void ReleaseTrayBatch(AppState& s, size_t idx) {
     ops::OpRequest req;
     req.type = b.move_intent ? ops::OpType::Move : ops::OpType::Copy;
     req.dest_dir = tab->current_path;
+    std::vector<uint64_t> item_ids;
     size_t skipped = 0;
     for (const auto& it : b.items) {
-        if (it.exists) req.sources.push_back(it.path);
+        if (s.tray.IsInFlight(it.path)) continue;
+        if (it.exists) {
+            if (std::none_of(req.sources.begin(), req.sources.end(), [&](const auto& source) {
+                return _wcsicmp(source.c_str(), it.path.c_str()) == 0;
+            })) req.sources.push_back(it.path);
+            item_ids.push_back(it.id);
+        }
         else ++skipped;
     }
     NotifyTraySkipped(s, skipped);
     if (req.sources.empty()) return;
-    const std::vector<std::wstring> moved = b.move_intent ? req.sources : std::vector<std::wstring>{};
-    if (!SubmitWithConflictResolution(s, std::move(req))) return;
-    TrackTrayCutClipboard(s, moved);
+    const bool move = b.move_intent;
+    const auto moved = move ? req.sources : std::vector<std::wstring>{};
+    const auto task = s.ops.Submit(std::move(req));
+    if (!task) return;
+    if (move) TrackTrayCutClipboard(s, moved);
+    s.tray.MarkInFlight(task, item_ids, move);
     RememberTrayDest(s, tab->current_path);
-    // Move batches are consumed by release; copy batches stay staged so the
-    // same set can be dropped into several folders (like a clipboard copy).
-    if (b.move_intent) s.tray.RemoveBatch(idx);
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
@@ -158,20 +166,27 @@ void SendTrayToDest(AppState& s, const std::wstring& dir, bool move) {
     ops::OpRequest req;
     req.type = move ? ops::OpType::Move : ops::OpType::Copy;
     req.dest_dir = fs::NormalizePath(dir);
+    std::vector<uint64_t> item_ids;
     size_t skipped = 0;
     for (const auto& batch : s.tray.batches())
-        for (const auto& item : batch.items)
-            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES)
-                req.sources.push_back(item.path);
-            else
+        for (const auto& item : batch.items) {
+            if (s.tray.IsInFlight(item.path)) continue;
+            if (GetFileAttributesW(item.path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                if (std::none_of(req.sources.begin(), req.sources.end(), [&](const auto& source) {
+                    return _wcsicmp(source.c_str(), item.path.c_str()) == 0;
+                })) req.sources.push_back(item.path);
+                item_ids.push_back(item.id);
+            } else
                 ++skipped;
+        }
     NotifyTraySkipped(s, skipped);
     if (req.sources.empty()) return;
-    const std::vector<std::wstring> moved = move ? req.sources : std::vector<std::wstring>{};
-    if (!SubmitWithConflictResolution(s, std::move(req))) return;
-    TrackTrayCutClipboard(s, moved);
+    const auto moved = move ? req.sources : std::vector<std::wstring>{};
+    const auto task = s.ops.Submit(std::move(req));
+    if (!task) return;
+    if (move) TrackTrayCutClipboard(s, moved);
+    s.tray.MarkInFlight(task, item_ids, move);
     RememberTrayDest(s, dir);
-    if (move) s.tray.Clear(); // moved items leave their old paths behind
     InvalidateRect(s.hwnd, nullptr, FALSE);
 }
 
@@ -471,9 +486,6 @@ void UpdateOperationWindow(AppState& s, bool allow_conflict_dialog) {
             if (status.task_id == 0 || status.task_id == s.operationDismissedTaskId)
                 return;
             s.operationDismissedTaskId = status.task_id;
-            if (status.type == ops::OpType::CreateFolder ||
-                status.type == ops::OpType::CreateTextFile)
-                s.pendingRenameName.clear();
             const bool folder = status.type == ops::OpType::CreateFolder;
             const bool file = status.type == ops::OpType::CreateTextFile;
             const std::wstring title = l10n::Get(folder ? l10n::StringId::CannotCreateFolder

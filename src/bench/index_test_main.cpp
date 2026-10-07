@@ -11,6 +11,14 @@
 #include <iostream>
 #include <mutex>
 
+namespace pulse::index {
+struct NetworkIndexTestAccess {
+    static bool ReadConfig(NetworkIndex& index, const std::wstring& path, std::vector<std::wstring>& roots) {
+        return index.ReadConfig(path, roots);
+    }
+};
+}
+
 using namespace pulse::index;
 
 namespace {
@@ -258,7 +266,45 @@ void RunLiveNetworkTests() {
     std::filesystem::remove_all(dir, ec);
 }
 
+int RunNetworkConfigAudit() {
+    const auto root = std::filesystem::absolute(std::filesystem::path("bench_data") /
+        ("network-config-audit-" + std::to_string(GetCurrentProcessId())));
+    std::filesystem::create_directories(root);
+    const auto path = root / "network-index.json";
+    NetworkIndex index;
+    std::vector<std::wstring> roots;
+    Check(NetworkIndexTestAccess::ReadConfig(index, path.wstring(), roots) && roots.empty(), L"missing network configuration is empty");
+    for (const std::string json : {std::string("{\"roots\":[]}"), std::string("{\"roots\":["),
+            std::string("{\"roots\":42}"), std::string("{\"roots\":[1]}"),
+            std::string("{\"roots\":[]} trailing"), std::string("\xff")}) {
+        std::ofstream(path, std::ios::binary | std::ios::trunc) << json;
+        const bool valid = json == "{\"roots\":[]}";
+        Check(NetworkIndexTestAccess::ReadConfig(index, path.wstring(), roots) == valid,
+            L"production config loader distinguishes malformed input from empty roots");
+        if (!valid) {
+            std::wstring error;
+            Check(!index.ConfigError().empty(), L"startup retains explicit configuration error");
+            Check(!index.AddRoot(L"\\\\fixture-server\\share", &error) && !error.empty(),
+                L"failed load prevents adding a root");
+            Check(!index.RemoveRoot(L"\\\\fixture-server\\share", &error), L"failed load prevents root removal");
+            std::ifstream saved(path, std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+            Check(bytes == json, L"failed mutation preserves original configuration bytes");
+        }
+    }
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "{\"roots\":[]}";
+    HANDLE locked = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    Check(locked != INVALID_HANDLE_VALUE && !NetworkIndexTestAccess::ReadConfig(index, path.wstring(), roots),
+        L"sharing-denied configuration read remains an error");
+    if (locked != INVALID_HANDLE_VALUE) CloseHandle(locked);
+    Check(NetworkIndexTestAccess::ReadConfig(index, path.wstring(), roots) && index.ConfigError().empty(),
+        L"repaired config reload clears failure state");
+    std::filesystem::remove_all(root);
+    return failures ? 1 : 0;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--network-config-only") return RunNetworkConfigAudit();
     RunLiveNetworkTests();
     Check(NormalizeVolumeId(L"  \\\\?\\Volume{abc}\\  ") == L"\\\\?\\VOLUME{ABC}\\",
           L"volume id normalization");

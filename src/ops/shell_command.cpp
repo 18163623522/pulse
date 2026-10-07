@@ -100,10 +100,10 @@ TerminalLaunchResult LaunchTerminal(const std::wstring& executable, const std::w
     return {ERROR_SUCCESS, error, true};
 }
 
-std::wstring TerminalCommandLine(const std::wstring& dir) {
+std::wstring QuoteWindowsArgument(std::wstring_view value) {
     std::wstring quoted = L"\"";
     size_t slashes = 0;
-    for (const wchar_t c : pulse::path::StripExtendedPathPrefix(dir)) {
+    for (const wchar_t c : value) {
         if (c == L'\\') {
             ++slashes;
             continue;
@@ -120,7 +120,11 @@ std::wstring TerminalCommandLine(const std::wstring& dir) {
     // Backslashes immediately before a closing quote must be doubled.
     quoted.append(slashes * 2, L'\\');
     quoted.push_back(L'\"');
-    return L"-d " + quoted;
+    return quoted;
+}
+
+std::wstring TerminalCommandLine(const std::wstring& dir) {
+    return L"-d " + QuoteWindowsArgument(pulse::path::StripExtendedPathPrefix(dir));
 }
 
 }

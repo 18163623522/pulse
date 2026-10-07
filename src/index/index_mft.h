@@ -8,6 +8,7 @@
 #include <functional>
 #include <string>
 #include <windows.h>
+#include <winioctl.h>
 
 namespace pulse::index {
 
@@ -21,11 +22,26 @@ struct MftFile {
     uint8_t name_type = 0; // NTFS FILE_NAME.NameType
 };
 
+// Core enumeration accepts a positional reader so complete/failure semantics
+// can be verified without opening a real volume.
+bool EnumerateMftRecords(const NTFS_VOLUME_DATA_BUFFER& geometry,
+    const std::function<bool(uint64_t, void*, DWORD)>& read,
+    std::atomic<bool>* running, const std::function<void(size_t)>& progress,
+    const std::function<bool(MftFile&&)>& emit);
+
+enum class MftReadResult { Complete, Stopped, Failed };
+
 // Walk $MFT on an already-opened volume handle (FILE_READ_DATA).
 // `emit` returns false to stop. `progress` is invoked roughly every 50k records.
-bool EnumerateMft(HANDLE volume,
+MftReadResult EnumerateMft(HANDLE volume,
                   std::atomic<bool>* running,
                   const std::function<void(size_t)>& progress,
                   const std::function<bool(MftFile&&)>& emit);
 
 } // namespace pulse::index
+
+namespace pulse::index {
+MftReadResult EnumerateMftRecordsResult(const NTFS_VOLUME_DATA_BUFFER& geometry,
+    const std::function<bool(uint64_t, void*, DWORD)>& read, std::atomic<bool>* running,
+    const std::function<void(size_t)>& progress, const std::function<bool(MftFile&&)>& emit);
+}

@@ -94,7 +94,8 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
         }
         completed.insert(completed.end(), result.sources.begin(), result.sources.end());
         if (result.mutated && (FAILED(result.hr) || result.cancelled)) {
-            CompletedOperation refresh;
+        CompletedOperation refresh;
+        refresh.task_id = task_id;
             refresh.type = req.type;
             refresh.sources = {source};
             refresh.refresh_only = true;
@@ -107,7 +108,7 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
     if (!completed.empty()) {
         OpRequest finished = req;
         finished.sources = completed;
-        PushUndo(finished);
+        PushUndo(finished, task_id);
     }
     const bool cancelled = transfer_cancel_.load();
     const auto lock_report = FAILED(failure) && !cancelled ? ProbeLock(req, task_id, failure, error) : LockReport{};

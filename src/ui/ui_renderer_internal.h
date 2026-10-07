@@ -493,6 +493,7 @@ void ClearTextWidthCache() {
     }
 
     float ExpandedTrayHeight(const WindowViewModel& vm, const SidebarMetrics& m) {
+        if (vm.tray_deck.hidden) return 0.0f;
         if (vm.tray_deck.cards.empty())
             return 112.0f * m.scale; // header + dashed empty state
         // Card stack: header (38) + top card + peeking layers when fanned
@@ -553,7 +554,7 @@ void ClearTextWidthCache() {
 
         if (compact) {
             const float rowH = 38.0f * scale;
-            const float trayH = 44.0f * scale;
+            const float trayH = vm.tray_deck.hidden ? 0.0f : 44.0f * scale;
             float y = sb.top;
             int run = 0;
             for (int g = 0; g < static_cast<int>(vm.sidebar.size()); ++g) {
@@ -595,7 +596,7 @@ void ClearTextWidthCache() {
             tray.kind = SidebarSlot::TrayPanel;
             tray.rc = D2D1::RectF(4.0f * scale, sb.bottom - trayH,
                                   width - 4.0f * scale, sb.bottom - 4.0f * scale);
-            out.push_back(tray);
+            if (!vm.tray_deck.hidden) out.push_back(tray);
             return;
         }
 
@@ -699,6 +700,7 @@ void ClearTextWidthCache() {
             }
         }
 
+        if (vm.tray_deck.hidden) return;
         SidebarSlot tray;
         tray.kind = SidebarSlot::TrayPanel;
         tray.rc = D2D1::RectF(innerL, trayTop, innerR, sb.bottom - m.pad);

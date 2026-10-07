@@ -3,6 +3,7 @@
 #include "app_runtime.h"
 
 namespace pulse {
+constexpr UINT_PTR kTimerUncProbeRetry = 0x554e;
 std::vector<std::wstring> CollectPanePaths(const AppState& s);
 std::vector<ui::ViewMode> CollectPaneViews(const AppState& s);
 bool IsUncPath(const std::wstring& p);
@@ -24,7 +25,7 @@ void ConfigureContentSort(const app::Tab& tab,index::ContentSearchRequest& reque
 void RequestSavedSearch(AppState& s, app::Tab& tab, size_t saved_index);
 void ApplyContentSearchUpdate(AppState& s, index::ContentSearchUpdate update);
 void DeliverIndexSearchResult(AppState& s, uint32_t id,
-                                     index::SearchResult&& result);
+                                      index::SearchResult&& result, bool network_snapshot = false);
 void AcceptIndexProviderResult(AppState& s, uint32_t id,
                                       index::SearchResult&& result, bool network,
                                       bool network_final = true);

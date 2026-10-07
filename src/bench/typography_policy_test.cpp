@@ -15,6 +15,34 @@ struct PainterTestPeer {
 
 namespace pulse::ui {
 struct FluentMenuTestPeer {
+    static bool CheckSnapshotReplacement() {
+        Compositor compositor;
+        FluentMenu menu;
+        menu.compositor_ = &compositor;
+        menu.open_ = true;
+        FluentMenuItem parent{1, L"Parent"};
+        parent.children = {{10, L"A"}, {11, L"B"}};
+        menu.model_.SetItems({parent});
+        menu.sub_model_.SetItems(parent.children);
+        menu.sub_parent_row_ = 0;
+        parent.children[0].command = 11;
+        parent.children[1].command = 10;
+        bool ok = !menu.ReplaceItems({parent});
+        ok &= menu.model_.At(0)->children[0].command == 10;
+        ok &= menu.sub_model_.At(0)->command == 10;
+        parent.children[0].command = 20;
+        parent.children[1].command = 21;
+        ok &= !menu.ReplaceItems({parent});
+        std::swap(parent.children[0], parent.children[1]);
+        ok &= !menu.ReplaceItems({parent});
+        std::swap(parent.children[0], parent.children[1]);
+        menu.sub_parent_row_ = -1;
+        ok &= menu.ReplaceItems({parent});
+        menu.sub_model_.SetItems(menu.model_.At(0)->children);
+        ok &= menu.sub_model_.At(0)->command == 20;
+        menu.open_ = false;
+        return ok;
+    }
     static HWND Filter(FluentMenu& menu) {
         menu.filter_fn_ = [](const std::wstring&) {
             return std::vector<FluentMenuItem>{{1, L"A long reusable menu command label"}};
@@ -45,8 +73,13 @@ void Check(bool ok, const char* label) {
 }
 }
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     using namespace pulse::ui;
+    if (argc == 2 && std::wstring(argv[1]) == L"--menu-identity") {
+        Check(FluentMenuTestPeer::CheckSnapshotReplacement(),
+            "open flyout rejects swapped/shifted/reordered snapshots; reopen uses accepted IDs");
+        return failures ? 1 : 0;
+    }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const HWND foreground = GetForegroundWindow();
     HWND owner = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE, L"STATIC", L"",

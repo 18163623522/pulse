@@ -1,5 +1,6 @@
 // app_runtime.cpp — extracted from app_main.cpp.
 #include "app_internal.h"
+#include "pane_layout.h"
 #include "vertical_tabs.h"
 #include "app_column_view.h"
 #include "folder_sizes_ui.h"
@@ -21,6 +22,7 @@
 #include "../common/display_path.h"
 #include "../common/diagnostics_exporter.h"
 #include "snapshot_patch.h"
+#include "dir_notify_queue.h"
 #include "text_diff.h"
 #include "session.h"
 #include "context_menu.h"
@@ -222,7 +224,7 @@ void SyncVisibleWatches(AppState& s) {
     s.watches.Sync(VisibleFolderPaths(s), [&s](const std::wstring& path, bool overflow,
                                               std::vector<fs::DirNotifyEvent> events) {
         std::lock_guard<std::mutex> lock(s.notify_mu);
-        s.notify_queue.push_back({path, overflow, std::move(events)});
+        app::QueueDirNotify(s.notify_queue, path, overflow, std::move(events));
     });
 }
 
@@ -314,13 +316,7 @@ void PostWorkerResult(AppState& s, app::WorkResult res) {
 D2D1_RECT_F FocusedPaneRect(const AppState& s) {
     D2D1_RECT_F content = s.renderer.ContentRect(
         static_cast<float>(s.compositor.Width()), static_cast<float>(s.compositor.Height()));
-    if (!Root(s) || !s.pane) return content;
-    std::vector<std::pair<app::Pane*, D2D1_RECT_F>> laid;
-    app::LayoutSplitTree(*Root(s), content, 4.0f * s.scale, laid);
-    for (const auto& item : laid) {
-        if (item.first == s.pane) return item.second;
-    }
-    return laid.empty() ? content : laid.front().second;
+    return app::FocusedWindowPaneRect(Root(s).get(), s.pane, content, s.scale);
 }
 
 app::Pane* PaneAtSlot(AppState& s, int index) {
@@ -392,8 +388,7 @@ void FillPaneSlots(AppState& s, ui::WindowViewModel& vm) {
         static_cast<float>(s.compositor.Width()), static_cast<float>(s.compositor.Height()));
     std::vector<std::pair<app::Pane*, D2D1_RECT_F>> laid;
     std::vector<app::SplitterLayout> splitters;
-    const float gap = 8.0f * s.scale;
-    if (Root(s)) app::LayoutSplitTree(*Root(s), content, gap, laid, &splitters);
+    if (Root(s)) app::LayoutWindowPanes(*Root(s), content, s.scale, laid, &splitters);
     vm.pane_slots.clear();
     vm.splitters.clear();
     s.splitterNodes.clear();
@@ -1728,6 +1723,7 @@ void SearchFilterInSubfolders(AppState& s) {
     if (text.empty()) return;
     app::AdvancedSearchSpec spec;
     spec.name = text;
+    spec.name_is_query = true;
     spec.location = app::LocationScope::CurrentFolder;
     spec.current_folder = path::StripExtendedPathPrefix(tab->current_path);
     ClearPaneFilter(s);
@@ -1759,8 +1755,12 @@ static std::wstring TrayCmpTime(const FILETIME& ft) {
 
 // Two staged files: same rules as the dual-pane compare (mtime 2 s tolerance,
 // then size); content only after the user asks (TrayStartContentCompare).
-static void FillTrayCompare(AppState& s, const std::wstring (&paths)[2],
+static void FillTrayCompare(AppState& s, const app::TrayItem* const (&items)[2],
                             ui::TrayCompareView& v) {
+    const std::wstring paths[2]{items[0]->path, items[1]->path};
+    if (!s.trayMetadata) s.trayMetadata = std::make_unique<app::TrayCompareMetadata>();
+    const app::TrayMetadataKey key{{items[0]->id, items[1]->id}, {paths[0], paths[1]}};
+    const auto metadata = s.trayMetadata->Read(key, s.hwnd);
     uint64_t t[2]{}, sz[2]{};
     std::wstring dir[2];
     for (int i = 0; i < 2; ++i) {
@@ -1770,8 +1770,9 @@ static void FillTrayCompare(AppState& s, const std::wstring (&paths)[2],
         dir[i] = slash == std::wstring::npos ? std::wstring() : shown.substr(0, slash);
         const size_t up = dir[i].find_last_of(L"\\/");
         v.where[i] = up == std::wstring::npos ? dir[i] : dir[i].substr(up + 1);
-        WIN32_FILE_ATTRIBUTE_DATA d{};
-        if (GetFileAttributesExW(paths[i].c_str(), GetFileExInfoStandard, &d)) {
+        v.size[i] = format::ByteSize(items[i]->size);
+        if (metadata.status == app::TrayMetadataSnapshot::Status::Ready) {
+            const auto& d = metadata.files[static_cast<size_t>(i)];
             t[i] = (static_cast<uint64_t>(d.ftLastWriteTime.dwHighDateTime) << 32) |
                    d.ftLastWriteTime.dwLowDateTime;
             sz[i] = (static_cast<uint64_t>(d.nFileSizeHigh) << 32) | d.nFileSizeLow;
@@ -1783,6 +1784,11 @@ static void FillTrayCompare(AppState& s, const std::wstring (&paths)[2],
     if (v.where[0] == v.where[1] && dir[0] != dir[1]) {
         v.where[0] = dir[0];
         v.where[1] = dir[1];
+    }
+    if (metadata.status != app::TrayMetadataSnapshot::Status::Ready) {
+        v.newer = -1;
+        v.content = metadata.status == app::TrayMetadataSnapshot::Status::Error ? 4 : 1;
+        return;
     }
     constexpr uint64_t kTolerance = 2ull * 10000000ull; // 2 s in FILETIME units
     v.newer = t[0] > t[1] + kTolerance ? 0 : (t[1] > t[0] + kTolerance ? 1 : -1);
@@ -2084,21 +2090,18 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
         deck.total_count = TrayItemTotalCount(s.tray);
         deck.batch_count = static_cast<int>(s.tray.batches().size());
         deck.release_move = !s.tray.batches().empty() && s.tray.batches().back().move_intent;
-        uint64_t total_size = 0;
-        for (const auto& b : s.tray.batches()) total_size += b.total_size;
-        deck.total_size = total_size;
         deck.live_count = static_cast<int>(entries.size());
         for (const auto& b : s.tray.batches())
             for (const auto& item : b.items)
                 if (!item.exists) ++deck.stale_count;
         {
             // Two-file compare: exactly two staged items, both existing files.
-            std::wstring pair[2];
+            const app::TrayItem* pair[2]{};
             int n = 0;
             bool files = true;
             for (const auto& b : s.tray.batches()) {
                 for (const auto& item : b.items) {
-                    if (n < 2) pair[n] = item.path;
+                    if (n < 2) pair[n] = &item;
                     ++n;
                     files = files && item.exists && !item.is_dir;
                 }
@@ -2106,7 +2109,9 @@ ui::WindowViewModel BuildVm(AppState& s, bool probe_details) {
             deck.can_compare = n == 2 && files;
             deck.comparing = deck.can_compare && s.trayCompare;
             if (deck.comparing) FillTrayCompare(s, pair, deck.compare);
+            else if (s.trayMetadata) s.trayMetadata->Cancel();
         }
+        for (const auto& b : s.tray.batches()) deck.total_size += b.total_size;
         for (const auto& dir : TrayDestList(s)) {
             ui::TrayDestView d;
             d.path = dir;
@@ -2416,6 +2421,12 @@ std::wstring TooltipForHover(AppState& s) {
     using I = l10n::StringId;
     auto text = [](I id) -> const std::wstring& { return l10n::Get(id); };
     switch (static_cast<R::Region>(s.hoverRegion)) {
+    case R::RowFolderSize: {
+        auto* pane = PaneAtSlot(s, s.hoverPaneIndex);
+        auto* tab = pane ? pane->ActiveTab() : ActiveTab(s);
+        if (!tab || s.hoverControlIndex < 0 || s.hoverControlIndex >= static_cast<int>(tab->EntryCount())) return L"";
+        return DescribeFolderSize(s, EntryFullPath(*tab, s.hoverControlIndex));
+    }
     case R::AddressSearch: return text(s.appPrefs.show_hints ? I::TipxSearch : I::Search);
     case R::AddressSearchScope: {
         const auto* tab = ActiveTab(s);
@@ -2716,33 +2727,34 @@ std::wstring TagDiscoveryKey(std::wstring path) {
     return path;
 }
 
+void ApplyTagAdsDiscoveries(AppState& s, const std::vector<TagAdsDiscovery>& discoveries) {
+    const uint64_t before = s.places.TagRevision();
+    for (const auto& discovery : discoveries) {
+        const std::wstring key = TagDiscoveryKey(discovery.path);
+        s.tagAdsDiscoveryQueued.erase(key);
+        s.tagAdsDiscoveryChecked.insert(key);
+        s.places.MergeAdsRecords(discovery.path, discovery.records, discovery.legacy_names);
+    }
+    if (s.places.TagRevision() != before && s.hwnd) InvalidateRect(s.hwnd, nullptr, FALSE);
+}
+
 void QueueVisibleTagDiscovery(AppState& s) {
     app::Tab* tab = ActiveTab(s);
     if (!tab || tab->loading || !tab->snapshot || tab->EntryCount() == 0) return;
 
-    const D2D1_RECT_F list = ListRect(s);
-    const float row_height = s.renderer.RowHeight();
-    if (row_height <= 0.0f || list.bottom <= list.top) return;
-    const int first = std::max(0, static_cast<int>(std::floor(tab->scroll_y / row_height)) - 1);
-    const int visible_count = static_cast<int>(std::ceil((list.bottom - list.top) / row_height)) + 2;
-    const int last = first + visible_count;
-    if (s.tagAdsLastSnapshot == tab->snapshot.get() &&
-        s.tagAdsLastViewPath == tab->current_path &&
-        s.tagAdsLastFilter == tab->filter_text &&
-        s.tagAdsLastFirstRow == first && s.tagAdsLastLastRow == last) {
-        return;
-    }
-    s.tagAdsLastSnapshot = tab->snapshot.get();
-    s.tagAdsLastViewPath = tab->current_path;
-    s.tagAdsLastFilter = tab->filter_text;
-    s.tagAdsLastFirstRow = first;
-    s.tagAdsLastLastRow = last;
-
     ui::PaneViewModel pane;
     app::FillPaneViewModel(pane, *s.pane, &s.places);
+    const auto bounds = FocusedPaneRect(s);
+    const auto list = s.renderer.PaneListRect(pane, bounds);
+    if (list.right <= list.left || list.bottom <= list.top) return;
+    const auto [first, last] = s.renderer.VisibleRangeInPane(pane, bounds);
+    if (first < 0 || last < first) return;
     std::vector<std::wstring> paths;
     const int end = std::min(last, static_cast<int>(pane.EntryCount()) - 1);
     for (int view_row = first; view_row <= end; ++view_row) {
+        const auto item = s.renderer.ItemRectInPane(pane, bounds, view_row);
+        if (item.right <= list.left || item.left >= list.right || item.bottom <= list.top ||
+            item.top >= list.bottom || item.right <= item.left || item.bottom <= item.top) continue;
         const int source = pane.SourceIndex(view_row);
         const std::wstring full = EntryFullPath(*tab, source);
         if (full.empty() || fs::IsVirtualPath(full) || s.places.TagIndicesForPath(full)) continue;

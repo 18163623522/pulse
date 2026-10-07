@@ -50,7 +50,11 @@ public:
     std::wstring TakeOpenPath() { std::wstring path; path.swap(open_path_); return path; }
 
 private:
+#ifdef PULSE_WITH_SELFTEST
+    friend struct QuickPreviewAuditTest;
+#endif
     friend struct QuickPreviewPlaybackProbe;
+    friend struct PreviewDeadlineProbe;
     // Pages: multi-page PDF / AI read as a continuous scroll (quick_preview_pages.cpp).
     enum class NativeKind { None, Bitmap, Text, Hex, Archive, Pages, Markdown, Table, Tree };
     enum class ChromeButton { None, Prev, Next, More };
@@ -58,6 +62,8 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
     LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
     void Render();
+    void SchedulePreviewDeadline();
+    uint64_t preview_deadline_ = 0;
     void Resize();
     void ResetView();
     void RecreateFormats();

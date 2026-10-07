@@ -31,11 +31,24 @@ inline int EditLineHeight(HWND edit, HFONT font, int field_height) {
     }
     return line < field_height ? line : field_height;
 }
-// EDIT owns native editing and IME. Its LumaText bitmap is a child surface,
-// clipped and moved by the parent rather than an independently owned popup.
+// EDIT owns native editing and IME. Always use a Windows-redirected child
+// surface: directly uploaded layered bitmaps can be hidden by composition.
+// Keep this policy here so every host inherits the same presentation mode.
 inline HWND CreateChildEdit(HWND parent, const wchar_t* text = L"", DWORD edit_style = 0) {
-    return CreateWindowExW(WS_EX_LAYERED, L"EDIT", text,
+    HWND edit = CreateWindowExW(WS_EX_LAYERED, L"EDIT", text,
         WS_CHILD | WS_CLIPSIBLINGS | WS_TABSTOP | ES_AUTOHSCROLL | edit_style,
         0, 0, 0, 0, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (edit && !SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA)) {
+        DestroyWindow(edit);
+        return nullptr;
+    }
+    return edit;
+}
+// Composition hosts need a redirected child surface: an uploaded layered
+// bitmap can end up behind the parent's DirectComposition surface.
+inline HWND CreateRedirectedChildEdit(HWND parent, const wchar_t* text = L"", DWORD edit_style = 0) {
+    HWND edit = CreateChildEdit(parent, text, edit_style);
+    if (edit) SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA);
+    return edit;
 }
 }

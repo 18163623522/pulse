@@ -177,6 +177,28 @@ void DirWatch::State::Notify(bool overflow, std::vector<DirNotifyEvent> events) 
 void DirWatch::State::WorkerThread() {
     if (!ReopenDirectory()) return;
     bool newly_armed = true;
+    DWORD retry_delay = 250;
+    bool failure_notified = false;
+    const auto recovered = [&] {
+        if (failure_notified) Notify(true, {});
+        failure_notified = false;
+        retry_delay = 250;
+        // Publish readiness only after the missed-change reconciliation has
+        // been delivered. A queued read alone can still fail immediately.
+        armed_ = true;
+    };
+    const auto retry_failure = [&](DWORD error) {
+        armed_ = false;
+        pending_rename_old_.clear();
+        if (!failure_notified) Notify(true, {});
+        failure_notified = true;
+        const bool unsupported = error == ERROR_INVALID_FUNCTION || error == ERROR_NOT_SUPPORTED;
+        const DWORD delay = unsupported ? 30000 : retry_delay;
+        if (WaitForSingleObject(hStop_, delay) != WAIT_TIMEOUT || !running_) return false;
+        if (unsupported) Notify(true, {}); // Bounded fallback for local providers as well as UNC.
+        else retry_delay = (std::min)(retry_delay * 2, DWORD{8000});
+        return ReopenDirectory();
+    };
     while (running_) {
         ZeroMemory(&overlapped_, sizeof(overlapped_));
         overlapped_.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -204,20 +226,20 @@ void DirWatch::State::WorkerThread() {
             &overlapped_,
             nullptr);
 
-        if (!ok && GetLastError() != ERROR_IO_PENDING) {
+        const DWORD read_error = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok && read_error != ERROR_IO_PENDING) {
             CloseHandle(overlapped_.hEvent);
+            overlapped_.hEvent = nullptr;
             if (!running_) break;
-            pending_rename_old_.clear();
-            Notify(true, {});
-            if (!ReopenDirectory()) break;
+            if (!retry_failure(read_error)) break;
             newly_armed = true;
             continue;
         }
 
         // An initial/reopened watch may have missed changes while
         // the handle was opening. Reconcile only after the read is armed.
-        armed_ = true;
-        if (newly_armed) Notify(true, {});
+        if (!failure_notified) armed_ = true;
+        if (newly_armed && !failure_notified) Notify(true, {});
         newly_armed = false;
 
         bool replaced = false;
@@ -225,7 +247,10 @@ void DirWatch::State::WorkerThread() {
         for (;;) {
             const DWORD wait = WaitForMultipleObjects(2, events, FALSE, 500);
             if (wait == WAIT_TIMEOUT) {
-                if (!WatchedPathReplaced()) continue;
+                if (!WatchedPathReplaced()) {
+                    recovered(); // A pending read survived its first identity check.
+                    continue;
+                }
                 CancelIoEx(directory, &overlapped_);
                 WaitForSingleObject(overlapped_.hEvent, INFINITE);
                 replaced = true;
@@ -246,6 +271,7 @@ void DirWatch::State::WorkerThread() {
 
         DWORD transferred = 0;
         const BOOL got = GetOverlappedResult(directory, &overlapped_, &transferred, FALSE);
+        const DWORD result_error = got ? ERROR_SUCCESS : GetLastError();
         CloseHandle(overlapped_.hEvent);
         overlapped_.hEvent = nullptr;
 
@@ -260,15 +286,12 @@ void DirWatch::State::WorkerThread() {
         }
 
         if (!got) {
-            const DWORD err = GetLastError();
-            if (err == ERROR_OPERATION_ABORTED) continue;
-            pending_rename_old_.clear();
-            Notify(true, {});
-            if (err != ERROR_NOTIFY_ENUM_DIR && !ReopenDirectory()) break;
+            if (!retry_failure(result_error)) break;
             newly_armed = true;
             continue;
         }
 
+        recovered();
         if (transferred == 0) {
             pending_rename_old_.clear();
             Notify(true, {});
@@ -277,6 +300,7 @@ void DirWatch::State::WorkerThread() {
         Notify(false, ParseNotifyBuffer(reinterpret_cast<const BYTE*>(buffer_), transferred,
                                         pending_rename_old_, subtree_));
     }
+    armed_ = false;
 }
 
 void DirWatchSet::Sync(const std::vector<std::wstring>& paths, Callback cb) {

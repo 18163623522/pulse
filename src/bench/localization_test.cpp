@@ -4,6 +4,7 @@
 #include <atomic>
 #include <thread>
 #include <utility>
+#include <string_view>
 
 namespace {
 
@@ -12,12 +13,41 @@ bool Report(const char* name, bool passed) {
     return passed;
 }
 
+bool CheckSystemLanguage() {
+    using namespace pulse::l10n;
+    struct Case { LANGID id; Language expected; const char* name; };
+    const Case cases[] = {
+        {0x0404, Language::ZhTW, "Taiwan maps to Traditional Chinese"},
+        {0x0c04, Language::ZhTW, "Hong Kong maps to Traditional Chinese"},
+        {0x1404, Language::ZhTW, "Macau maps to Traditional Chinese"},
+        {0x7c04, Language::ZhTW, "Hant maps to Traditional Chinese"},
+        {0x0804, Language::ZhCN, "PRC maps to Simplified Chinese"},
+        {0x1004, Language::ZhCN, "Singapore maps to Simplified Chinese"},
+        {0x0004, Language::ZhCN, "neutral Chinese maps to Simplified Chinese"},
+        {0x0409, Language::EnUS, "US English maps to English"},
+        {0x0809, Language::EnUS, "UK English maps to shipped English"},
+        {0x0411, Language::EnUS, "unshipped locale falls back to English"},
+    };
+    bool passed = true;
+    for (const auto& test : cases)
+        passed &= Report(test.name, LanguageFromLangId(test.id) == test.expected);
+    SetLanguage(L"system");
+    passed &= Report("system preference follows actual Windows UI language",
+        effective_language() == LanguageFromLangId(GetUserDefaultUILanguage()));
+    return passed;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     using namespace pulse::l10n;
     bool passed = true;
     Initialize(GetModuleHandleW(nullptr), L"zh-CN");
+    if (argc > 1) {
+        if (argc == 2 && std::string_view(argv[1]) == "--system-language")
+            return CheckSystemLanguage() ? 0 : 1;
+        return 2;
+    }
     const auto& held_chinese = Get(StringId::TabRename);
     SetLanguage(L"en-US");
     passed &= Report("language switch preserves strings held by worker tasks",
@@ -225,18 +255,7 @@ int main() {
     passed &= Report("zh-CN service text is unchanged",
         ServiceText(L"已索引 1,234 项 · 实时更新") == L"已索引 1,234 项 · 实时更新");
 
-    struct LanguageCase { LANGID id; Language expected; };
-    constexpr LanguageCase language_cases[] = {
-        {0x0804, Language::ZhCN}, {0x1004, Language::ZhCN},
-        {0x0004, Language::ZhCN}, {0x0404, Language::ZhTW}, {0x0c04, Language::ZhTW},
-        {0x1404, Language::ZhTW}, {0x7c04, Language::ZhTW}, {0x0409, Language::EnUS},
-        {0x0809, Language::EnUS}, {0x0411, Language::EnUS}};
-    for (const auto [id, expected] : language_cases) {
-        passed &= Report("fixed Windows language ID mapping", LanguageFromLangId(id) == expected);
-    }
-    SetLanguage(L"system");
-    passed &= Report("system language follows the public Windows language mapping",
-        effective_language() == LanguageFromLangId(GetUserDefaultUILanguage()));
+    passed &= CheckSystemLanguage();
     std::printf("\n== localization tests: %s ==\n", passed ? "PASS" : "FAIL");
     return passed ? 0 : 1;
 }

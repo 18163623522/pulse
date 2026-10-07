@@ -19,7 +19,10 @@ bool WriteValues(const std::wstring& file, const SavedValues& values);
 class Store {
 public:
     struct Entry {
-        FolderSizeValue value;
+        FolderSizeValue value; // Published result only; never an in-flight subtotal.
+        FolderSizeWork work;
+        bool auto_deferred = false;
+        uint64_t next_index_at = 0;
         uint64_t completed = 0, not_before = 0;
         uint64_t revision = 0, request_epoch = 0, watch_generation = 0;
         std::list<std::wstring>::iterator position;

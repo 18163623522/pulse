@@ -1,4 +1,5 @@
 #include "index_config.h"
+#include "index_directory_security.h"
 #include "../common/config_json.h"
 #include "../common/json_utils.h"
 #include "../common/utf8_file.h"
@@ -44,12 +45,12 @@ bool EnsureMachineDirectory(const std::wstring& path, bool user_readable = true)
     }
 
     HANDLE directory = CreateFileW(
-        path.c_str(), READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+        path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES | WRITE_DAC | WRITE_OWNER,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (directory == INVALID_HANDLE_VALUE) {
         directory = CreateFileW(
-            path.c_str(), READ_CONTROL,
+            path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (directory == INVALID_HANDLE_VALUE) {
@@ -205,25 +206,7 @@ std::wstring MachineIndexRoot() {
 }
 
 bool ProtectIndexDirectory(const std::wstring& path) {
-    // A chosen folder that already holds other files keeps its ACL: a new
-    // protected DACL would propagate to everything inside it.
-    if (path.size() <= 3) return false;
-    const DWORD attributes = GetFileAttributesW(path.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
-        (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
-        return false;
-    WIN32_FIND_DATAW entry{};
-    HANDLE find = FindFirstFileExW((path + L"\\*").c_str(), FindExInfoBasic, &entry,
-                                   FindExSearchNameMatch, nullptr, 0);
-    if (find != INVALID_HANDLE_VALUE) {
-        bool empty = true;
-        do {
-            if (wcscmp(entry.cFileName, L".") != 0 && wcscmp(entry.cFileName, L"..") != 0) empty = false;
-        } while (empty && FindNextFileW(find, &entry));
-        FindClose(find);
-        if (!empty) return false;
-    }
-    return EnsureMachineDirectory(path, false);
+    return PreparePrivateIndexDirectory(std::filesystem::path(path));
 }
 
 std::wstring UserIndexRoot() {
@@ -348,7 +331,11 @@ bool ConfigureIndexPath(const std::wstring& path, std::wstring* error) {
         SetError(error, Win32Error(L"无法创建索引目录"));
         return false;
     }
-    (void)ProtectIndexDirectory(path);  // new or empty folders only
+    PrivateIndexDirectoryLock destination_lock;
+    if (!destination_lock.Acquire(std::filesystem::path(path)) || !ProtectIndexDirectory(path)) {
+        SetError(error, L"索引目录权限不安全，请使用空的独立目录。原索引配置已保留。");
+        return false;
+    }
     IndexConfig config;
     if (!LoadMachineConfig(config, error)) return false;
     config.index_path = path;

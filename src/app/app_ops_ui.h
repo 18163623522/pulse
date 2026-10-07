@@ -4,7 +4,7 @@
 #include "../ui/confirm_dialog.h"
 
 namespace pulse {
-bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request);
+bool SubmitWithConflictResolution(AppState& s, ops::OpRequest request, uint64_t* task_id = nullptr);
 void ReleaseTrayBatch(AppState& s, size_t idx);
 void PasteIntoCurrent(AppState& s);
 void DeleteSelected(AppState& s, bool permanent);

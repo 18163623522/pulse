@@ -202,6 +202,32 @@ bool RunFolderSizeIndexClientTest(const std::filesystem::path& fixture, std::ofs
         sizes.Stop();
     }
     Sleep(20);
+    {
+        check(wait([&] { return pipe.listening.load(); }), "cancelled epoch fixture pipe is listening before client starts");
+        ScanStartGate gate;
+        FolderSizes sizes; gate.Hold(sizes);
+        pipe.bytes = 2400;
+        sizes.Sync({{estimate_root.wstring()}}, {});
+        check(wait([&] { return sizes.Get(estimate_root.wstring()).has_value; }),
+              "cancelled epoch fixture retains an initial published estimate");
+        pipe.stall = true; pipe.bytes = 4800;
+        const auto requests_before = pipe.requests.load();
+        sizes.Invalidate(estimate_root.wstring());
+        check(wait([&] { return pipe.requests > requests_before; }),
+              "cancelled epoch fixture reaches an in-flight replacement estimate");
+        sizes.Cancel(estimate_root.wstring());
+        const auto responses_before = pipe.responses.load();
+        pipe.stall = false;
+        check(wait([&] { return pipe.responses > responses_before; }),
+              "cancelled epoch replacement response is actually delivered");
+        Sleep(100);
+        check(sizes.Get(estimate_root.wstring()).bytes == 2400 &&
+              sizes.GetWork(estimate_root.wstring()).activity == FolderSizeActivity::Cancelled,
+              "late index response cannot replace the published value after request cancellation");
+        gate.Release(); sizes.Stop();
+        pipe.bytes = 2400;
+    }
+    Sleep(20);
     pipe.stall = true;
     {
         check(wait([&] { return pipe.listening.load(); }), "stalled fixture pipe is listening before client starts");

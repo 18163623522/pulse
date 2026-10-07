@@ -1,4 +1,4 @@
-﻿#include "elevated_transfer.h"
+#include "elevated_transfer.h"
 #include "../common/path_utils.h"
 #include <shobjidl.h>
 #include <shlobj.h>
@@ -149,20 +149,42 @@ DWORD ShellTransferFlags(ShellCollisionPolicy policy) {
     if (policy == ShellCollisionPolicy::KeepBoth) flags |= FOF_RENAMEONCOLLISION;
     return flags;
 }
-bool TargetNeedsElevation(const std::wstring& destination) {
+bool TargetNeedsElevation(const std::wstring& destination, DWORD required_access) {
     auto candidate = std::filesystem::path(destination);
     while (!candidate.empty()) {
-        const DWORD error = ProbeAccess(candidate.wstring(), FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY);
+        const DWORD error = ProbeAccess(candidate.wstring(), required_access);
         if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return Denied(error);
         const auto parent = candidate.parent_path();
         if (parent == candidate) break;
         candidate = parent;
+        // Missing descendants are created below the nearest existing ancestor.
+        // That ancestor needs a directory entry, not an ordinary file entry.
+        required_access = FILE_ADD_SUBDIRECTORY;
     }
     return false;
 }
 bool NeedsShellTransfer(const std::vector<std::wstring>& sources,
-                        const std::wstring& destination, bool move) {
-    if (TargetNeedsElevation(destination)) return true;
+                        const std::wstring& destination, bool move, const std::wstring& target_name) {
+    DWORD required_access = 0;
+    for (const auto& source : sources) {
+        const DWORD attributes = GetFileAttributesW(source.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            required_access |= FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY;
+        } else if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+            const auto target = std::filesystem::path(destination) /
+                (target_name.empty() ? std::filesystem::path(source).filename() : std::filesystem::path(target_name));
+            const DWORD existing = GetFileAttributesW(target.c_str());
+            // A real directory merge creates no entry in its parent. As before,
+            // this root-only probe does not promise access to descendants.
+            if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                existing == INVALID_FILE_ATTRIBUTES || !(existing & FILE_ATTRIBUTE_DIRECTORY))
+                required_access |= FILE_ADD_SUBDIRECTORY;
+        } else {
+            // Replacements also stage a temporary file in the target directory.
+            required_access |= FILE_ADD_FILE;
+        }
+    }
+    if (required_access && TargetNeedsElevation(destination, required_access)) return true;
     if (move) for (const auto& source : sources) {
         if (!Denied(ProbeAccess(source, DELETE))) continue;
         const auto parent = std::filesystem::path(source).parent_path().wstring();

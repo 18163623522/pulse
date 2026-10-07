@@ -764,6 +764,7 @@ void QuickPreviewWindow::SetImagePackOffer(const MediaPackOffer& offer) {
     if (hwnd_ && visible()) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 void QuickPreviewWindow::OnImagePackInstalled() {
+    thumbnails_.Evict();
     if (!hwnd_ || !visible()) return;
     // The picture card (or a text / hex view of an EXR) becomes the picture.
     const size_t dot = item_.path.find_last_of(L'.');
@@ -772,6 +773,7 @@ void QuickPreviewWindow::OnImagePackInstalled() {
     Update(item);
 }
 void QuickPreviewWindow::OnExtraPackInstalled() {
+    thumbnails_.Evict();
     if (!hwnd_ || !visible()) return;
     const size_t dot = item_.path.find_last_of(L'.');
     if (dot == std::wstring::npos) return;
@@ -783,6 +785,7 @@ void QuickPreviewWindow::OnExtraPackInstalled() {
     Update(item);
 }
 void QuickPreviewWindow::OnMediaPackInstalled() {
+    thumbnails_.Evict();
     if (!hwnd_ || !visible()) return;
     // Reopen what the pack can play now: a card that could not decode it, or
     // a format Quick Look did not play at all before.

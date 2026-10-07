@@ -1,10 +1,12 @@
 // fs_enum.h — Directory enumeration: NtQueryDirectoryFile primary,
 // FindFirstFileExW+LARGE_FETCH fallback. No Shell COM, no reparse following.
 #pragma once
+#include <atomic>
 #include <windows.h>
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace pulse::fs {
 
@@ -63,7 +65,14 @@ std::wstring ParentPath(const std::wstring& path);
 std::wstring StripLnkSuffix(const std::wstring& name);
 
 // Enumerate a directory into out. Throws std::runtime_error on failure.
-void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out);
+void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out, const std::atomic_bool* cancelled = nullptr);
+struct EnumerationOptions {
+    std::function<bool()> cancelled;
+    DWORD timeout_ms = 15000;
+};
+// Bounded caller wait. Retired I/O retains its own buffers until the provider
+// completes; callbacks are consulted only by the caller, never by retired work.
+void EnumerateDirectory(const std::wstring& path, std::vector<DirEntry>& out, const EnumerationOptions& options);
 
 // Metadata-only lookup for worker-side updates; never follows the target.
 DWORD ReadReparseTag(const std::wstring& path);

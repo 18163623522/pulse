@@ -634,6 +634,7 @@ procedure DeleteShellTagMenu;
 begin
   RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\*\shell\PulseTags');
   RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\Directory\shell\PulseTags');
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\CLSID\{A2D41CF7-62E1-49F4-BCE9-3624D44FB779}');
   DelTree(ExpandConstant('{localappdata}\Pulse\tagicons'), True, True, True);
 end;
 

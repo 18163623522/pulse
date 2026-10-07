@@ -1,4 +1,6 @@
 #include "../app/folder_sizes.h"
+#include "../app/folder_size_scanner.h"
+#include <winioctl.h>
 #include <windows.h>
 #include <condition_variable>
 #include <chrono>
@@ -108,8 +110,16 @@ void WatchedChanges(const fs::path& fixture) {
     Check(sizes.ReadStats().jobs_started == before_hot.jobs_started && Exact(sizes, parent, 45),
           "unchanged hot Sync does not create repeated scans");
 
-    // Leaving watch coverage must revoke authority of cached subtree results.
+    // Empty visibility is a temporary subscription change, not a monitoring gap.
     sizes.Sync({}, {});
+    Check(sizes.Get(parent.wstring()).verified, "temporary empty view retains the recent watch lease");
+    // Force a real bounded-cache eviction instead of assuming navigation stops a watch.
+    for (unsigned i = 0; i < 17; ++i) {
+        const auto other = fixture / (L"watch-eviction-" + std::to_wstring(i));
+        fs::create_directories(other);
+        sizes.Sync({{other.wstring(), false}}, {other.wstring()});
+        Sleep(2);
+    }
     Check(Wait([&] { return !sizes.Get(parent.wstring()).verified; }),
           "leaving watch coverage revokes verification of retained totals");
     File(renamed / L"moved.bin", 70);
@@ -164,6 +174,85 @@ void PartialAndPersistence(const fs::path& fixture) {
     }
 }
 
+void ManualMetadataRegression(const fs::path& fixture) {
+    const auto parent = fixture / L"manual-metadata";
+    const auto offline = parent / L"offline";
+    fs::create_directories(offline);
+    File(parent / L"visible.bin", 17);
+    File(offline / L"value.bin", 91);
+    Check(SetFileAttributesW(offline.c_str(), FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_OFFLINE) != FALSE,
+          "offline metadata fixture created");
+    FolderSizes sizes; sizes.SetIndexEnabled(false);
+    sizes.Sync({{parent.wstring()}}, {});
+    Check(Wait([&] { return sizes.Get(parent.wstring()).state == State::Partial; }),
+          "automatic scan keeps offline subtree as an explicit lower bound");
+    sizes.Calculate(parent.wstring());
+    Check(Wait([&] { return Exact(sizes, parent, 108); }),
+          "manual click enumerates offline metadata and replaces partial result");
+    sizes.Stop();
+    SetFileAttributesW(offline.c_str(), FILE_ATTRIBUTE_DIRECTORY);
+
+    const auto wide = fixture / L"progress";
+    fs::create_directories(wide);
+    for (unsigned i = 0; i < 1500; ++i) File(wide / (std::to_wstring(i) + L".bin"), 13);
+    pulse::app::folder_size::Scan progress(wide.wstring(), 1, 1);
+    std::atomic<bool> keep_running{false};
+    const auto lookup = [](const auto&) -> std::optional<uint64_t> { return std::nullopt; };
+    const auto coverage = [](const auto&) -> uint64_t { return 0; };
+    const auto first_progress_deadline = GetTickCount64() + 6000;
+    do {
+        progress.Step(keep_running, lookup, coverage);
+    } while (!progress.done && progress.entries_scanned == 0 && GetTickCount64() < first_progress_deadline);
+    const auto interim = progress.Progress();
+    std::printf("[INFO] first progress: done=%d entries=%llu bytes=%llu has=%d partial=%d verified=%d\n",
+                progress.done, static_cast<unsigned long long>(progress.entries_scanned),
+                static_cast<unsigned long long>(interim.bytes), interim.has_value, interim.partial, interim.verified);
+    Check(!progress.done && interim.has_value && interim.partial && !interim.verified &&
+          interim.bytes == progress.entries_scanned * 13 && interim.bytes < 1500 * 13,
+          "unfinished scan exposes an honest lower bound before completion");
+    const auto progress_deadline = GetTickCount64() + 6000;
+    while (!progress.done && GetTickCount64() < progress_deadline)
+        progress.Step(keep_running, lookup, coverage);
+    Check(progress.done && !progress.Progress().partial && progress.Progress().bytes == 1500 * 13,
+          "completed scan replaces progress without double-counting bytes");
+
+    const auto large = fixture / L"large-logical";
+    fs::create_directories(large);
+    HANDLE file = CreateFileW((large / L"sparse.bin").c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool sparse = false;
+    const uint64_t logical = (uint64_t{5} << 30) + 123;
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD returned = 0;
+        LARGE_INTEGER end{}; end.QuadPart = static_cast<LONGLONG>(logical);
+        sparse = DeviceIoControl(file, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &returned, nullptr) &&
+                 SetFilePointerEx(file, end, nullptr, FILE_BEGIN) && SetEndOfFile(file);
+        CloseHandle(file);
+    }
+    Check(sparse, "5 GiB sparse fixture uses logical size without allocating 5 GiB");
+    if (sparse) {
+        FolderSizes big; big.SetIndexEnabled(false);
+        big.Sync({{large.wstring(), false}}, {}); big.Calculate(large.wstring());
+        Check(Wait([&] { return Exact(big, large, logical); }),
+              "manual total above 4 GiB retains all 64-bit bytes and is not partial");
+        big.Stop();
+    }
+
+    const fs::path deep_root(L"\\\\?\\" + (fixture / L"deep").wstring());
+    auto leaf = deep_root;
+    for (unsigned depth = 0; depth < 140; ++depth) leaf /= L"d";
+    fs::create_directories(leaf);
+    File(leaf / L"value.bin", 59);
+    pulse::app::folder_size::Scan scan(deep_root.wstring(), 1, 1, true);
+    std::atomic<bool> stopping{false};
+    const auto deadline = GetTickCount64() + 6000;
+    while (!scan.done && GetTickCount64() < deadline)
+        scan.Step(stopping, [](const auto&) -> std::optional<uint64_t> { return std::nullopt; },
+                  [](const auto&) -> uint64_t { return 0; });
+    Check(scan.done && scan.result.state == State::Ready && scan.result.bytes == 59 && !scan.result.partial,
+          "depth above 128 completes without an artificial partial cutoff");
+}
+
 void Cancellation(const fs::path& fixture) {
     // Reuse the isolated workload generated by the real index-client checks.
     const auto large = fixture / L"index-estimate-workload";
@@ -186,6 +275,25 @@ void Cancellation(const fs::path& fixture) {
     sizes.Sync({{large.wstring()}}, {});
     Check(Wait([&] { return Exact(sizes, large, 64 * 128 * 13 + 27); }),
           "returning after cancellation rescans and includes newly created bytes");
+    sizes.Stop();
+}
+
+void WatchedManualParentAndChild(const fs::path& fixture) {
+    const auto parent = fixture / L"watched-manual", child = parent / L"child";
+    fs::create_directories(child);
+    File(child / L"value.bin", 59);
+    for (unsigned i = 0; i < 2048; ++i) File(parent / (std::to_wstring(i) + L".bin"), 13);
+    FolderSizes sizes; sizes.SetIndexEnabled(false);
+    sizes.Sync({{parent.wstring(), false}, {child.wstring(), false}}, {parent.wstring()});
+    sizes.Calculate(parent.wstring());
+    Check(Wait([&] { return Exact(sizes, parent, 2048 * 13 + 59) && sizes.Get(parent.wstring()).verified; }),
+          "manual parent fixture has uninterrupted watch coverage");
+    sizes.Calculate(parent.wstring());
+    sizes.Calculate(child.wstring());
+    Check(Wait([&] {
+        return Exact(sizes, parent, 2048 * 13 + 59) && Exact(sizes, child, 59) &&
+            !sizes.GetWork(parent.wstring()).Running() && !sizes.GetWork(child.wstring()).Running();
+    }, 2000), "watched parent and child manual requests both finish without freshness-delay queueing");
     sizes.Stop();
 }
 
@@ -226,6 +334,18 @@ int wmain(int argc, wchar_t** argv) {
     const auto root = fs::current_path() / L"bench_data" /
         (L"folder_sizes_refactor_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--watched-manual-only") {
+            WatchedManualParentAndChild(root);
+            std::wprintf(L"[INFO] retained isolated watched manual fixtures: %ls\n", root.c_str());
+            std::printf("[SUMMARY] %u assertions, %u failure(s)\n", checks, failures);
+            return failures ? 1 : 0;
+        }
+        if (argc == 2 && std::wstring(argv[1]) == L"--manual-only") {
+            ManualMetadataRegression(root);
+            std::wprintf(L"[INFO] retained isolated manual fixtures: %ls\n", root.c_str());
+            std::printf("[SUMMARY] %u assertions, %u failure(s)\n", checks, failures);
+            return failures ? 1 : 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--watch-only") {
             WatchedChanges(root);
             std::wprintf(L"[INFO] retained isolated watch fixtures: %ls\n", root.c_str());
@@ -239,10 +359,16 @@ int wmain(int argc, wchar_t** argv) {
         std::ofstream index_log(root / L"index-results.log");
         Check(pulse::app::RunFolderSizeIndexClientTest(root, index_log), "real isolated index protocol regression group");
         index_log.close();
+        if (argc == 2 && std::wstring(argv[1]) == L"--index-only") {
+            std::wprintf(L"[INFO] retained isolated index fixtures: %ls\n", root.c_str());
+            std::printf("[SUMMARY] %u assertions, %u failure(s)\n", checks, failures);
+            return failures ? 1 : 0;
+        }
         WatchedChanges(root);
         PartialAndPersistence(root);
         Cancellation(root);
         ChildCalculationCancelsAncestor(root);
+        WatchedManualParentAndChild(root);
     } catch (const std::exception& error) {
         Check(false, error.what());
     }

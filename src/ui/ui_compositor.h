@@ -83,7 +83,8 @@ public:
     bool PresentLumaEdit(HWND hwnd, IDWriteTextFormat* format,
                          const D2D1_COLOR_F& foreground, const D2D1_COLOR_F& background);
     LRESULT CallLumaEditMouse(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
-                              IDWriteTextFormat* format);
+                               IDWriteTextFormat* format);
+    void SynchronizeEditSelection(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     bool LumaTextAvailable() const noexcept;
     bool LumaTextEnabled() const noexcept; // Selected UI backend, including accessibility policy.
     bool CustomEditEnabled() const noexcept; // DirectWrite input surfaces in all text modes.

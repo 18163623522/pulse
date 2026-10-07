@@ -52,6 +52,16 @@ int main() {
         while (!condition() && GetTickCount64() - start < 5000) Sleep(10);
         return condition();
     };
+    auto finished_without_move = [&](uint64_t task) {
+        std::vector<FinishedTask> finished;
+        const bool arrived = wait([&] {
+            if (!finished.empty()) return true;
+            finished = manager.DrainFinishedTasks();
+            return !finished.empty();
+        });
+        return arrived && finished.size() == 1 && finished.front().task_id == task &&
+            finished.front().moved_sources.empty();
+    };
     if (applied) {
         OpRequest request; request.sources = {first.wstring(), second.wstring()}; request.dest_dir = target.wstring();
         // Production rejects this test executable as an elevation client before
@@ -74,6 +84,7 @@ int main() {
         check(std::filesystem::exists(first) && std::filesystem::exists(second) &&
             !std::filesystem::exists(target / first.filename()) && !std::filesystem::exists(target / second.filename()) &&
             manager.DrainCompletions().empty(), "denied retry skip and cancel change no files or completion records");
+        check(finished_without_move(task), "authorization cancel emits terminal identity without successful moved roots");
         const auto next = manager.Submit(request);
         check(wait([&] { return manager.Status().task_id == next && manager.Status().authorization == AuthorizationState::ActionRequired; }),
               "next task starts with fresh permission state");
@@ -82,6 +93,7 @@ int main() {
         manager.ResolveAuthorization(next, false);
         check(wait([&] { return !manager.Status().active; }) && manager.Status().phase == OpPhase::Completed &&
             manager.Status().completed_items == 0, "skipping the selection does not fabricate completed items");
+        check(finished_without_move(next), "authorization all-skip emits terminal identity without consuming sources");
         OpRequest denied_remove; denied_remove.type = OpType::RealDelete;
         denied_remove.sources = {delete_first.wstring(), delete_second.wstring()};
         const auto denied_task = manager.Submit(denied_remove);
@@ -93,6 +105,7 @@ int main() {
         manager.CancelCurrent();
         check(wait([&] { return !manager.Status().active; }) && std::filesystem::exists(delete_first) &&
             std::filesystem::exists(delete_second), "cancel preserves protected deletion sources");
+        check(finished_without_move(denied_task), "authorization delete cancel publishes its own terminal identity");
         OpRequest remove; remove.type = OpType::RealDelete; remove.sources = {first.wstring()};
         const auto deleted = manager.Submit(remove);
         check(wait([&] { return manager.Status().task_id == deleted && !manager.Status().active; }) &&

@@ -107,6 +107,9 @@ private:
 // The popup window. One instance per app, reused across invocations.
 class FluentMenu {
     friend struct FluentMenuTestPeer;
+#ifdef PULSE_WITH_SELFTEST
+    friend struct P1MenuTestPeer;
+#endif
 public:
     FluentMenu() = default;
     ~FluentMenu();

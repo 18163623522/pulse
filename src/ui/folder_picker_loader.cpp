@@ -1,7 +1,9 @@
 #include "../common/windows_compat.h"
 #include "folder_picker_loader.h"
 
+#include "../common/display_path.h"
 #include "../common/localization.h"
+#include "../fs/fs_enum.h"
 
 #include <thread>
 #include <atomic>
@@ -20,51 +22,6 @@ bool IsShortcut(std::wstring_view name) {
     return name.size() >= 4 && CompareStringOrdinal(name.data() + name.size() - 4, 4, L".lnk", 4, TRUE) == CSTR_EQUAL;
 }
 
-std::wstring DriveTypeName(UINT type) {
-    switch (type) {
-    case DRIVE_FIXED: return l10n::Get(l10n::StringId::LocalDisk);
-    case DRIVE_REMOVABLE: return l10n::Get(l10n::StringId::RemovableDisk);
-    case DRIVE_REMOTE: return l10n::Get(l10n::StringId::NetworkDrive);
-    case DRIVE_CDROM: return l10n::Get(l10n::StringId::CdDrive);
-    default: return l10n::Get(l10n::StringId::Drive);
-    }
-}
-
-void ReadDrives(PickerListing& listing, const std::function<bool()>& cancelled) {
-    wchar_t roots[512]{};
-    const DWORD length = GetLogicalDriveStringsW(ARRAYSIZE(roots) - 1, roots);
-    if (length == 0 || length >= ARRAYSIZE(roots)) {
-        listing.error = GetLastError();
-        return;
-    }
-    // Empty card readers and optical drives must not raise "insert a disk".
-    DWORD old_mode = 0;
-    SetThreadErrorMode(SEM_FAILCRITICALERRORS, &old_mode);
-    for (const wchar_t* root = roots; *root; root += wcslen(root) + 1) {
-        if (cancelled()) return;
-        const UINT type = GetDriveTypeW(root);
-        if (type == DRIVE_NO_ROOT_DIR || type == DRIVE_UNKNOWN) continue;
-        PickerEntry entry;
-        entry.kind = PickerEntryKind::Drive;
-        entry.path = root;
-        wchar_t label[MAX_PATH + 1]{};
-        const bool ready = GetVolumeInformationW(root, label, ARRAYSIZE(label), nullptr,
-                                                 nullptr, nullptr, nullptr, 0) != FALSE;
-        if (ready) {
-            ULARGE_INTEGER free_bytes{}, total{};
-            if (GetDiskFreeSpaceExW(root, &free_bytes, &total, nullptr)) {
-                entry.size = total.QuadPart;
-                entry.free = free_bytes.QuadPart;
-            }
-        }
-        const std::wstring letter(root, 2);
-        entry.name = (label[0] ? std::wstring(label) : DriveTypeName(type)) +
-                     L" (" + letter + L")";
-        listing.entries.push_back(std::move(entry));
-    }
-    SetThreadErrorMode(old_mode, nullptr);
-}
-
 std::wstring NativePath(const std::wstring& path) {
     if (path.rfind(L"\\\\?\\", 0) == 0) return path;
     if (path.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + path.substr(2);
@@ -72,55 +29,72 @@ std::wstring NativePath(const std::wstring& path) {
     return path;
 }
 
-void ReadFolder(PickerListing& listing, PickerMode mode, const PickerOptions& options,
-                const std::function<bool()>& cancelled) {
-    std::wstring pattern = NativePath(listing.path);
-    if (!pattern.empty() && pattern.back() != L'\\') pattern += L'\\';
-    pattern += L'*';
-    WIN32_FIND_DATAW data{};
-    HANDLE find = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &data,
-                                   FindExSearchNameMatch, nullptr,
-                                   FIND_FIRST_EX_LARGE_FETCH);
-    if (find == INVALID_HANDLE_VALUE) {
-        listing.error = GetLastError();
-        // An empty drive root reports "no files" rather than an error.
-        if (listing.error == ERROR_FILE_NOT_FOUND) {
-            const DWORD attributes = GetFileAttributesW(NativePath(listing.path).c_str());
-            if (attributes != INVALID_FILE_ATTRIBUTES &&
-                (attributes & FILE_ATTRIBUTE_DIRECTORY))
-                listing.error = ERROR_SUCCESS;
-        }
-        return;
+// Why a folder could not be listed. An empty drive root reports "no files"
+// rather than an error.
+DWORD ListingError(const std::wstring& path, DWORD enumeration_error) {
+    const DWORD attributes = GetFileAttributesW(NativePath(path).c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        return error ? error : ERROR_PATH_NOT_FOUND;
     }
-    const std::wstring prefix = listing.path.back() == L'\\' ? listing.path
-                                                              : listing.path + L'\\';
-    do {
-        if (cancelled()) break;
-        if (!PickerShowsEntry(data.dwFileAttributes, data.cFileName, mode, options)) continue;
-        PickerEntry entry;
-        entry.name = data.cFileName;
-        entry.path = prefix + entry.name;
-        entry.kind = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            ? PickerEntryKind::Folder : mode == PickerMode::Image && !IsShortcut(entry.name) ? PickerEntryKind::Image : PickerEntryKind::File;
-        entry.modified = data.ftLastWriteTime;
-        entry.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
-        listing.entries.push_back(std::move(entry));
-    } while (FindNextFileW(find, &data));
-    const DWORD error = GetLastError();
-    if (!cancelled() && error != ERROR_NO_MORE_FILES) listing.error = error;
-    FindClose(find);
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_DIRECTORY;
+    if (enumeration_error == ERROR_FILE_NOT_FOUND || enumeration_error == ERROR_NO_MORE_FILES)
+        return ERROR_SUCCESS;
+    return enumeration_error ? enumeration_error : ERROR_READ_FAULT;
 }
 
+// The main window's enumeration (fs::EnumerateDirectory) feeds both the
+// picker's own rows (filtering, validation, type-ahead) and the directory
+// snapshot the shared pane renderer draws, in one order.
 PickerListing ReadListing(const std::wstring& path, PickerMode mode, const PickerOptions& options,
                           const std::function<bool()>& cancelled) {
     PickerListing listing;
     listing.path = path;
     DWORD old_mode = 0;
     SetThreadErrorMode(SEM_FAILCRITICALERRORS, &old_mode);
-    if (path.empty()) ReadDrives(listing, cancelled);
-    else ReadFolder(listing, mode, options, cancelled);
+    std::vector<fs::DirEntry> raw;
+    try {
+        fs::EnumerateDirectory(path, raw);
+    } catch (...) {
+        const DWORD error = GetLastError();
+        raw.clear();
+        listing.error = ListingError(path, error);
+    }
     SetThreadErrorMode(old_mode, nullptr);
-    if (!cancelled()) SortPickerEntries(listing.entries, options);
+    if (cancelled()) return listing;
+
+    const std::wstring prefix = path.empty() || path.back() == L'\\' ? path : path + L'\\';
+    listing.entries.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const fs::DirEntry& source = raw[i];
+        PickerEntry entry;
+        entry.source = i;
+        entry.name = source.name;
+        entry.path = !source.full_path.empty() ? pulse::path::FriendlyPathText(source.full_path)
+                                               : prefix + source.name;
+        entry.modified = source.mtime;
+        if (path.empty()) {
+            // This PC: drives come from the same rows as the main window's view.
+            if (source.drive_type == DRIVE_NO_ROOT_DIR || source.drive_type == DRIVE_UNKNOWN) continue;
+            entry.kind = PickerEntryKind::Drive;
+            entry.size = source.drive_total;
+            entry.free = source.drive_free;
+        } else {
+            if (source.full_path.empty() &&
+                !PickerShowsEntry(source.attrs, source.name, mode, options)) continue;
+            entry.kind = source.is_dir ? PickerEntryKind::Folder
+                : mode == PickerMode::Image && !IsShortcut(source.name) ? PickerEntryKind::Image
+                : PickerEntryKind::File;
+            entry.size = source.size;
+        }
+        listing.entries.push_back(std::move(entry));
+    }
+    // Drives keep the drive-letter order the enumeration produced.
+    if (!path.empty()) SortPickerEntries(listing.entries, options);
+    auto rows = std::make_shared<std::vector<fs::DirEntry>>();
+    rows->reserve(listing.entries.size());
+    for (const PickerEntry& entry : listing.entries) rows->push_back(std::move(raw[entry.source]));
+    listing.snapshot = std::move(rows);
     return listing;
 }
 

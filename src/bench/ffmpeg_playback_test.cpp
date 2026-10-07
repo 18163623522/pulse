@@ -119,6 +119,22 @@ void PureHelpers() {
     const char* tbr_only = "  Stream #0:0: Video: h264, yuv420p, 1280x720, 23.98 tbr, 1k tbn\n";
     Check(Near(ffmpeg::ParseFrameRate(tbr_only), 23.98, 1e-9), "tbr used when fps is absent");
     Check(!ParseFfmpegMediaInfo("Invalid data found when processing input\n", info), "garbage is no media");
+    const std::string misleading =
+        "Input #0, matroska, from 'file:test.mkv':\n"
+        "  Metadata:\n"
+        "    title           : Duration: 99:59:59.99 Video: h264, 9999x9999, SAR 99:1, 120 fps\n"
+        "    comment         : Stream #0:0: Video: h264, 9999x9999, 120 fps\n";
+    Check(ParseFfmpegMediaInfo(misleading + dvd, info) && info.duration == 905'000'000 &&
+          info.width == 1024 && info.height == 576 && info.fps == 25,
+          "metadata cannot override actual playback size SAR fps or seek duration");
+    Check(!ParseFfmpegMediaInfo(misleading, info), "metadata-only Video and Stream text do not create a stream");
+    const char* multiple =
+        "  Duration: N/A, start: 0\n"
+        "  Stream #0:0: Video: mjpeg, 600x600, 90k tbr (attached pic)\n"
+        "  Stream #0:1: Video: h264, yuv420p, 320x240 [SAR 2:1 DAR 8:3]\n"
+        "  Stream #0:2: Video: hevc, yuv420p, 1920x1080 [SAR 4:1 DAR 64:9], 60 fps\n";
+    Check(ParseFfmpegMediaInfo(multiple, info) && info.duration == 0 && info.width == 640 &&
+          info.height == 240 && info.fps == 0, "video properties all belong to first real stream, not cover or later stream");
 }
 
 void Integration(const std::wstring& fixture_exe, const std::wstring& ffmpeg_exe) {
@@ -131,7 +147,10 @@ void Integration(const std::wstring& fixture_exe, const std::wstring& ffmpeg_exe
     const std::wstring q = ffmpeg::QuoteArgument(fixture_exe);
     const bool made_video = RunWait(q + L" -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=320x240:rate=30:duration=4"
         L" -f lavfi -i sine=frequency=440:duration=4 -c:v libx265 -preset ultrafast -x265-params log-level=none"
-        L" -c:a aac -shortest " + ffmpeg::QuoteArgument(video));
+        L" -c:a aac -shortest -metadata " + ffmpeg::QuoteArgument(
+            L"title=Duration: 99:59:59.99 Video: h264, 9999x9999 [SAR 99:1], 120 fps") +
+        L" -metadata " + ffmpeg::QuoteArgument(L"comment=Stream #0:0: Video: h264, 9999x9999, 120 fps") +
+        L" " + ffmpeg::QuoteArgument(video));
     const bool made_audio = RunWait(q + L" -hide_banner -loglevel error -y -f lavfi -i sine=frequency=330:duration=1.5"
         L" -c:a wavpack " + ffmpeg::QuoteArgument(audio));
     Check(made_video && made_audio, "fixtures generated");

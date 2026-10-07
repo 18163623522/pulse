@@ -222,12 +222,14 @@ bool ScrollStripBy(AppState& s, const ui::WindowViewModel& vm, int pane_index, f
 void SelectByName(AppState& s, app::Tab& tab, const std::wstring& name) {
     tab.pending_selected_names = {name};
     tab.pending_selected_name = name;
+    tab.pending_selection_revision = tab.selection_revision;
     tab.pending_ensure_selection_visible = true;
     if (!tab.snapshot) return;
     const auto& entries = *tab.snapshot;
     for (size_t i = 0; i < entries.size(); ++i) {
         if (!SamePath(entries[i].name, name) || !tab.EntryVisible(static_cast<int>(i))) continue;
         tab.SelectOnly(static_cast<int>(i));
+        tab.pending_selection_revision = tab.selection_revision;
         EnsureRowVisible(s, tab, static_cast<int>(i));
         s.scrollTargetY = tab.scroll_y;
         s.scrollAnimating = false;

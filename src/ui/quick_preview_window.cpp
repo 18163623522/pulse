@@ -54,6 +54,7 @@ constexpr bool kImageExtras = true;
 constexpr UINT_PTR kTableTipTimer = 73;
 constexpr float kHudHeight = 28.0f;
 constexpr UINT_PTR kAnimationTimer = 7;
+constexpr UINT_PTR kPreviewDeadlineTimer = 31;
 constexpr UINT_PTR kFindEditCaretTimer = 71;
 constexpr UINT_PTR kZoomCloseTimer = 72;
 constexpr double kZoomOpenSeconds = 0.22;
@@ -185,6 +186,10 @@ void QuickPreviewWindow::ResetTextState() {
 }
 
 void QuickPreviewWindow::ResetView() {
+    if (hwnd_) KillTimer(hwnd_, kPreviewDeadlineTimer);
+    preview_deadline_ = 0;
+    thumbnails_.TakeRetryDeadline();
+    sheet_request_ = 0;
     preview_notice_.clear();
     preview_notice_height_ = 0;
     ResetPlayback();
@@ -211,7 +216,6 @@ void QuickPreviewWindow::ResetAnimation() {
     CancelPlaybackScrub();
     if (hwnd_) KillTimer(hwnd_, kAnimationTimer);
     frame_index_ = 0; requested_frame_ = 0; frame_count_ = 1; frame_delay_ms_ = 0;
-    sheet_request_ = 0;
     loop_count_ = 0; completed_loops_ = 0;
     animation_active_ = false; waiting_for_frame_ = false; animation_started_ = false;
 }
@@ -391,7 +395,8 @@ void QuickPreviewWindow::Resize() {
 
 float QuickPreviewWindow::FindBarHeight() const noexcept {
     return find_open_ && (native_kind_ == NativeKind::Text || native_kind_ == NativeKind::Hex ||
-                          native_kind_ == NativeKind::Archive || native_kind_ == NativeKind::Markdown)
+                          native_kind_ == NativeKind::Archive || native_kind_ == NativeKind::Markdown ||
+                          native_kind_ == NativeKind::Table || native_kind_ == NativeKind::Tree)
         ? kFindBarHeight * scale_ : 0.0f;
 }
 
@@ -897,7 +902,7 @@ bool QuickPreviewWindow::HitTestText(float x, float y, uint32_t& index) {
     DWRITE_HIT_TEST_METRICS metrics{};
     if (FAILED(text_layout_->HitTestPoint(x - origin_x, y - origin_y, &trailing, &inside,
                                           &metrics))) return false;
-    index = metrics.textPosition + (trailing ? 1u : 0u);
+    index = metrics.textPosition + (trailing ? metrics.length : 0u);
     index = (std::min)(index, static_cast<uint32_t>(preview_text_.size()));
     return true;
 }
@@ -992,8 +997,6 @@ bool QuickPreviewWindow::EnsureFindEdit() {
     find_edit_ = CreateChildEdit(hwnd_);
     if (!find_edit_) return false;
     SetWindowTheme(find_edit_, L"", L"");
-    if (!compositor_.CustomEditEnabled())
-        SetLayeredWindowAttributes(find_edit_, 0, 255, LWA_ALPHA);
     if (find_edit_font_)
         SendMessageW(find_edit_, WM_SETFONT, reinterpret_cast<WPARAM>(find_edit_font_), TRUE);
     if (!find_edit_brush_)
@@ -1650,7 +1653,25 @@ void QuickPreviewWindow::DrawChromeButtons(ID2D1DeviceContext* dc,
     }
 }
 
+void QuickPreviewWindow::SchedulePreviewDeadline() {
+    uint64_t deadline = thumbnails_.TakeRetryDeadline();
+    const auto handler = handler_.NextDeadline();
+    if (handler && (!deadline || handler < deadline)) deadline = handler;
+    if (!hwnd_ || closing_ || !visible()) deadline = 0;
+    if (deadline == preview_deadline_) return;
+    KillTimer(hwnd_, kPreviewDeadlineTimer);
+    preview_deadline_ = 0;
+    if (deadline) {
+        const auto now = GetTickCount64();
+        const auto wait = deadline > now ? deadline - now : 1;
+        if (SetTimer(hwnd_, kPreviewDeadlineTimer,
+            static_cast<UINT>((std::min)(wait, uint64_t{USER_TIMER_MAXIMUM})), nullptr))
+            preview_deadline_ = deadline;
+    }
+}
+
 void QuickPreviewWindow::Render() {
+    thumbnails_.BeginFrame();
     if (!compositor_.Dc()) return;
     if (compositor_.NeedsRecovery()) {
         if (!compositor_.Recover()) return;
@@ -2111,6 +2132,7 @@ void QuickPreviewWindow::Render() {
         compositor_.TextFormat()->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         compositor_.TextFormat()->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
+    SchedulePreviewDeadline();
     const HRESULT result = dc->EndDraw();
     if (result == D2DERR_RECREATE_TARGET || result == DXGI_ERROR_DEVICE_REMOVED ||
         result == DXGI_ERROR_DEVICE_RESET) compositor_.NotifyDeviceLost(result);
@@ -2198,6 +2220,7 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         RecreateFormats();
         thumbnails_.SetDeviceContext(compositor_.Dc());
         thumbnails_.SetNotifyWindow(hwnd_);
+        markdown_.SetNotifyWindow(hwnd_);
         handler_.SetNotifyWindow(hwnd_);
         return 0;
     case WM_SIZE:
@@ -2246,7 +2269,8 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
             archive_.Scroll(steps);
             archive_.Hover(static_cast<float>(cursor.x), static_cast<float>(cursor.y));
         } else if (native_kind_ == NativeKind::Markdown) {
-            markdown_.ScrollAt(static_cast<float>(cursor.x), static_cast<float>(cursor.y), steps);
+            if ((GET_KEYSTATE_WPARAM(wparam) & MK_SHIFT) != 0) markdown_.ScrollHorizontal(steps);
+            else markdown_.ScrollAt(static_cast<float>(cursor.x), static_cast<float>(cursor.y), steps);
         } else if (native_kind_ == NativeKind::Table) {
             table_.Scroll(steps, (GET_KEYSTATE_WPARAM(wparam) & MK_SHIFT) != 0);
             KillTimer(hwnd_, kTableTipTimer);
@@ -2261,9 +2285,10 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
     }
     case WM_MOUSEHWHEEL: {
         // Tilt wheel / touchpad sideways: the table grid scrolls horizontally.
-        if (native_kind_ != NativeKind::Table) break;
+        if (native_kind_ != NativeKind::Table && native_kind_ != NativeKind::Markdown) break;
         const float steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
-        if (table_.Scroll(-steps, true)) InvalidateRect(hwnd_, nullptr, FALSE);
+        const bool changed = native_kind_ == NativeKind::Table ? table_.Scroll(-steps, true) : markdown_.ScrollHorizontal(-steps);
+        if (changed) InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -2549,6 +2574,14 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
         return 0;
     }
     case WM_TIMER:
+        if (wparam == kPreviewDeadlineTimer) {
+            KillTimer(hwnd_, kPreviewDeadlineTimer);
+            if (preview_deadline_) {
+                preview_deadline_ = 0;
+                if (!closing_ && visible()) InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
         if (wparam == kTableTipTimer) {
             KillTimer(hwnd_, kTableTipTimer);
             if (native_kind_ == NativeKind::Table && table_.ShowTip())
@@ -2726,7 +2759,7 @@ LRESULT QuickPreviewWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lp
             return 0;
         }
         if (native_kind_ == NativeKind::Markdown && !find_open_ && !ctrl &&
-            (wparam == VK_PRIOR || wparam == VK_NEXT ||
+            (wparam == VK_PRIOR || wparam == VK_NEXT || wparam == VK_LEFT || wparam == VK_RIGHT ||
              ((wparam == VK_HOME || wparam == VK_END) && !HasPlayback()))) {
             markdown_.Key(static_cast<UINT>(wparam));
             InvalidateRect(hwnd_, nullptr, FALSE);

@@ -63,12 +63,19 @@ inline Integrity DescribeIntegrity(const DecodeResult& result, bool made) {
     if (payload.starts_with(L"PULSEARC\t")) {
         const auto fields = IntegrityFields(payload.substr(0, payload.find(L'\n')));
         status.unit = IntegrityUnit::Entries;
-        for (const auto c : payload) if (c == L'\n') ++status.loaded;
-        if (status.loaded && payload.back() == L'\n') --status.loaded;
+        for (size_t at = payload.find(L'\n'); at != payload.npos;) {
+            const size_t start = at + 1;
+            at = payload.find(L'\n', start);
+            const auto line = payload.substr(start, at == payload.npos ? at : at - start);
+            if (!line.empty() && !line.starts_with(L"#")) ++status.loaded;
+        }
         if (fields[4] != L"0") {
             status.state = IntegrityState::Partial;
-            status.reason = IntegrityReason::IncompleteDirectory;
+            status.reason = fields[5] == L"scan-error" ? IntegrityReason::ReadFailure :
+                fields[5] == L"display-limit" || fields[5] == L"scan-limit" ? IntegrityReason::Limit :
+                IntegrityReason::IncompleteDirectory;
         } else status.total = status.loaded;
+        if (fields[2] == L"DIR" && !fields[6].empty()) status.total = IntegrityNumber(fields[6]);
     } else if (payload.starts_with(L"PULSETBL\t")) {
         uint64_t selected = 0, sheet = 0;
         size_t at = payload.find(L"\nW\t");

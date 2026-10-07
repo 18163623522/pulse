@@ -1,5 +1,6 @@
 // app_state.h — Window process state, shot request, and WM_APP message ids.
 #pragma once
+#include "tray_compare_metadata.h"
 #include "../common/path_utils.h"
 
 #include "../ui/ui_compositor.h"
@@ -19,6 +20,7 @@
 #include "../fs/fs_watch.h"
 #include "app_model.h"
 #include "live_network_search.h"
+#include "tray_compare_metadata.h"
 #include "frame_pump.h"
 #include <deque>
 #include <atomic>
@@ -249,14 +251,9 @@ struct AppState {
     GlobalSearchWindow globalSearchWindow;
     app::SingleInstanceCoordinator single_instance;
     ui::BloomAccentPicker bloom_accent;
-    std::unordered_set<std::wstring> tagFallbackVolumes;
+    uint64_t tagAdsResultRevision = 0;
     std::unordered_set<std::wstring> tagAdsDiscoveryQueued;
     std::unordered_set<std::wstring> tagAdsDiscoveryChecked;
-    const void* tagAdsLastSnapshot = nullptr;
-    std::wstring tagAdsLastViewPath;
-    std::wstring tagAdsLastFilter;
-    int tagAdsLastFirstRow = -1;
-    int tagAdsLastLastRow = -1;
     index::IndexClient index;
     app::FolderSizes folderSizes;
     ChangeTrackingUi changes;
@@ -278,6 +275,7 @@ struct AppState {
         index::SearchResult network;
         bool local_ready = false;
         bool network_ready = false;
+        bool network_snapshot = false; // Captured for this request, not global root configuration.
         std::wstring live_network_root;  // #74: scope walked live instead of the network index
     };
     std::unordered_map<uint32_t, PendingIndexSearch> pendingIndexSearches;
@@ -294,6 +292,7 @@ struct AppState {
     HWND advancedCountHwnd = nullptr;
     // Session autosave: last written JSON, so unchanged state is never rewritten.
     std::wstring sessionSavedJson;
+    // Shutdown messages can arrive while WM_CREATE is rolling back.
     bool updateSessionPrepared = false;
     bool restoreUpdateSession = false;
     std::wstring prefsSavedJson;
@@ -308,6 +307,7 @@ struct AppState {
     unsigned settingsExpanded = ui::kSettingsDefaultExpandedMask;
     ui::ThemeMode themeOverride = ui::ThemeMode::Auto;
     bool safeMode = false;
+    bool startupComplete = false; // WM_CREATE committed loaded/restored state; rollback must not save.
     bool isolatedTest = false;
     bool isolatedTestPersist = false; // selftest builds: test instance saves into PULSE_TEST_DATA_DIR
     bool contentIndexObserver = false;
@@ -398,6 +398,8 @@ struct AppState {
     // Smooth scroll animation.
     bool scrollAnimating = false;
     float scrollTargetY = 0.0f;
+    float scrollTargetX = 0.0f;
+    bool scrollHorizontal = false;
     std::chrono::steady_clock::time_point scrollLastUpdateTime;
     // Keep wheel input visually attached to the content. A longer response
     // reads as lag when a frame is already close to the 16.7 ms budget.
@@ -542,6 +544,7 @@ struct AppState {
     bool trayDragOut = false;          // tray contents are being dragged out (not a tray target)
     ULONGLONG trayProbeAt = 0;         // last staging-tray existence probe (UI timer, 2 s)
     bool trayCompare = false;          // two-file compare table replaces the card stack
+    std::unique_ptr<app::TrayCompareMetadata> trayMetadata;
     std::shared_ptr<TrayCompareJob> trayCmpJob; // on-demand byte comparison
     std::shared_ptr<TrayTextProbe> trayTextProbe; // text/binary probe for "view diff"
     std::unique_ptr<ui::TextDiffWindow> textDiff; // stand-alone text compare window
@@ -758,7 +761,6 @@ struct AppState {
     std::vector<std::wstring> completedCutClipboardPaths;
 
     // After a "new folder/file" op lands, select it and start renaming.
-    std::wstring pendingRenameName;
 
 };
 

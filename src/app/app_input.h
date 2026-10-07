@@ -47,6 +47,6 @@ float TagEaseOutCubic(float x);
 float TagEaseInOutQuad(float t);
 void TickTagTransitions(AppState& s);
 void TickTabTransitions(AppState& s);
-void StartSmoothScroll(AppState& s, float delta);
+void StartSmoothScroll(AppState& s, float delta, bool horizontal = false);
 void UpdateSmoothScroll(AppState& s);
 } // namespace pulse

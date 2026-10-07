@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace pulse::app {
@@ -21,6 +22,16 @@ public:
 
     AcquireResult Acquire(std::wstring_view mutex_name = {});
     void Release();
+    bool PublishEndpoint(HWND window);
+    bool PublishWindow(HWND window) { return PublishEndpoint(window); }
+    static std::optional<std::wstring> ResolveOpenPath(const std::wstring& path) {
+        std::wstring normalized;
+        if (!NormalizeLaunchPath(path, normalized)) return std::nullopt;
+        return normalized;
+    }
+    bool OwnsEndpoint(HWND window) const;
+    static HWND FindPrimaryWindow(std::wstring_view endpoint_name = {});
+    static bool NormalizeLaunchPath(const std::wstring& input, std::wstring& output);
     bool ForwardOpenPath(const std::wstring& path, DWORD timeout_ms = 2000) const;
     enum class OpenAcceptance { Invalid, New, Duplicate };
     struct OpenRequest {
@@ -39,6 +50,11 @@ public:
 
 private:
     HANDLE mutex_ = nullptr;
+    HANDLE endpoint_mapping_ = nullptr;
+    void* endpoint_view_ = nullptr;
+    HWND endpoint_window_ = nullptr;
+    std::wstring endpoint_name_;
+    std::wstring endpoint_nonce_;
     std::map<std::array<unsigned char, 16>, OpenRequest> accepted_;
 };
 

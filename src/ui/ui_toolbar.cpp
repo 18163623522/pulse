@@ -81,6 +81,8 @@ void MainRenderer::DrawToolbar(const WindowViewModel& vm, const D2D1_RECT_F& rec
     DrawAddressSearchChrome(vm, rect.right, theme);
     MakeBrush(dc,theme.stroke_divider,brStrokeDivider_);
     FillRect(dc,brStrokeDivider_.get(),left+margin_,title_bar_height_+44*scale_,rect.right-left-2*margin_,scale_);
+    // Embedded hosts (the file picker) keep the address row only.
+    if (embedded_) return;
     const std::wstring label=l10n::Get(l10n::StringId::New);
     fluent::ButtonSpec create;
     create.bounds=layout.create; create.text=compact ? std::wstring_view{} : std::wstring_view{label};

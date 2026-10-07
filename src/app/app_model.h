@@ -5,9 +5,11 @@
 #include "../fs/fs_snapshot.h"
 #include "../ui/ui_renderer.h"
 #include "places.h"
+#include "tag_ads_sync.h"
 #include "column_view_model.h"
 #include "explorer_handoff.h"
 #include "entry_order_hold.h"
+#include "create_rename_intent.h"
 #include "pane_header_animation.h"
 #include "../index/content_result_store.h"
 #include <map>
@@ -50,6 +52,7 @@ struct Tab {
     float scroll_x = 0.0f;
     ui::ViewMode view_mode = ui::ViewMode::Details;
     uint64_t view_generation = 1;
+    std::vector<CreateRenameIntent> create_rename_intents;
     ui::SortColumn sort_column = ui::SortColumn::Name;
     ui::SortDirection sort_direction = ui::SortDirection::Asc;
     // "Group by" (app::GroupBy value) for current_path. Only list-like views
@@ -75,6 +78,7 @@ struct Tab {
     std::wstring virtual_title; // tag/search views; empty for real folders
     std::wstring banner_title;
     std::wstring banner_message;
+    TagAdsNoticeState tag_ads_notice;
     std::wstring network_live_root;        // #74: banner offers adding this share to the network index
     std::wstring network_live_added_root;  // #74: share added from the banner, crawl pending
     bool net_readonly = false;
@@ -97,6 +101,7 @@ struct Tab {
     std::wstring pending_selected_name;
     std::wstring pending_preview_rename;
     std::vector<std::wstring> pending_selected_names;
+    uint64_t pending_selection_revision = UINT64_MAX;
     bool pending_ensure_selection_visible = false;
     // File Explorer order hold (#13): change patches and non-explicit
     // refreshes keep rows in place until F5, a new sort or reopening.
@@ -216,11 +221,11 @@ struct Tab {
     void MaterializeSelection();
     void SelectOnly(int index);
     void ToggleSelect(int index);
-    void SelectRange(int from, int to);
+    void SelectRange(int from, int to, const ui::PaneViewModel* view = nullptr);
     void SelectAll();
     void SelectIndices(const std::vector<int>& indices);
     void InvertIndices(const std::vector<int>& universe);
-    void MoveFocus(int index, bool extend);
+    void MoveFocus(int index, bool extend, const ui::PaneViewModel* view = nullptr);
     bool IsSelected(int index) const;
     int SelectedCount() const;
     std::vector<int> SelectedIndices() const;
@@ -228,7 +233,8 @@ struct Tab {
     // selection revision + snapshot so the status bar stays O(1) per paint.
     // Not for content_results tabs (use ContentSelectionSize).
     void SelectionSizeSummary(uint64_t* bytes, int* files, int* folders) const;
-    void RemapSelection(const std::vector<std::wstring>& names, const std::wstring& focus_name);
+    void RemapSelection(const std::vector<std::wstring>& names, const std::wstring& focus_name,
+                        bool select_first_if_missing = true);
 
     // Navigation helpers.
     void NavigateTo(const std::wstring& path);
@@ -429,6 +435,10 @@ bool SetTabGroup(WindowTabs& tabs, size_t index, int group);
 // Staging tray: collect file paths into batches.
 // ---------------------------------------------------------------------------
 struct TrayItem {
+    uint64_t id = 0;
+    uint64_t inflight_task = 0;
+    bool inflight_move = false;
+    std::wstring inflight_source;
     std::wstring path;
     bool exists = true;
     bool is_dir = false;
@@ -437,6 +447,7 @@ struct TrayItem {
 };
 
 struct TrayBatch {
+    uint64_t id = 0;
     std::vector<TrayItem> items;
     bool move_intent = false;
     uint64_t total_size = 0;
@@ -453,13 +464,21 @@ public:
     void ReplacePath(const std::wstring& from, const std::wstring& to);
     // Re-probe local items (moved/deleted outside Pulse); true when any flag flipped.
     bool RefreshExists();
+    // Apply a completed background probe without performing I/O on the caller.
+    void ApplyMetadata(const std::wstring& path, const WIN32_FILE_ATTRIBUTE_DATA& data);
     // Drop every item whose file is gone; returns how many were removed.
     size_t RemoveMissing();
     // Flip a batch between copy and move on release (tray intent chip).
     void SetMoveIntent(size_t idx, bool move_intent);
     void RemoveItem(size_t batch_idx, size_t item_idx);
     void RemoveDeleted(const std::vector<std::wstring>& paths);
+    void MarkPendingMove(uint64_t task_id, const std::vector<std::wstring>& paths,
+                         std::optional<size_t> batch = {});
+    void CompleteMove(uint64_t task_id, const std::vector<std::wstring>& moved);
     void Clear();
+    void MarkInFlight(uint64_t task_id, const std::vector<uint64_t>& item_ids, bool move);
+    void CompleteTask(uint64_t task_id, const std::vector<std::wstring>& moved_sources);
+    bool IsInFlight(const std::wstring& path) const;
 
     // For serialization.
     void ToJson(std::wstring& out) const;
@@ -467,6 +486,8 @@ public:
 
 private:
     std::vector<TrayBatch> batches_;
+    uint64_t next_id_ = 1;
+    std::map<uint64_t, std::vector<std::wstring>> inflight_sources_;
 };
 
 // ---------------------------------------------------------------------------

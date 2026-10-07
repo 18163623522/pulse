@@ -5,17 +5,13 @@
 namespace pulse {
 std::wstring GlobalSearchHandoffPath(const GlobalSearchHandoff& request) {
     if (request.query.empty()) return {};
+    if (!request.content)
+        return app::MakeSearchPath(app::CompileNameQueryInput(request.query, request.folder));
     app::AdvancedSearchSpec spec;
-    if (request.content) spec.content = request.query;
+    spec.content = request.query;
     spec.current_folder = request.folder;
     spec.location = request.folder.empty() ? app::LocationScope::Indexed : app::LocationScope::CurrentFolder;
-    auto query = app::CompileSearchQuery(spec);
-    if (!request.content) {
-        const auto raw = !request.folder.empty() && !index::ParseQuery(request.query).path_prefix.empty()
-            ? index::QueryWithoutPathPrefix(request.query) : request.query;
-        query = raw + (query.empty() ? L"" : L" " + query);
-    }
-    return app::MakeSearchPath(query);
+    return app::MakeSearchPath(app::CompileSearchQuery(spec));
 }
 
 } // namespace pulse

@@ -1,4 +1,5 @@
 #include "folder_sizes_ui.h"
+#include "folder_size_store.h"
 #include "app_state.h"
 #include "session.h"
 #include "../common/text_format.h"
@@ -37,6 +38,8 @@ void FillFolderSizes(AppState& s, ui::WindowViewModel& vm) {
         auto& pane = slot.pane;
         pane.folder_size_labels.clear();
         pane.folder_size_actions.clear();
+        pane.folder_size_muted.clear();
+        pane.folder_size_running.clear();
         // Content hits are files held in a separate paged store, not snapshot/entries.
         if (pane.loading || pane.content_results ||
             (!pane.is_file_system && !pane.is_search) || pane.is_recycle) continue;
@@ -87,39 +90,89 @@ void FillFolderSizes(AppState& s, ui::WindowViewModel& vm) {
             const auto dir = app::GetPulseDataDir();
             return dir.empty() ? std::wstring() : dir + L"\\folder_sizes.json";
         });
+    if (s.isolatedTest && s.shot.active) {
+        wchar_t cache[32768]{};
+        const auto count = GetEnvironmentVariableW(L"PULSE_TEST_FOLDER_SIZE_CACHE", cache, ARRAYSIZE(cache));
+        if (count && count < ARRAYSIZE(cache))
+            s.folderSizes.SetCachePath([file = std::wstring(cache)] { return file; });
+    }
     const bool probe_index = (s.isolatedTest || s.shot.active) &&
         GetEnvironmentVariableW(L"PULSE_TEST_FOLDER_INDEX", nullptr, 0) > 0;
     s.folderSizes.SetIndexEnabled((!s.isolatedTest && !s.shot.active) || probe_index);
     s.folderSizes.Sync(std::move(requests), std::move(roots));
-    using S = app::FolderSizeState;
-    using I = l10n::StringId;
     for (const auto& row : rows) {
         const auto value = s.folderSizes.Get(row.path);
-        std::wstring text = value.has_value ? format::ByteSize(value.bytes) : L"";
+        const auto work = s.folderSizes.GetWork(row.path);
+        std::wstring text = value.has_value ? format::ByteSize(value.bytes) :
+            l10n::Get(work.Running() ? l10n::StringId::Calculating : l10n::StringId::FolderSizeCalculate);
         if (value.has_value && value.partial) text = L"\u2265 " + text;
-        auto suffix = [&](I id) {
-            if (!text.empty()) text += L" · ";
-            text += l10n::Get(id);
-        };
-        switch (value.state) {
-        case S::Indexed: suffix(I::FolderSizeIndexed); break;
-        case S::Manual: suffix(I::FolderSizeCalculate); break;
-        case S::Calculating: suffix(I::Calculating); break;
-        case S::Updating: suffix(I::FolderSizeUpdating); break;
-        case S::Partial: suffix(I::FolderSizePartial); break;
-        case S::Unavailable: suffix(I::FolderSizeUnavailable); break;
-        case S::Cached: suffix(I::FolderSizeCached); break;
-        default: break;
-        }
+        if (value.has_value && (value.state == app::FolderSizeState::Cached ||
+            value.source != app::FolderSizeSource::Scan)) row.pane->folder_size_muted.insert(row.index);
+        if (work.Running()) row.pane->folder_size_running.insert(row.index);
         row.pane->folder_size_labels.emplace(row.index, std::move(text));
-        if (value.state == S::Manual || value.state == S::Unavailable ||
-            value.state == S::Cached || value.state == S::Partial || value.state == S::Indexed)
-            row.pane->folder_size_actions.insert(row.index);
+        // The size cell is the explicit calculate/cancel entry point; work
+        // activity belongs to its tooltip, not the published numeric label.
+        row.pane->folder_size_actions.insert(row.index);
     }
     for (const auto& slot : vm.pane_slots) if (slot.focused) {
         vm.pane.folder_size_labels = slot.pane.folder_size_labels;
         vm.pane.folder_size_actions = slot.pane.folder_size_actions;
+        vm.pane.folder_size_muted = slot.pane.folder_size_muted;
+        vm.pane.folder_size_running = slot.pane.folder_size_running;
     }
+}
+
+std::wstring DescribeFolderSize(AppState& s, const std::wstring& path) {
+    const auto value = s.folderSizes.Get(path);
+    const auto work = s.folderSizes.GetWork(path);
+    std::wstring text;
+    if (!value.has_value) text = l10n::Pick(L"尚未统计文件夹大小", L"Folder size not calculated");
+    else if (value.partial) text = l10n::Pick(L"部分统计 · 显示已知下限", L"Partial calculation · known lower bound");
+    else if (value.source == app::FolderSizeSource::Index)
+        text = l10n::Pick(L"索引估算 · 尚未完整核验", L"Index estimate · not fully verified");
+    else if (value.state == app::FolderSizeState::Cached || value.source == app::FolderSizeSource::Unknown)
+        text = l10n::Pick(L"上次统计 · 待核验", L"Previous calculation · awaiting verification");
+    else text = value.verified ? l10n::Pick(L"完整统计 · 已监控目录变化", L"Complete calculation · changes monitored") :
+        l10n::Pick(L"完整统计 · 本次扫描快照", L"Complete calculation · scan snapshot");
+    if (value.has_value) {
+        text += std::wstring(L"\n") + (value.partial ? l10n::Pick(L"至少 ", L"At least ") : L"") +
+            format::ByteSize(value.bytes) + l10n::Pick(L" · 不跟随目录链接", L" · directory links excluded");
+        if (value.verified_at) {
+            const auto now = app::folder_size::NowUtcMs();
+            const auto seconds = now >= value.verified_at ? (now - value.verified_at) / 1000 : 0;
+            text += std::wstring(L"\n") + l10n::Pick(L"结果时间：", L"Calculated: ");
+            if (seconds < 60) text += l10n::Pick(L"刚刚", L"just now");
+            else if (seconds < 3600) text += std::to_wstring(seconds / 60) + l10n::Pick(L" 分钟前", L" minutes ago");
+            else if (seconds < 86400) text += std::to_wstring(seconds / 3600) + l10n::Pick(L" 小时前", L" hours ago");
+            else text += std::to_wstring(seconds / 86400) + l10n::Pick(L" 天前", L" days ago");
+        }
+    }
+    // Explain omissions in the published result, not an unrelated in-flight subtotal.
+    const auto issues = value.has_value ? value.issues : work.issues;
+    const auto skipped = value.has_value ? value.skipped : work.skipped;
+    if (issues || skipped) {
+        text += std::wstring(L"\n") + l10n::Pick(L"未计入目录：", L"Excluded directories: ") + std::to_wstring(skipped);
+        if (issues & app::SizeAccessDenied) text += l10n::Pick(L" · 权限不足", L" · access denied");
+        if (issues & app::SizeOffline) text += l10n::Pick(L" · 离线", L" · offline");
+        if (issues & app::SizeLink) text += l10n::Pick(L" · 目录链接", L" · directory links");
+        if (issues & app::SizeIoError) text += l10n::Pick(L" · 读取失败", L" · I/O error");
+    }
+    if (work.Running()) {
+        text += std::wstring(L"\n") + (work.activity == app::FolderSizeActivity::Queued ?
+            l10n::Pick(L"等待统计：", L"Queued: ") : l10n::Pick(L"正在统计：", L"Calculating: ")) + std::to_wstring(work.entries) +
+            l10n::Pick(L" 项 · ", L" entries · ") + format::ByteSize(work.bytes);
+        text += std::wstring(L"\n") + (work.manual ? l10n::Pick(L"点击取消，保留上次结果", L"Click to cancel and keep the previous result")
+                                          : l10n::Pick(L"点击优先完整统计", L"Click to prioritize a full calculation"));
+    } else {
+        if (work.activity == app::FolderSizeActivity::Deferred)
+            text += std::wstring(L"\n") + l10n::Pick(L"已暂停自动统计，避免影响浏览", L"Automatic calculation paused to keep browsing responsive");
+        if (work.activity == app::FolderSizeActivity::Failed)
+            text += std::wstring(L"\n") + l10n::Pick(L"部分目录不可统计，已停止自动重试", L"Incomplete coverage; automatic retry is backed off");
+        if (work.activity == app::FolderSizeActivity::Cancelled)
+            text += std::wstring(L"\n") + l10n::Pick(L"统计已取消，保留原结果", L"Calculation cancelled; previous result retained");
+        text += std::wstring(L"\n") + l10n::Pick(L"点击重新统计", L"Click to recalculate");
+    }
+    return text;
 }
 
 bool ResortForFolderSizes(AppState& s) {
@@ -127,7 +180,8 @@ bool ResortForFolderSizes(AppState& s) {
     const uint64_t now = GetTickCount64();
     // Rows must not move under a press (the click resolves by index), a drag
     // or the rename box.
-    const bool busy = s.renameIndex >= 0 || s.marqueeActive || s.dragPending ||
+    const bool busy = s.scrollAnimating || s.scrollbarDragging ||
+        s.renameIndex >= 0 || s.marqueeActive || s.dragPending ||
         (GetKeyState(VK_LBUTTON) & 0x8000) != 0 || (GetKeyState(VK_RBUTTON) & 0x8000) != 0;
     ForEachPane(s, [&](app::Pane& pane) {
         app::Tab* tab = pane.ActiveTab();
@@ -137,10 +191,12 @@ bool ResortForFolderSizes(AppState& s) {
             tab->snapshot_path != tab->current_path || !tab->held_renames.empty() ||
             tab->snapshot->size() > kLiveResortLimit)
             return;
+        // Do not build/copy the size lookup on every timer tick during motion.
+        if (busy) { waiting = true; return; }
         const auto sizes = s.folderSizes.KnownChildren(tab->current_path);
         const uint64_t signature = app::FolderSizeSignature(sizes);
         if (signature == tab->folder_size_signature) return;
-        if (busy || now - tab->folder_size_resorted_at < kResortIntervalMs) {
+        if (now - tab->folder_size_resorted_at < kResortIntervalMs) {
             waiting = true;
             return;
         }

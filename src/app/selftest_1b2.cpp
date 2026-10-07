@@ -88,6 +88,19 @@
 #include <string>
 #include <vector>
 
+bool RunWorkspaceRestoreTest();
+bool RunListingSelectionRestoreTest();
+bool RunContentPatternSelectionTest();
+bool RunContentHistoryOrderTest();
+bool RunOperationIntentUiTest();
+int RunTrayCompletionTest();
+bool RunTrayTagsUiTest();
+bool RunTabPinBoundaryTest();
+bool RunDialogRecoveryTest();
+bool RunTagColorCommandTest();
+bool RunPreviewDeadlineTest();
+bool RunTagDeleteViewTest();
+
 namespace pulse::ui {
 struct FluentMenuTestPeer {
     static bool SeedCachedEditor(FluentMenu& menu) {
@@ -7087,6 +7100,13 @@ int RunSelfTest1B2() {
     g_log = _wfopen_s(&g_log_local, kLogPath.c_str(), L"w, ccs=UTF-8") == 0
         ? g_log_local : nullptr;
 
+    wchar_t tag_delete_case[64]{};
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", tag_delete_case, ARRAYSIZE(tag_delete_case)) &&
+        wcscmp(tag_delete_case, L"tag-delete-view") == 0) {
+        const bool passed = ::RunTagDeleteViewTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
     wchar_t skip_visual[8]{};
     g_skip_visual = GetEnvironmentVariableW(L"PULSE_SELFTEST_NO_SCREENSHOTS", skip_visual, ARRAYSIZE(skip_visual)) > 0;
     if (g_skip_visual) LogLine(L"[SKIP] Screenshot capture disabled\n");
@@ -7097,6 +7117,67 @@ int RunSelfTest1B2() {
         LogLine(L"\n== audit-tabs: %d passed, %d failed ==\n", g_pass, g_fail);
         if (g_log) { fclose(g_log); g_log = nullptr; }
         return g_fail ? 1 : 0;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"tab-pin-boundary") == 0) {
+        const bool passed = ::RunTabPinBoundaryTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"tray-tags") == 0) {
+        const bool passed = ::RunTrayTagsUiTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"preview-deadline") == 0) {
+        const bool passed = ::RunPreviewDeadlineTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"tag-color-command") == 0) {
+        const bool passed = ::RunTagColorCommandTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"dialog-recovery") == 0) {
+        const bool passed = ::RunDialogRecoveryTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"tray-completion") == 0) {
+        const int result = ::RunTrayCompletionTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return result;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"operation-intent-ui") == 0) {
+        const bool passed = ::RunOperationIntentUiTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        (wcscmp(test_case, L"content-pattern-selection") == 0 || wcscmp(test_case, L"content-history-order") == 0)) {
+        const bool passed = wcscmp(test_case, L"content-pattern-selection") == 0 ?
+            ::RunContentPatternSelectionTest() : ::RunContentHistoryOrderTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"listing-selection-restore") == 0) {
+        const bool passed = ::RunListingSelectionRestoreTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
+    }
+    if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
+        wcscmp(test_case, L"workspace-restore") == 0) {
+        const bool passed = ::RunWorkspaceRestoreTest();
+        if (g_log) { fclose(g_log); g_log = nullptr; }
+        return passed ? 0 : 1;
     }
     if (GetEnvironmentVariableW(L"PULSE_SELFTEST_CASE", test_case, ARRAYSIZE(test_case)) &&
         wcscmp(test_case, L"column-resize-ui") == 0) {

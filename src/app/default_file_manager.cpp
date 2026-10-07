@@ -20,11 +20,6 @@ std::wstring ModulePath() {
     path.resize(size);
     return path;
 }
-bool EqualsNoCase(std::wstring_view a, std::wstring_view b) {
-    return a.size() == b.size() &&
-        CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(),
-                             static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
-}
 
 } // namespace
 
@@ -74,14 +69,4 @@ bool ApplyThisPcOpen(AppPrefs& prefs, bool on) {
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return ok && prefs.take_over_this_pc == on;
 }
-bool IsThisPcArgument(std::wstring_view raw) {
-    while (!raw.empty() && (raw.front() == L'"' || iswspace(raw.front()))) raw.remove_prefix(1);
-    while (!raw.empty() && (raw.back() == L'"' || raw.back() == L'\\' || iswspace(raw.back())))
-        raw.remove_suffix(1);
-    constexpr std::wstring_view kShell = L"shell:";
-    if (raw.size() > kShell.size() && EqualsNoCase(raw.substr(0, kShell.size()), kShell))
-        raw.remove_prefix(kShell.size());
-    return EqualsNoCase(raw, kThisPcParsingName) || EqualsNoCase(raw, L"MyComputerFolder");
-}
-
 } // namespace pulse::app

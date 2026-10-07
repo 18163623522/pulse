@@ -72,13 +72,13 @@ static void UnitTests() {
           "duration parse h:m:s.cc");
     Check(ParseFfmpegDurationMs("  Duration: N/A, start: 0") == 0, "duration N/A");
     Check(ParseFfmpegDurationMs("nothing") == 0, "duration absent");
-    Check(ParseFfmpegDurationMs("Duration: 00:00:01.5,") == 1500, "duration single fraction digit");
+    Check(ParseFfmpegDurationMs("  Duration: 00:00:01.5,") == 1500, "duration single fraction digit");
     UINT w = 0, h = 0;
     Check(ParseFfmpegVideoSize("  Stream #0:0: Video: hevc (Main 10), yuv420p10le(tv), 3840x2160 [SAR 1:1 DAR 16:9], 29.97 fps",
                                w, h) && w == 3840 && h == 2160, "video size parse");
     Check(!ParseFfmpegVideoSize("  Stream #0:1: Audio: aac (LC), 48000 Hz, stereo", w, h), "no video size in audio line");
     w = h = 0;
-    Check(ParseFfmpegVideoSize("Video: h264 (avc1 / 0x31637661), yuv420p, 1920x1080, 5000 kb/s", w, h) && w == 1920,
+    Check(ParseFfmpegVideoSize("  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p, 1920x1080, 5000 kb/s", w, h) && w == 1920,
           "codec tag hex is not a size");
 
     Check(ThumbnailSeekMs(0) == 3000 && ThumbnailSeekMs(1500) == 0 && ThumbnailSeekMs(20000) == 2000 &&
@@ -141,7 +141,19 @@ static void ResolutionTests(const fs::path& profile) {
     settings.use_custom_ffmpeg = true;
     settings.custom_ffmpeg = (profile / L"missing\\ffmpeg.exe").wstring();
     SavePackSettings(settings);
-    Check(ResolvePackUncached(PackId::Media).source == ToolSource::Pack, "missing custom path falls back to pack");
+    Check(ResolvePackUncached(PackId::Media).source == ToolSource::None && PackToolPath(PackId::Media, L"ffmpeg.exe").empty(),
+          "missing custom path never silently falls back to installed pack");
+    WriteText(settings.custom_ffmpeg, "MZ");
+    Check(ResolvePackUncached(PackId::Media).source == ToolSource::Custom, "valid custom source resolves");
+    fs::remove(settings.custom_ffmpeg);
+    Check(ResolvePackUncached(PackId::Media).source == ToolSource::None, "moved custom source stays unavailable");
+    settings.enabled[0] = false;
+    SavePackSettings(settings);
+    Check(ResolvePackUncached(PackId::Media).source == ToolSource::None, "disabled custom source remains unavailable");
+    settings.enabled[0] = true;
+    settings.use_custom_ffmpeg = false;
+    SavePackSettings(settings);
+    Check(ResolvePackUncached(PackId::Media).source == ToolSource::Pack, "explicit source switch restores installed pack");
     fs::remove_all(profile / L"Pulse");
 }
 

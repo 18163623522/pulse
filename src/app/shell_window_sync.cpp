@@ -72,6 +72,7 @@ bool SameFolder(const std::wstring& a, const std::wstring& b) {
 void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
     tab.pending_selected_names.push_back(name);
     tab.pending_selected_name = name;
+    tab.pending_selection_revision = tab.selection_revision;
     tab.pending_ensure_selection_visible = true;
     if (!tab.snapshot) return;
     const auto& entries = *tab.snapshot;
@@ -79,6 +80,7 @@ void AddNameToSelection(AppState& s, app::Tab& tab, const std::wstring& name) {
         const int index = static_cast<int>(i);
         if (_wcsicmp(entries[i].name.c_str(), name.c_str()) != 0 || !tab.EntryVisible(index)) continue;
         if (!tab.IsSelected(index)) tab.ToggleSelect(index);
+        tab.pending_selection_revision = tab.selection_revision;
         EnsureRowVisible(s, tab, index);
         break;
     }
@@ -98,7 +100,12 @@ void SyncShellWindows(AppState& s) {
             if (app::IsShellWindowPath(folder)) wanted.push_back({PaneKey(pane), std::move(folder)});
         });
     }
-    if (wanted == s.shell_windows_published) return;
+    if (wanted == s.shell_windows_published) {
+        // Published is delivery deduplication, not acknowledgement. The STA
+        // retries COM failures; this only recovers a failed thread start.
+        if (s.shell_windows) s.shell_windows->EnsureRunning();
+        return;
+    }
     app::TraceShellWindows(L"sync enabled=%d wanted=%zu first=%s", ShellWindowsEnabled(s) ? 1 : 0,
                            wanted.size(), wanted.empty() ? L"" : wanted.front().path.c_str());
     if (!s.shell_windows) {
@@ -198,6 +205,7 @@ void HandleExplorerTakeover(AppState& s, const app::ExplorerTakeoverRequest& req
     if (!lease->generation) return;
     tab->explorer_handoff = std::move(lease);
     tab->pending_selected_names = request.names;
+    tab->pending_selection_revision = tab->selection_revision;
     tab->pending_selected_name = request.names.empty() ? L"" : request.names.front();
     tab->pending_ensure_selection_visible = !request.names.empty();
     InvalidateRect(s.hwnd, nullptr, FALSE);

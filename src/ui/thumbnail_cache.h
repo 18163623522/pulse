@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <deque>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -20,6 +21,12 @@ enum class PreviewDrawResult { Pending, Bitmap, Text, Hex, Failed, Archive, Mark
 struct PreviewProperty {
     std::wstring label;
     std::wstring value;
+};
+
+struct DocumentImageSession {
+    DocumentImageSession();
+    const uint64_t identity;
+    std::atomic<bool> active{true};
 };
 
 class ThumbnailCache {
@@ -40,6 +47,10 @@ public:
     void SetFolderThumbnail(bool on) { folder_thumbnail_ = on; }
     void Reset();
     void Evict();
+    void BeginFrame();
+    uint64_t NextRetryDeadline();
+    // Earliest retry encountered by Draw since the previous call. Zero means idle.
+    uint64_t TakeRetryDeadline();
     // pan_x/pan_y non-null: cover mode (fill dest, crop overflow) with a
     // draggable pan offset in DIPs; values are clamped and written back.
     // pan_max_x/pan_max_y (optional) receive the current pan limits.
@@ -62,7 +73,8 @@ public:
                            bool align_artwork_bottom = false,
                            D2D1_RECT_F* artwork_rect = nullptr,
                            uint32_t* media_duration_ms = nullptr,
-                           preview::Integrity* integrity = nullptr);
+                           preview::Integrity* integrity = nullptr,
+                           const std::shared_ptr<DocumentImageSession>& document = {});
     // media_duration_ms (optional): a video's playing time, 0 when unknown.
     PreviewDrawResult DrawGridThumbnail(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
         const std::wstring& path, DWORD attrs, uint32_t pixel_size, uint64_t generation,
@@ -79,6 +91,10 @@ public:
     bool Palette(const std::wstring& path, uint32_t pixel_size, uint64_t modified,
                  uint64_t size, CoverPalette& palette);
 private:
+#ifdef PULSE_WITH_SELFTEST
+    friend struct QuickPreviewAuditTest;
+#endif
+    friend struct PreviewDeadlineProbe;
     friend struct ThumbnailCacheTestAccess;
     friend class FolderThumbnailCache;
     friend struct FolderThumbnailCacheTestAccess;
@@ -125,6 +141,7 @@ private:
         uint32_t timeout_ms = 0;
         uint32_t flags = 0;
         std::wstring path, key, identity;
+        std::shared_ptr<DocumentImageSession> document;
     };
     // Last decoded still bitmap of a file at any pixel size: drawn while a
     // different size is pending or being retried, so a thumbnail never drops
@@ -152,9 +169,12 @@ private:
     std::atomic<uint32_t> next_id_{1};
     uint32_t pipe_token_ = 0;
     std::mutex mutex_;
+    uint64_t draw_retry_deadline_ = 0;
     std::condition_variable cv_;
     std::deque<Request> queue_;
     std::unordered_set<std::wstring> pending_;
+    std::unordered_set<std::wstring> retry_interest_;
+    bool track_retry_interest_ = false;
     std::unordered_map<std::wstring, Item> items_;
     std::list<std::wstring> lru_;
     size_t cache_bytes_ = 0;

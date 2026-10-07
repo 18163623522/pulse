@@ -58,8 +58,8 @@ std::vector<PreviewFormatGroup> BuildGroups() {
     AppendTable(images, f::kMetaFile);
     AppendTable(images, imgpack::kExtensions);
     add(L"图片", L"Images",
-        L"动图可播放，TIFF 可翻页；SVG 不支持的内容显示源码",
-        L"Animation and TIFF pages; unsupported SVG content shows source",
+        L"动图受预览限额限制；TIFF 可翻页；SVG 不支持的内容显示源码；图像增强包补充格式支持",
+        L"Animation has preview limits; TIFF supports pages; unsupported SVG shows source; the image pack adds formats",
         std::move(images));
 
     std::vector<std::wstring> raw;
@@ -103,7 +103,7 @@ std::vector<PreviewFormatGroup> BuildGroups() {
     std::vector<std::wstring> archives;
     AppendTable(archives, f::kArchive);
     add(L"压缩包与镜像", L"Archives & images", L"内置读取优先；7-Zip 增强包补充格式支持；加密、分卷缺失或读取不完整时明确提示",
-        L"Browse loaded entries; compressed streams are detected by content; incomplete UDF previews are explicitly marked",
+        L"Built-in readers first; the 7-Zip pack adds formats; encrypted, missing-volume or incomplete previews are explicitly marked",
         std::move(archives));
 
     std::vector<std::wstring> fonts;

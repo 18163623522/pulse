@@ -1173,8 +1173,6 @@ bool FluentMenu::EnsureFilterEdit() {
     edit_ = CreateChildEdit(hwnd_);
     if (!edit_) return false;
     SetWindowTheme(edit_, L"", L"");
-    if (!compositor_ || !compositor_->CustomEditEnabled())
-        SetLayeredWindowAttributes(edit_, 0, 255, LWA_ALPHA);
     SendMessageW(edit_, WM_SETFONT, (WPARAM)edit_font_, TRUE);
     SendMessageW(edit_, EM_SETCUEBANNER, TRUE,
         reinterpret_cast<LPARAM>(l10n::Get(l10n::StringId::TabMenuSearch).c_str()));
@@ -1673,6 +1671,9 @@ void FluentMenu::RequestFilterRefresh() {
 
 bool FluentMenu::ReplaceItems(std::vector<FluentMenuItem> items) {
     if (!open_ || animating_out_ || filter_fn_ || !compositor_ || items.empty()) return false;
+    // A flyout owns a copy of the displayed command IDs. Keep both that copy
+    // and the controller's display snapshot until it closes; IDs are session-local.
+    if (sub_parent_row_ >= 0) return false;
     if (model_.PatchCommands(items)) return true;
     // The rows changed shape: a context menu opened before the shell host
     // answered (no cached layout for this type yet) only had Pulse's own rows,

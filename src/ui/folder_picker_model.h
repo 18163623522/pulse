@@ -5,6 +5,8 @@
 
 #include <windows.h>
 
+#include "../fs/fs_snapshot.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -34,6 +36,7 @@ struct PickerEntry {
     FILETIME modified{};
     uint64_t size = 0;   // file size; total bytes for drives
     uint64_t free = 0;   // drives only
+    size_t source = 0;   // index in the enumeration, used while building the listing
 };
 
 // One folder's contents as read by the loader. path "" is This PC (drives).
@@ -41,6 +44,9 @@ struct PickerListing {
     uint64_t generation = 0;
     std::wstring path;
     std::vector<PickerEntry> entries;
+    // The same rows in the same order as the main window's directory snapshot,
+    // so the picker's list is drawn by the shared pane renderer.
+    fs::SnapshotPtr snapshot;
     DWORD error = ERROR_SUCCESS;
 };
 

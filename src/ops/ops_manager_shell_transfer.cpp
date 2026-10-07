@@ -1,6 +1,7 @@
 #include "ops_manager.h"
 #include "elevated_transfer.h"
 #include "elevated_transfer_client.h"
+#include "confirmed_move_roots.h"
 #include "../common/localization.h"
 #include "../common/runtime_log.h"
 #include <algorithm>
@@ -85,7 +86,7 @@ void OpsManager::RunAuthorizedTransfer(const OpRequest& req, uint64_t task_id) {
         detailed_error.clear();
         received_progress = false;
         result = TransferWithElevatedHelper(pending, req.dest_dir,
-            req.type == OpType::Move, UiWindow(), transfer_cancel_, policy, callbacks);
+            req.type == OpType::Move, UiWindow(), transfer_cancel_, policy, callbacks, req.new_name);
         if (SUCCEEDED(result.hr) || result.mutated || transfer_cancel_.load()) break;
         // A denied UAC dialog has changed no files. Keep the task in its own
         // window; only an explicit retry can launch another authorization.
@@ -112,19 +113,27 @@ void OpsManager::RunAuthorizedTransfer(const OpRequest& req, uint64_t task_id) {
     if (result.mutated && !result.undo_safe &&
         (result.sources.empty() || FAILED(result.hr) || result.cancelled)) {
         CompletedOperation refresh;
+        refresh.task_id = task_id;
         refresh.type = req.type;
         refresh.sources = req.sources;
         refresh.refresh_directories.push_back(req.dest_dir);
         refresh.refresh_only = true;
         std::lock_guard<std::mutex> lock(mutex_);
         completions_.push_back(std::move(refresh));
-    } else if (!result.sources.empty()) {
+    }
+    // Refresh-only covers unreported mutations; it must not suppress verified
+    // CompletedItem mappings needed by tags, the staging tray and clipboard.
+    if (!result.sources.empty()) {
+        if (req.type == OpType::Move) {
+            const auto roots = ConfirmReportedMoveRoots(req.sources, result.sources, result.destinations);
+            moved_sources_.insert(moved_sources_.end(), roots.begin(), roots.end());
+        }
         OpRequest completed = req;
         completed.sources = result.sources;
         // Publishing a completion refreshes both panes. Unsafe Shell merges and
         // replacements must not enter our undo stack as whole-directory deletes.
         if (!result.undo_safe) completed.is_undo = true;
-        PushUndo(completed, &result.destinations);
+        PushUndo(completed, task_id, &result.destinations);
     }
     std::wstring error = result.error.empty() ? detailed_error : result.error;
     if (FAILED(result.hr) && !result.cancelled) {

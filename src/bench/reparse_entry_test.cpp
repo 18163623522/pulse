@@ -114,7 +114,7 @@ int main() {
     entry.reparse_tag = IO_REPARSE_TAG_MOUNT_POINT;
     entries->push_back(entry);
     const std::wstring unc = L"\\\\pulse-reparse-fixture\\share";
-    Check(SaveNetSnapshot(unc, entries), "save isolated v2 cache");
+    Check(SaveNetSnapshot(BeginNetSnapshotWrite(unc), entries), "save isolated v2 cache");
     auto loaded = LoadNetSnapshot(unc);
     Check(loaded && loaded->size() == 1 && (*loaded)[0].reparse_tag == IO_REPARSE_TAG_MOUNT_POINT,
         "v2 cache retains link kind");

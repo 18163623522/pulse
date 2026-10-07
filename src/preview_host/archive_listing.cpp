@@ -220,28 +220,59 @@ bool ListZip(HANDLE file, uint64_t file_size, Listing& listing, uint32_t& bytes_
     std::vector<unsigned char> tail(tail_size);
     if (tail_size < 22 || !ReadAt(file, file_size - tail_size, tail.data(), tail_size)) return false;
     bytes_read = tail_size;
-    size_t eocd = std::string_view::npos;
-    for (size_t i = tail_size - 22 + 1; i-- > 0;) {
-        if (U32(&tail[i]) == 0x06054b50) { eocd = i; break; }
-    }
-    if (eocd == std::string_view::npos) return false;
-    const uint64_t eocd_pos = file_size - tail_size + eocd;
-    uint64_t count = U16(&tail[eocd + 10]);
-    uint64_t cd_size = U32(&tail[eocd + 12]);
-    uint64_t cd_offset = U32(&tail[eocd + 16]);
-    uint64_t cd_end = eocd_pos;
-    if ((count == 0xFFFF || cd_size == 0xFFFFFFFFull || cd_offset == 0xFFFFFFFFull) && eocd >= 20 &&
-        U32(&tail[eocd - 20]) == 0x07064b50) {
-        const uint64_t z64_pos = U64(&tail[eocd - 20 + 8]);
-        unsigned char z64[56]{};
-        if (z64_pos + sizeof(z64) <= file_size && ReadAt(file, z64_pos, z64, sizeof(z64)) &&
-            U32(z64) == 0x06064b50) {
-            count = U64(z64 + 32);
-            cd_size = U64(z64 + 40);
-            cd_offset = U64(z64 + 48);
-            cd_end = z64_pos;
+    uint64_t count = 0, cd_size = 0, cd_offset = 0, cd_end = 0;
+    bool found = false;
+    // Prefer the enclosing EOCD over signatures embedded in its comment.
+    for (size_t i = 0; i + 22 <= tail.size(); ++i) {
+        const unsigned char* h = tail.data() + i;
+        if (U32(h) != 0x06054b50 || i + 22 + U16(h + 20) != tail.size() ||
+            U16(h + 4) != 0 || U16(h + 6) != 0 || U16(h + 8) != U16(h + 10)) continue;
+        uint64_t candidate_count = U16(h + 10), candidate_size = U32(h + 12);
+        uint64_t candidate_offset = U32(h + 16), candidate_end = file_size - tail_size + i;
+        if (candidate_count == 0xFFFF || candidate_size == 0xFFFFFFFFull || candidate_offset == 0xFFFFFFFFull) {
+            if (i < 20 || U32(h - 20) != 0x07064b50 || U32(h - 16) != 0 || U32(h - 4) != 1) continue;
+            const uint64_t locator_pos = candidate_end - 20;
+            uint64_t z64_pos = U64(h - 12);
+            unsigned char z64[56]{};
+            auto read_zip64 = [&](uint64_t pos) {
+                return pos <= locator_pos && locator_pos - pos >= sizeof(z64) &&
+                    ReadAt(file, pos, z64, sizeof(z64)) && U32(z64) == 0x06064b50 &&
+                    U64(z64 + 4) >= 44 && U64(z64 + 4) == locator_pos - pos - 12;
+            };
+            if (!read_zip64(z64_pos)) {
+                // A prepended SFX stub may leave the locator's offset unadjusted.
+                if (locator_pos < sizeof(z64)) continue;
+                const uint64_t shifted = locator_pos - sizeof(z64);
+                if (shifted < z64_pos || !read_zip64(shifted)) continue;
+                z64_pos = shifted;
+            }
+            if (U32(z64 + 16) != 0 || U32(z64 + 20) != 0 || U64(z64 + 24) != U64(z64 + 32)) continue;
+            candidate_count = U64(z64 + 32);
+            candidate_size = U64(z64 + 40);
+            candidate_offset = U64(z64 + 48);
+            candidate_end = z64_pos;
         }
+        if (candidate_size > candidate_end || candidate_offset > candidate_end - candidate_size ||
+            candidate_count > candidate_size / 46) continue;
+        if (candidate_count == 0) {
+            if (candidate_size != 0) continue;
+            if (candidate_end != 0) {
+                unsigned char stub[2]{};
+                if (!ReadAt(file, 0, stub, sizeof(stub)) || stub[0] != 'M' || stub[1] != 'Z') continue;
+            }
+        } else {
+            unsigned char signature[4]{};
+            if (!ReadAt(file, candidate_end - candidate_size, signature, sizeof(signature)) ||
+                U32(signature) != 0x02014b50) continue;
+        }
+        count = candidate_count;
+        cd_size = candidate_size;
+        cd_offset = candidate_offset;
+        cd_end = candidate_end;
+        found = true;
+        break;
     }
+    if (!found) return false;
     // Self-extracting archives and prepended stubs shift every offset.
     if (cd_size > cd_end) return false;
     const uint64_t cd_start = cd_end - cd_size;
@@ -302,7 +333,7 @@ bool ListZip(HANDLE file, uint64_t file_size, Listing& listing, uint32_t& bytes_
         }
         at += 46 + name_len + extra_len + comment_len;
     }
-    if (seen < count) listing.incomplete = true;  // truncated or damaged directory
+    if (seen != count || at != cd.size()) listing.incomplete = true;
     return seen > 0 || count == 0;
 }
 

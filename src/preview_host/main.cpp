@@ -6,6 +6,7 @@
 #include "../common/current_user_security.h"
 #include "../common/crash_reporter.h"
 #include "preview_decoders.h"
+#include "gif_decoder.h"
 #include "folder_thumbnail.h"
 #include "preview_integrity.h"
 #include "../common/runtime_log.h"
@@ -67,7 +68,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         response.generation=req.generation;
 
         bool made = false;
-        if (req.kind == ipc::PreviewRequestKind::Properties) {
+        bool document_image_ready = true;
+        if (req.flags & ipc::kPreviewRequestFlagDocumentImage) {
+            WIN32_FILE_ATTRIBUTE_DATA metadata{};
+            if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &metadata)) {
+                document_image_ready = false;
+                errorText = L"path-unavailable";
+            } else {
+                req.attrs = metadata.dwFileAttributes;
+                document_image_ready = !(req.attrs & FILE_ATTRIBUTE_DIRECTORY) && !IsOfflinePlaceholder(req.attrs);
+                if (!document_image_ready) errorText = IsOfflinePlaceholder(req.attrs) ?
+                    L"offline-placeholder" : L"document-image-directory";
+            }
+        }
+        if (!document_image_ready) {
+            response.kind = ipc::PreviewContentKind::Unsupported;
+            response.status = 1;
+            response.error_chars = static_cast<uint32_t>(errorText.size());
+            response.integrity.state = preview::IntegrityState::Failed;
+            response.integrity.reason = preview::IntegrityReason::Unavailable;
+        } else if (req.kind == ipc::PreviewRequestKind::Properties) {
             if (!IsOfflinePlaceholder(req.attrs)) properties = ReadProperties(path);
             response.property_count = static_cast<uint32_t>(properties.size());
             response.status = 0;
@@ -139,10 +159,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         if (made && response.kind == ipc::PreviewContentKind::Bitmap) {
             mappingName=L"Local\\PulsePreviewMap-"+std::to_wstring(GetCurrentProcessId())+L"-"+
                         std::to_wstring(req.request_id)+L"-"+std::to_wstring(GetTickCount64());
-            mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,
+#ifdef PULSE_PREVIEW_MAPPING_TEST
+            const bool fail_create = req.request_id == 1 && __argc > 2 && wcscmp(__wargv[2], L"--test-map-create-failure") == 0;
+            const bool fail_view = req.request_id == 1 && __argc > 2 && wcscmp(__wargv[2], L"--test-map-view-failure") == 0;
+#else
+            constexpr bool fail_create = false, fail_view = false;
+#endif
+            if (!fail_create) mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,
                 static_cast<DWORD>(pixels.size()),mappingName.c_str());
-            if (mapping) view=MapViewOfFile(mapping,FILE_MAP_WRITE,0,0,pixels.size());
+            if (mapping && !fail_view) view=MapViewOfFile(mapping,FILE_MAP_WRITE,0,0,pixels.size());
             if (!view) { response.status=2; mappingName.clear();
+                if (mapping) { CloseHandle(mapping); mapping = nullptr; }
                 response.integrity.state = preview::IntegrityState::Failed;
                 response.integrity.reason = preview::IntegrityReason::Unavailable;
             }
@@ -160,9 +187,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             if (!ok) break;
             ok = WriteString(pipe, property.label) && WriteString(pipe, property.value);
         }
-        if (ok && mapping) { unsigned char ack=0; ok=ipc::ReadAll(pipe,&ack,1); }
+        if (ok && response.mapping_chars != 0) { unsigned char ack=0; ok=ipc::ReadAll(pipe,&ack,1); }
         if (view) UnmapViewOfFile(view); if (mapping) CloseHandle(mapping);
         if (!ok) break;
     }
+    preview::ResetGifDecodeCache();
     CoUninitialize(); DisconnectNamedPipe(pipe); CloseHandle(pipe); return 0;
 }

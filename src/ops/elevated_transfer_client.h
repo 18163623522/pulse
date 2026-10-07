@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "ops_manager.h"
 #include "elevated_transfer.h"
 
@@ -19,7 +19,7 @@ struct ElevatedTransferCallbacks {
 ShellTransferResult TransferWithElevatedHelper(const std::vector<std::wstring>& sources,
     const std::wstring& destination, bool move, HWND owner, std::atomic<bool>& cancel,
     ShellCollisionPolicy policy = ShellCollisionPolicy::System,
-    ElevatedTransferCallbacks callbacks = {});
+    ElevatedTransferCallbacks callbacks = {}, const std::wstring& target_name = {});
 ShellTransferResult DeleteWithElevatedHelper(const std::vector<std::wstring>& sources,
     bool permanent, HWND owner, std::atomic<bool>& cancel,
     ElevatedTransferCallbacks callbacks = {});

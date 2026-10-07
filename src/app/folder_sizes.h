@@ -10,6 +10,15 @@
 namespace pulse::app {
 enum class FolderSizeState { Manual, Calculating, Ready, Updating, Partial, Unavailable, Cached, Indexed };
 enum class FolderSizeSource { Unknown, Scan, Index };
+enum class FolderSizeActivity { Idle, Queued, Scanning, Deferred, Failed, Cancelled };
+enum FolderSizeIssue : uint32_t { SizeAccessDenied = 1, SizeOffline = 2, SizeLink = 4, SizeIoError = 8 };
+struct FolderSizeWork {
+    FolderSizeActivity activity = FolderSizeActivity::Idle;
+    uint64_t bytes = 0, entries = 0, skipped = 0;
+    uint32_t issues = 0;
+    bool manual = false;
+    bool Running() const { return activity == FolderSizeActivity::Queued || activity == FolderSizeActivity::Scanning; }
+};
 struct FolderSizeValue {
     FolderSizeState state = FolderSizeState::Manual;
     uint64_t bytes = 0;
@@ -21,6 +30,8 @@ struct FolderSizeValue {
     bool verified = false;
     uint64_t verified_revision = 0;
     uint64_t verified_at = 0; // Unix milliseconds of the completed scan.
+    uint64_t skipped = 0;
+    uint32_t issues = 0;
 };
 struct FolderSizeRequest {
     std::wstring path;
@@ -31,6 +42,7 @@ struct FolderSizeStats {
     uint64_t jobs_started = 0, jobs_completed = 0, jobs_cancelled = 0;
     uint64_t entries_scanned = 0, subtree_hits = 0, index_queries = 0;
     uint64_t watch_gaps = 0, cache_items = 0;
+    uint64_t deferred_jobs = 0, active_watches = 0;
 };
 
 // Window-thread methods only exchange in-memory state. Enumeration, watches and
@@ -45,6 +57,8 @@ public:
     void SetIndexEnabled(bool enabled);
     void Sync(std::vector<FolderSizeRequest> visible, std::vector<std::wstring> watch_roots);
     void Calculate(const std::wstring& path);
+    void Cancel(const std::wstring& path);
+    FolderSizeWork GetWork(const std::wstring& path) const;
     FolderSizeValue Get(const std::wstring& path) const;
     // Known totals of the direct subfolders of `parent`, keyed by lower-cased
     // name: what a Size sort of that folder can use right now (#58).

@@ -3,7 +3,9 @@
 #include "app_internal.h"
 #include "shell_window_sync.h"
 #include "app_column_view.h"
+#include "listing_selection_restore.h"
 #include "content_navigation.h"
+#include "content_search_snapshot.h"
 #include "../ui/lumatext_renderer.h"
 #include "../ui/fluent_menu.h"
 #include "../ui/drag_drop.h"
@@ -27,6 +29,7 @@
 #include "context_menu.h"
 #include "batch_rename.h"
 #include "search_query.h"
+#include "search_snapshot_hint.h"
 #include "search_refresh_log.h"
 #include "link_resolve.h"
 #include "startup_location.h"
@@ -83,13 +86,19 @@ bool IsUncPath(const std::wstring& p) {
 }
 
 void PumpUncProbe(AppState& s) {
-    if (s.probe_scheduler.active_id != 0 || s.probeQueue.empty() || !s.hwnd) return;
-    const std::wstring& next = s.probeQueue.front();
-    const fs::UncProbeId probe_id = s.probe_scheduler.Begin();
-    if (!fs::StartUncProbe(s.hwnd, WM_NET_PROBE, next, probe_id)) {
-        s.probe_scheduler.Finish(probe_id);
+    if (!s.hwnd) return;
+    if (s.probe_scheduler.active_id != 0 || s.probeQueue.empty()) {
+        KillTimer(s.hwnd, kTimerUncProbeRetry);
         return;
     }
+    const std::wstring& next = s.probeQueue.front();
+    const fs::UncProbeId probe_id = s.probe_scheduler.Begin(next);
+    if (!fs::StartUncProbe(s.hwnd, WM_NET_PROBE, next, probe_id)) {
+        s.probe_scheduler.Cancel(next, probe_id);
+        SetTimer(s.hwnd, kTimerUncProbeRetry, 1000, nullptr);
+        return;
+    }
+    KillTimer(s.hwnd, kTimerUncProbeRetry);
     s.probeUnc = next;
     s.probeQueue.erase(s.probeQueue.begin());
 }
@@ -164,13 +173,13 @@ void OpenWorkspace(AppState& s, int index) {
     if (w.pane_paths.empty()) {
         NavigateTo(s, w.root);
     } else {
-        for (size_t i = 0; i < Panes(s).size() && i < w.pane_paths.size(); ++i) {
+        const auto visible = LiveLayout(s).VisiblePanes();
+        for (size_t i = 0; i < visible.size() && i < w.pane_paths.size(); ++i) {
             const std::wstring& pth = w.pane_paths[i];
-            if (pth.empty()) continue;
-            app::Tab* t = Panes(s)[i]->ActiveTab();
+            app::Tab* t = visible[i]->ActiveTab();
             if (!t) {
-                Panes(s)[i]->NewTab(pth);
-                t = Panes(s)[i]->ActiveTab();
+                visible[i]->NewTab(pth);
+                t = visible[i]->ActiveTab();
             }
             if (t && i < w.pane_views.size()) t->view_mode = w.pane_views[i];
             if (t) StartLoadingPath(s, *t, pth, PathLoadReason::RestoreSession);
@@ -241,9 +250,11 @@ void DropLiveNetworkSearch(AppState& s, uint64_t session_id) {
 
 static void StartLiveNetworkSearch(AppState& s, const index::Query& query, uint32_t id) {
     const std::wstring key = query.needle + L'\n' + query.path_prefix +
-                             (query.folders_only ? L"\n1" : L"\n0");
-    if (auto live = s.liveNetworkSearches.Find(query.session_id); live && live->key == key) {
-        // Same query (next page, new sort): answer from the walk so far; a
+                             (query.folders_only ? L"\n1" : L"\n0") + L'\n' +
+                             std::to_wstring(static_cast<uint32_t>(query.sort)) +
+                             (query.sort_desc ? L"d" : L"a") + (query.rank ? L"r" : L"n");
+    if (auto live = s.liveNetworkSearches.Find(query.session_id); live && index::CanReuseLiveNetworkWalk(live->query, query)) {
+        // Same query and ordering (next page): answer from the walk so far; a
         // running walk keeps posting progress for the newest request.
         live->latest_id = id;
         PostLiveNetworkProgress(s.hwnd, live);
@@ -251,18 +262,19 @@ static void StartLiveNetworkSearch(AppState& s, const index::Query& query, uint3
     }
     DropLiveNetworkSearch(s, query.session_id);
     auto live = std::make_shared<LiveNetworkSearch>();
+    live->query = query;
     live->session_id = query.session_id;
     live->key = key;
     live->folder = query.path_prefix;
     live->latest_id = id;
     s.liveNetworkSearches.Set(live);
-    std::thread([hwnd = s.hwnd, live, needle = query.needle, folders_only = query.folders_only] {
-        index::LiveNetworkWalk(live->folder, needle, folders_only, live->matches, live->mutex,
+    std::thread([hwnd = s.hwnd, live, query] {
+        index::LiveNetworkWalk(live->query, live->matches, live->mutex,
             [&live] { return live->cancel.load(); },
             [&] { PostLiveNetworkProgress(hwnd, live); });
         {
             std::lock_guard<std::mutex> lock(live->mutex);
-            live->matches.complete = true;
+            live->matches.finished = true;
             if (live->cancel.load()) live->matches.error = ERROR_CANCELLED;
         }
         if (!live->cancel.load()) PostLiveNetworkProgress(hwnd, live);
@@ -286,7 +298,7 @@ void AcceptLiveNetworkProgress(AppState& s, const std::shared_ptr<LiveNetworkSea
     {
         std::lock_guard<std::mutex> lock(live->mutex);
         result = index::SelectLiveNetworkHits(provider, live->matches);
-        complete = live->matches.complete;
+        complete = live->matches.finished;
     }
     AcceptIndexProviderResult(s, id, std::move(result), true, complete);
 }
@@ -354,6 +366,7 @@ void DispatchIndexSearch(AppState& s, const index::Query& query, uint32_t id) {
     AppState::PendingIndexSearch pending;
     pending.query = query;
     const bool live_network = NeedsLiveNetworkSearch(s, query);
+    pending.network_snapshot = app::UsesNetworkSnapshot(s.networkIndex.Roots(), query, live_network);
     pending.network_ready = !live_network && s.networkIndex.Roots().empty();
     if (live_network) pending.live_network_root = query.path_prefix;
     if (!s.appPrefs.search_pinyin) pending.query.needle = L"nopinyin: " + pending.query.needle;
@@ -379,12 +392,15 @@ void RequestSearchPage(AppState& s, app::Tab& tab, const std::wstring& rest,
         return;
     }
     if (split.content.present()) {
-        // All same-query refreshes keep the published list until a replacement
-        // is ready. Navigation has already reset results for a different query.
+        // Only snapshots published for this query survive a replacement scan.
+        // Virtual navigation can still carry the previous directory's snapshot.
         if (!tab.content_results) {
-            tab.search_retaining_results = tab.snapshot && !tab.snapshot->empty();
             tab.search_entries = std::make_shared<std::vector<fs::DirEntry>>();
             tab.search_snippets = std::make_shared<std::vector<std::wstring>>();
+            const auto initial = app::PrepareContentSearchSnapshot(tab.snapshot,
+                tab.snapshot_path, tab.current_path, tab.search_entries);
+            tab.search_retaining_results = initial.retained;
+            if (!initial.retained) tab.SetSnapshot(initial.snapshot);
         }
         StartIndexedContentSearch(s, tab, rest, tab.search_allow_scan);
         return;
@@ -566,6 +582,7 @@ void RequestSavedSearch(AppState& s, app::Tab& tab, size_t saved_index) {
         ? index::ContentSearchMode::Duplicates : index::ContentSearchMode::Content;
     ConfigureContentSort(tab,request);
     request.paged_results = search.mode == app::SavedSearchMode::Content;
+    request.task_scan = search.mode == app::SavedSearchMode::Content;
     if(search.mode == app::SavedSearchMode::Duplicates) request.maximum_hits = 10000;
     request.root = search.root;
     request.needle = search.query;
@@ -743,7 +760,7 @@ void ApplyContentSearchUpdate(AppState& s, index::ContentSearchUpdate update) {
 }
 
 void DeliverIndexSearchResult(AppState& s, uint32_t id,
-                                     index::SearchResult&& result) {
+                                      index::SearchResult&& result, bool network_snapshot) {
     if (id != 0 && id == s.advancedCountId) {
         s.advancedCountId = 0;
         if (IsWindow(s.advancedCountHwnd))
@@ -777,7 +794,7 @@ void DeliverIndexSearchResult(AppState& s, uint32_t id,
         } else {
             return;
         }
-        if (!s.networkIndex.Roots().empty() && tab->banner_title.empty())
+        if (network_snapshot && tab->banner_title.empty())
             tab->banner_message = l10n::Get(l10n::StringId::NetworkSearchSnapshot);
         applied = true;
         InvalidateRect(s.hwnd, nullptr, FALSE);
@@ -802,8 +819,9 @@ void AcceptIndexProviderResult(AppState& s, uint32_t id,
     const std::wstring live_root = pending.live_network_root;
     const bool network_done = pending.network_ready;
     const DWORD live_error = pending.network.error;
+    const bool network_snapshot = pending.network_snapshot;
     if (!pending.query.subscribe && pending.network_ready) s.pendingIndexSearches.erase(found);
-    DeliverIndexSearchResult(s, id, std::move(merged));
+    DeliverIndexSearchResult(s, id, std::move(merged), network_snapshot);
     if (!live_root.empty()) ApplyLiveNetworkBanner(s, id, live_root, network_done, live_error);
 }
 
@@ -856,8 +874,35 @@ void CancelActiveContentSearch(AppState& s, app::Tab& tab) {
     if(tab.content_results) {tab.content_revision=UINT64_MAX;RefreshContentResults(s);}
 }
 
+static void CancelUnsharedDirectoryRequest(AppState& s, app::Tab& tab) {
+    const uint64_t generation = tab.pending_generation;
+    if (!generation) return;
+    if (fs::IsVirtualPath(tab.current_path)) {
+        std::wstring kind;
+        app::ParsePulsePath(tab.current_path, &kind, nullptr);
+        // Search and other virtual providers own separate generation spaces.
+        // Only these views dispatch independent WorkerPool::LoadPaths jobs.
+        if (kind == L"tag" || kind == L"starred" || kind == L"recent")
+            s.worker.CancelGeneration(generation);
+        return;
+    }
+    bool shared = false;
+    ForEachPane(s, [&](app::Pane& pane) {
+        const auto& other = pane.view;
+        if (&other != &tab && !fs::IsVirtualPath(other.current_path) &&
+            other.pending_generation == generation) shared = true;
+        for (const auto& column : other.column_strip.ancestors)
+            if (column.generation == generation) shared = true;
+        if (other.column_strip.child.generation == generation) shared = true;
+    });
+    if (!shared) s.worker.CancelGeneration(generation);
+}
+
 void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
+    CancelUnsharedDirectoryRequest(s, tab);
     tab.explorer_handoff.reset();
+    if (_wcsicmp(tab.current_path.c_str(), path.c_str()) != 0)
+        tab.create_rename_intents.clear();
     tab.current_path = path;
     tab.loading = false;
     tab.pending_generation = 0;
@@ -890,9 +935,10 @@ void LoadVirtualView(AppState& s, app::Tab& tab, const std::wstring& path, PathL
             tab.loading = true;
             tab.SetSnapshot(nullptr);
             tab.pending_generation = s.worker.LoadPaths(
-                path, tag.paths, tab.sort_column, tab.sort_direction, false, {}, tab.EffectiveGroup());
+                tab.current_path, tag.paths, tab.sort_column, tab.sort_direction, false, {}, tab.EffectiveGroup());
             return;
         }
+        tab.virtual_title = l10n::Pick(L"标签已删除", L"Tag deleted");
     } else if (kind == L"search") {
         wchar_t title[512]{};
         swprintf_s(title, l10n::Get(l10n::StringId::SearchLoadingFormat).c_str(),
@@ -994,7 +1040,25 @@ static std::shared_ptr<const app::FolderSizeLookup> SortFolderSizes(
     return sizes;
 }
 
+// Reject a failed conversion before changing history, the current folder or
+// worker state. Empty is otherwise a legitimate request to show This PC.
+static bool NormalizeNavigationTarget(AppState& s, app::Tab& tab,
+                                      const std::wstring& path, std::wstring& normalized) {
+    normalized = fs::NormalizePath(path);
+    if (path.empty() || !normalized.empty()) return true;
+    tab.banner_title = l10n::Get(l10n::StringId::CannotOpen);
+    tab.banner_message = l10n::Get(l10n::StringId::DirectoryUnavailable);
+    InvalidateRect(s.hwnd, nullptr, FALSE);
+    return false;
+}
+
 void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, PathLoadReason reason) {
+    std::wstring normalized;
+    if (!NormalizeNavigationTarget(s, tab, path, normalized)) return;
+    // Tab history may already have assigned current_path; compare the stored
+    // origin instead so navigating away and back cannot revive an old request.
+    (void)app::PendingCreateRenameIntent(tab.create_rename_intents, normalized, tab.view_generation);
+    CancelUnsharedDirectoryRequest(s, tab);
     tab.explorer_handoff.reset();
     SyncTagGroups(s);
     DropLiveNetworkSearch(s, tab.search_session_id);
@@ -1002,7 +1066,6 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     std::erase_if(s.pendingIndexSearches,[&](const auto& item){return item.second.query.session_id==tab.search_session_id;});
     tab.filename_live_generation=0;
     tab.search_retaining_results = false;
-    std::wstring normalized = fs::NormalizePath(path);
     tab.current_path = normalized;
     tab.group_by = FolderGroupFor(s, normalized);
     if (const auto git = s.gitRoots.find(normalized); git != s.gitRoots.end())
@@ -1014,6 +1077,7 @@ void StartLoadingPath(AppState& s, app::Tab& tab, const std::wstring& path, Path
     tab.pending_selected_name.clear();
     tab.pending_preview_rename.clear();
     tab.pending_selected_names.clear();
+    tab.pending_selection_revision = UINT64_MAX;
     tab.pending_ensure_selection_visible = false;
     tab.pending_generation = 0;
     tab.applied_generation = 0;
@@ -1172,17 +1236,17 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
         any = true;
 
         const bool focusedTab = (&pane == s.pane);
-            std::vector<std::wstring> pendingNames = std::move(tab->pending_selected_names);
-            std::wstring pendingFocus = std::move(tab->pending_selected_name);
-            const bool ensurePendingVisible = tab->pending_ensure_selection_visible;
-            tab->pending_selected_names.clear();
-            tab->pending_selected_name.clear();
-            tab->pending_ensure_selection_visible = false;
+            auto selection_restore = app::TakeListingSelection(*tab, res.path);
+            auto& pendingNames = selection_restore.names;
+            auto& pendingFocus = selection_restore.focus;
+            const bool ensurePendingVisible = selection_restore.ensure_visible;
             std::wstring renameTarget;
+            const bool hasCreateRename = app::PendingCreateRenameIntent(tab->create_rename_intents,
+                tab->current_path, tab->view_generation).has_value();
             const auto previewRenameTarget = std::exchange(tab->pending_preview_rename, {});
             const bool previewRename = focusedTab && !previewRenameTarget.empty();
             if (focusedTab) {
-                renameTarget = previewRename ? previewRenameTarget : s.pendingRenameName;
+                renameTarget = previewRename ? previewRenameTarget : std::wstring{};
                 if (renameTarget.empty() && s.renameIndex >= 0 && tab->snapshot &&
                     s.renameIndex < static_cast<int>(tab->EntryCount())) {
                     renameTarget = tab->EntryAt(s.renameIndex).name;
@@ -1233,38 +1297,45 @@ void ApplyWorkerResult(AppState& s, app::WorkResult& res) {
                 ApplyRecycleOccupancy(s);
             }
 
+            std::optional<app::CreateRenameSelection> createRename;
+            if (hasCreateRename && focusedTab && !previewRename && s.renameIndex < 0 && tab->snapshot) {
+                for (size_t i = 0; i < tab->EntryCount(); ++i) {
+                    const auto& entry = tab->EntryAt(i);
+                    const app::CreateRenameEntry candidate{entry.name, entry.full_path};
+                    createRename = app::SelectCreateRenameIntent(tab->create_rename_intents,
+                        tab->current_path, tab->view_generation, {&candidate, 1}, focusedTab, false);
+                    if (createRename) {
+                        createRename->entry_index = i;
+                        break;
+                    }
+                }
+            }
+            const bool createdRename = createRename.has_value();
             bool startedRename = false;
-            if (focusedTab && !renameTarget.empty() && tab->snapshot) {
+            if (focusedTab && (createdRename || !renameTarget.empty()) && tab->snapshot) {
                 for (int i = 0; i < static_cast<int>(tab->EntryCount()); ++i) {
-                    if (tab->EntryAt(i).name != renameTarget) continue;
+                    const auto& entry = tab->EntryAt(i);
+                    if (createdRename ? createRename->entry_index != static_cast<size_t>(i)
+                                      : entry.name != renameTarget) continue;
                     tab->SelectOnly(i);
                     EnsureRowVisible(s, *tab, i);
-                    s.pendingRenameName.clear();
                     if (s.renameIndex >= 0) {
                         s.renameIndex = i;
                         LayoutRenameOverlay(s);
-                    } else {
+                    } else if (focusedTab) {
                         ShowRenameOverlay(s);
                     }
-                    startedRename = true;
+                    startedRename = s.renameIndex == i;
+                    if (createdRename && startedRename)
+                        app::ConsumeCreateRenameIntent(tab->create_rename_intents, createRename->task_id);
                     break;
                 }
                 if (!startedRename) {
-                    if (!previewRename) s.pendingRenameName = renameTarget;
                     if (s.renameIndex >= 0) HideRenameOverlay(s, false);
                 }
             }
             if (!startedRename) {
-                if (focusedTab && !s.pendingRenameName.empty()) {
-                    if (!pendingNames.empty()) tab->RemapSelection(pendingNames, pendingFocus);
-                    else tab->ClearSelection();
-                } else if (!pendingNames.empty()) {
-                    tab->RemapSelection(pendingNames, pendingFocus);
-                } else if (tab->snapshot && tab->EntryCount() != 0) {
-                    tab->SelectOnly(0);
-                } else {
-                    tab->ClearSelection();
-                }
+                app::RestoreListingSelection(*tab, pendingNames, pendingFocus, selection_restore.user_changed);
             }
             if (focusedTab && ensurePendingVisible && tab->selected_index >= 0) {
                 EnsureRowVisible(s, *tab, tab->selected_index);
@@ -1298,19 +1369,7 @@ void ProcessPendingResults(AppState& s) {
 }
 
 void CaptureListingSelection(app::Tab& tab) {
-    tab.pending_selected_names.clear();
-    tab.pending_selected_name.clear();
-    tab.pending_ensure_selection_visible = false;
-    if (!tab.snapshot || tab.SelectedCount() <= 0) return;
-    for (int index : tab.SelectedIndices()) {
-        if (index >= 0 && index < static_cast<int>(tab.EntryCount()))
-            tab.pending_selected_names.push_back(
-                tab.EntryAt(static_cast<size_t>(index)).name);
-    }
-    if (tab.selected_index >= 0 &&
-        tab.selected_index < static_cast<int>(tab.EntryCount())) {
-        tab.pending_selected_name = tab.EntryAt(static_cast<size_t>(tab.selected_index)).name;
-    }
+    app::CapturePendingListingSelection(tab);
 }
 
 bool PathHasPendingRefresh(AppState& s, const std::wstring& path) {
@@ -1325,6 +1384,7 @@ bool PathHasPendingRefresh(AppState& s, const std::wstring& path) {
 
 void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
     const std::wstring normalized = fs::NormalizePath(path);
+    if (!path.empty() && normalized.empty()) return;
     std::vector<app::Tab*> tabs;
     ForEachPane(s, [&](app::Pane& pane) {
         app::Tab* tab = pane.ActiveTab();
@@ -1413,7 +1473,9 @@ void QueueSnapshotValidation(AppState& s, app::Tab& tab) {
         tab.pending_generation != 0) {
         return;
     }
-    if (s.store.IsDirty(tab.current_path)) RefreshPath(s, tab.current_path);
+    if (s.store.IsDirty(tab.current_path) || app::PendingCreateRenameIntent(
+        tab.create_rename_intents, tab.current_path, tab.view_generation))
+        RefreshPath(s, tab.current_path);
 }
 
 // Applies a run of change events for one folder to every visible tab showing
@@ -1640,13 +1702,16 @@ void RestoreNavigationReturnSelection(AppState& s, app::Tab& tab,
     if (childName.empty()) return;
     tab.pending_selected_name = childName;
     tab.pending_selected_names = { childName };
+    tab.pending_selection_revision = tab.selection_revision;
     tab.pending_ensure_selection_visible = true;
+    tab.pending_selection_revision = tab.selection_revision;
 
     if (!tab.snapshot) return;
     for (int i = 0; i < static_cast<int>(tab.EntryCount()); ++i) {
         const fs::DirEntry& entry = tab.EntryAt(static_cast<size_t>(i));
         if (!entry.is_dir || _wcsicmp(entry.name.c_str(), childName.c_str()) != 0) continue;
         tab.SelectOnly(i);
+        tab.pending_selection_revision = tab.selection_revision;
         if (ActiveTab(s) == &tab) {
             EnsureRowVisible(s, tab, i);
             s.scrollTargetY = tab.scroll_y;
@@ -1660,7 +1725,8 @@ void NavigateTo(AppState& s, const std::wstring& path) {
     if (OpenSystemNetworkShortcut(s, path)) return;
     app::Tab* tab = ActiveTab(s);
     if (!tab) return;
-    std::wstring normalized = fs::NormalizePath(path);
+    std::wstring normalized;
+    if (!NormalizeNavigationTarget(s, *tab, path, normalized)) return;
     if (normalized != tab->current_path && !fs::IsVirtualPath(normalized) && tab->content_results) {
         s.addressLiveDue = s.addressHistoryDue = 0;
         if (s.addressSearching) HideAddressEditor(s, false);
@@ -2229,13 +2295,16 @@ void OpenFolderTab(AppState& s, const std::wstring& path) {
 void SelectNameInTab(AppState& s, app::Tab& tab, const std::wstring& name) {
     tab.pending_selected_names = {name};
     tab.pending_selected_name = name;
+    tab.pending_selection_revision = tab.selection_revision;
     tab.pending_ensure_selection_visible = true;
+    tab.pending_selection_revision = tab.selection_revision;
     if (!tab.snapshot) return;
     const auto& entries = *tab.snapshot;
     for (size_t i = 0; i < entries.size(); ++i) {
         if (_wcsicmp(entries[i].name.c_str(), name.c_str()) != 0 ||
             !tab.EntryVisible(static_cast<int>(i))) continue;
         tab.SelectOnly(static_cast<int>(i));
+        tab.pending_selection_revision = tab.selection_revision;
         EnsureRowVisible(s, tab, static_cast<int>(i));
         break;
     }

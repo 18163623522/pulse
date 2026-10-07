@@ -1,4 +1,5 @@
 #include "diagnostics_exporter.h"
+#include "diagnostics_cleanup_io.h"
 #include "pulse_version.h"
 #include "localization.h"
 
@@ -322,21 +323,46 @@ bool Export(const ExportOptions& options, std::wstring* error) {
     return state.ok;
 }
 bool ClearCrashReports(const std::wstring& source_root, std::wstring* error) {
+    return ClearCrashReportsWithIo(source_root, error, CleanupIo{});
+}
+bool ClearCrashReportsWithIo(const std::wstring& source_root, std::wstring* error, const CleanupIo& io) {
+    if (error) error->clear();
+    const auto fail = [error](DWORD code) {
+        SetError(error, l10n::Pick(L"部分诊断文件无法删除。", L"Some diagnostics files could not be deleted."));
+        if (error) *error += L" (" + std::to_wstring(code) + L")";
+        return false;
+    };
     const std::wstring source = JoinPath(source_root, L"Diagnostics\\Crashes");
-    if (!IsPlainDirectory(source)) return true;
+    const DWORD attributes = io.attributes(source.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD code = GetLastError();
+        return IsMissing(code) ? true : fail(code);
+    }
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY) || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        return fail(ERROR_ACCESS_DENIED);
+    DirectoryLocks locks;
+    const DWORD lock_error = locks.Lock(source);
+    if (lock_error != ERROR_SUCCESS) return IsMissing(lock_error) ? true : fail(lock_error);
     WIN32_FIND_DATAW data{};
-    HANDLE find = FindFirstFileW(JoinPath(source, L"*").c_str(), &data);
-    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
-    bool ok = true;
+    HANDLE find = io.first(JoinPath(source, L"*").c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        const DWORD code = GetLastError();
+        return code == ERROR_FILE_NOT_FOUND || code == ERROR_NO_MORE_FILES ? true : fail(code);
+    }
+    DWORD failure = ERROR_SUCCESS;
     do {
         if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         const std::wstring_view name(data.cFileName);
         if (!IsCrashArtifact(name, true)) continue;
-        if (!DeleteFileW(JoinPath(source, name).c_str())) ok = false;
-    } while (FindNextFileW(find, &data));
+        if (!DeleteFileW(JoinPath(source, name).c_str())) {
+            const DWORD code = GetLastError();
+            if (!IsMissing(code) && failure == ERROR_SUCCESS) failure = code;
+        }
+    } while (io.next(find, &data));
+    const DWORD enumeration_error = GetLastError();
     FindClose(find);
-    if (!ok) SetError(error, l10n::Pick(L"部分诊断文件无法删除。", L"Some diagnostics files could not be deleted."));
-    return ok;
+    if (enumeration_error != ERROR_NO_MORE_FILES) failure = enumeration_error;
+    return failure == ERROR_SUCCESS ? true : fail(failure);
 }
 
 } // namespace pulse::diagnostics

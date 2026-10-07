@@ -128,6 +128,73 @@ void CheckEditLayoutCache(HWND parent, pulse::ui::Compositor& compositor) {
     DestroyWindow(edit);
     ShowWindow(parent, SW_HIDE);
 }
+void CheckSelectionSync(pulse::ui::Compositor& compositor, HWND edit) {
+    const std::wstring text = L"0123456789abcdef";
+    auto set_text = [&](const std::wstring& value) {
+        SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(value.c_str()));
+    };
+    auto point = [&](int index) {
+        float width = 0;
+        compositor.MeasureLumaText(text.substr(0, static_cast<size_t>(index)), compositor.TextFormat(), width);
+        return MAKELPARAM(static_cast<int>(width + 2.5f), 10);
+    };
+    auto click = [&](int index, bool shift = false) {
+        SendMessageW(edit, WM_LBUTTONDOWN, MK_LBUTTON | (shift ? MK_SHIFT : 0), point(index));
+        SendMessageW(edit, WM_LBUTTONUP, 0, point(index));
+    };
+    auto selection = [&] {
+        DWORD first = 0, last = 0;
+        SendMessageW(edit, EM_GETSEL, reinterpret_cast<WPARAM>(&first), reinterpret_cast<LPARAM>(&last));
+        return std::pair{first, last};
+    };
+    set_text(text); click(5);
+    SendMessageW(edit, WM_KEYDOWN, VK_HOME, 0);
+    click(10, true);
+    auto range = selection();
+    Check(range.first == 0 && range.second == 10, "mouse then native Home then Shift-click uses current caret anchor");
+    SendMessageW(edit, WM_CHAR, L'X', 0);
+    wchar_t content[128]{};
+    GetWindowTextW(edit, content, ARRAYSIZE(content));
+    Check(std::wstring(content) == L"Xabcdef", "typing replaces the visibly selected current range");
+    set_text(text);
+    SendMessageW(edit, EM_SETSEL, 8, 3);
+    click(5, true);
+    Check(selection() == std::pair<DWORD, DWORD>{5, 8}, "programmatic reverse selection keeps its original active end and anchor");
+    SendMessageW(edit, EM_SETSEL, 0, -1);
+    click(5, true);
+    Check(selection() == std::pair<DWORD, DWORD>{0, 5}, "select-all followed by Shift-click starts at the new native anchor");
+    set_text(text); click(2);
+    SendMessageW(edit, WM_LBUTTONDOWN, MK_LBUTTON, point(2));
+    SendMessageW(edit, WM_MOUSEMOVE, MK_LBUTTON, point(7));
+    SendMessageW(edit, WM_LBUTTONUP, 0, point(7));
+    Check(selection() == std::pair<DWORD, DWORD>{2, 7}, "internal mouse EM_SETSEL preserves the drag anchor");
+    SendMessageW(edit, EM_SETSEL, 4, 4);
+    SendMessageW(edit, WM_KEYDOWN, VK_RIGHT, 0);
+    click(9, true);
+    Check(selection() == std::pair<DWORD, DWORD>{5, 9}, "native arrow updates the subsequent mouse anchor");
+    HWND other = pulse::ui::CreateChildEdit(GetParent(edit), L"other field");
+    SetWindowSubclass(other, EditProc, 1, reinterpret_cast<DWORD_PTR>(&compositor));
+    SetWindowPos(other, nullptr, 20, 90, 180, 30, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    pulse::ui::PresentChildEdit(compositor, compositor.TextFormat(),
+        D2D1::ColorF(1, 1, 1), D2D1::ColorF(0, 0, 0), other);
+    SendMessageW(edit, EM_SETSEL, 8, 3);
+    SendMessageW(other, EM_SETSEL, 7, 7);
+    DestroyWindow(other);
+    click(5, true);
+    Check(selection() == std::pair<DWORD, DWORD>{5, 8},
+        "another editor and its destruction cannot leak a stale anchor to this field");
+    RECT rect{}; GetClientRect(edit, &rect);
+    SetWindowPos(edit, nullptr, 0, 0, 90, rect.bottom, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    set_text(L"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    click(2); SendMessageW(edit, WM_KEYDOWN, VK_END, 0);
+    SendMessageW(edit, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(45, 10));
+    SendMessageW(edit, WM_LBUTTONUP, 0, MAKELPARAM(45, 10));
+    range = selection();
+    Check(range.first == range.second && range.first > 40,
+        "click after native End uses the same scrolled text origin as painting");
+    SetWindowPos(edit, nullptr, 0, 0, rect.right, rect.bottom, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    set_text(L"show 中文");
+}
 }
 int wmain() {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -153,9 +220,18 @@ int wmain() {
             Check(edit && IsChild(parent, edit) && GetAncestor(edit, GA_ROOT) == parent &&
                 !(GetWindowLongPtrW(edit, GWL_STYLE) & WS_POPUP), "editor is a real child, not an owned top-level popup");
             if (!edit) continue;
-            if (redirected)
-                Check(SetLayeredWindowAttributes(edit, 0, 255, LWA_ALPHA) != FALSE,
-                    "enable redirected surface used by global search");
+            DWORD initial_flags = 0;
+            BYTE initial_alpha = 0;
+            Check(GetLayeredWindowAttributes(edit, nullptr, &initial_alpha, &initial_flags) &&
+                (initial_flags & LWA_ALPHA) && initial_alpha == 255,
+                "shared factory initializes an opaque redirected surface without host setup");
+            if (!redirected) {
+                // Retain low-level uploaded-surface coverage explicitly; production
+                // hosts must inherit the factory's redirected default.
+                const LONG_PTR style = GetWindowLongPtrW(edit, GWL_EXSTYLE);
+                SetWindowLongPtrW(edit, GWL_EXSTYLE, style & ~WS_EX_LAYERED);
+                SetWindowLongPtrW(edit, GWL_EXSTYLE, style | WS_EX_LAYERED);
+            }
             SetWindowSubclass(edit, EditProc, 1, reinterpret_cast<DWORD_PTR>(&compositor));
             SetWindowPos(edit, nullptr, 20, 30, static_cast<int>(320 * scale), static_cast<int>(30 * scale),
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -229,8 +305,8 @@ int wmain() {
                     D2D1::ColorF(0, 0, 0), fresh);
                 flags = 0;
                 const bool fresh_native = GetLayeredWindowAttributes(fresh, nullptr, nullptr, &flags) && (flags & LWA_ALPHA);
-                Check(!fresh_native && !GetPropW(fresh, L"Pulse.NativeEditFallback"),
-                    "new editor keeps DirectWrite presentation in every mode");
+                Check(fresh_native && !GetPropW(fresh, L"Pulse.NativeEditFallback"),
+                    "new editor keeps redirected DirectWrite presentation in every mode");
                 force_present_failure = true;
                 SendMessageW(fresh, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L"fail 中文"));
                 force_present_failure = false;
@@ -244,6 +320,7 @@ int wmain() {
                 Check(std::wstring(text) == L"fail 中文", "each mode preserves native input and undo after presentation failure");
                 DestroyWindow(fresh);
             }
+            CheckSelectionSync(compositor, edit);
             RECT owner{};
             GetWindowRect(parent, &owner);
             SetWindowPos(parent, nullptr, owner.left + 70, owner.top + 40, 0, 0,
@@ -294,7 +371,7 @@ int wmain() {
                     D2D1::ColorF(1, 1, 1), D2D1::ColorF(0, 0, 0), fresh),
                     "later presents keep the native fallback instead of painting over it");
             } else {
-                Check(shown && !opaque_native && !native_paint, "initial present shows the LumaText bitmap");
+                Check(shown && opaque_native && !native_paint, "initial present draws custom text on the redirected surface");
             }
             ShowWindow(parent, SW_HIDE);
             DestroyWindow(fresh);

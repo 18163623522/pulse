@@ -23,6 +23,9 @@ struct TerminalLaunchResult {
     DWORD open_error = ERROR_SUCCESS;
     bool elevation_requested = false;
 };
+// CRT-compatible, always-quoted single argument; doubles backslashes before
+// embedded/closing quotes. Does not interpret shell or template metacharacters.
+std::wstring QuoteWindowsArgument(std::wstring_view value);
 std::wstring TerminalCommandLine(const std::wstring& directory);
 TerminalLaunchResult LaunchTerminal(const std::wstring& executable, const std::wstring& arguments,
     const std::wstring& directory, HWND owner, const ShellCommandApi& api = {});

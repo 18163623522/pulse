@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cwctype>
 #include <iterator>
+#include <algorithm>
 
 namespace pulse::app::folder_size {
 std::wstring Key(std::wstring path) {
@@ -39,9 +40,16 @@ Store::Entry* Store::Ensure(const std::wstring& key, const std::set<std::wstring
 void Store::Touch(Entry& entry) { lru_.splice(lru_.end(), lru_, entry.position); }
 void Store::MarkStale(Entry& entry, uint64_t now, uint64_t delay) {
     entry.revision = ++next_revision_; ++entry.request_epoch;
-    entry.completed = 0; entry.not_before = now + delay;
+    entry.completed = 0;
+    // Keep failure backoff across notifications. Explicit Calculate clears it.
+    entry.not_before = (std::max)(entry.not_before, now + delay);
+    entry.next_index_at = 0;
+    const bool manual = entry.work.manual && entry.work.Running();
+    entry.work = {};
+    if (manual) { entry.work.activity = FolderSizeActivity::Queued; entry.work.manual = true; }
     entry.value.verified = false;
-    entry.value.state = entry.value.has_value ? FolderSizeState::Updating : FolderSizeState::Calculating;
+    if (entry.value.has_value && entry.value.source != FolderSizeSource::Index)
+        entry.value.state = FolderSizeState::Cached;
 }
 bool Store::InvalidateAncestors(const std::wstring& path, uint64_t now, uint64_t delay) {
     bool changed = false;
@@ -101,6 +109,15 @@ SavedValues ReadValues(const std::wstring& file) {
             if (next == std::wstring::npos || !Number(record.substr(path_start + 2, next - path_start - 2), value.verified_at)) continue;
             path_start = next + 1;
         }
+        // v3 keeps terminal omission diagnostics, never worker progress.
+        if (record.compare(path_start, 3, L"!3\t") == 0) {
+            const auto skip_end = record.find(L'\t', path_start + 3);
+            if (skip_end == std::wstring::npos || !Number(record.substr(path_start + 3, skip_end - path_start - 3), value.skipped)) continue;
+            const auto issue_end = record.find(L'\t', skip_end + 1);
+            uint64_t issues = 0;
+            if (issue_end == std::wstring::npos || !Number(record.substr(skip_end + 1, issue_end - skip_end - 1), issues) || issues > 15) continue;
+            value.issues = static_cast<uint32_t>(issues); path_start = issue_end + 1;
+        }
         const auto path = Key(record.substr(path_start));
         if (path.empty() || fs::IsVirtualPath(path)) continue;
         values.emplace_back(path, value);
@@ -110,7 +127,7 @@ SavedValues ReadValues(const std::wstring& file) {
 }
 bool WriteValues(const std::wstring& file, const SavedValues& values) {
     if (file.empty()) return true;
-    std::wstring text = L"{\"version\":2,\"folders\":[";
+    std::wstring text = L"{\"version\":3,\"folders\":[";
     bool first = true;
     for (const auto& [path, value] : values) {
         if (!value.has_value) continue;
@@ -120,7 +137,8 @@ bool WriteValues(const std::wstring& file, const SavedValues& values) {
             value.source == FolderSizeSource::Index ? L'I' : L'U';
         text += L'"';
         json::Escape(std::to_wstring(value.bytes) + L"\t" + (value.partial ? L"1\t" : L"0\t") +
-            source + L"\t" + std::to_wstring(value.verified_at) + L"\t" + path, text);
+            source + L"\t" + std::to_wstring(value.verified_at) + L"\t!3\t" +
+            std::to_wstring(value.skipped) + L"\t" + std::to_wstring(value.issues) + L"\t" + path, text);
         text += L'"';
     }
     text += L"]}";

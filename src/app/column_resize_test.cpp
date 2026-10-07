@@ -10,6 +10,7 @@ struct ColumnResizeUiTest {
         const std::filesystem::path root = L"bench_data/column-resize";
         std::filesystem::create_directories(root);
         std::ofstream log(root / L"results.log");
+        if (!log) return false;
         bool ok = true;
         auto check = [&](bool pass, const char* message) {
             log << (pass ? "[PASS] " : "[FAIL] ") << message << std::endl; ok &= pass;
@@ -55,6 +56,55 @@ struct ColumnResizeUiTest {
                 const auto shot = root / (std::to_wstring(width) + L"-" + std::to_wstring(static_cast<int>(scale*100)) + (dark ? L"-dark.png" : L"-light.png"));
                 check(compositor.SaveSnapshot(shot.c_str()), "save actual column renderer screenshot");
             }
+            const auto old_mode = typography::CurrentTextRenderMode();
+            const int old_font = typography::UiFontScalePercent();
+            const auto old_language = l10n::preference();
+            for (float scale : {1.0f, 1.5f}) for (int font : {100, 125, 90})
+            for (const auto mode : {typography::TextRenderMode::Auto, typography::TextRenderMode::Sharp, typography::TextRenderMode::Smooth})
+            for (const wchar_t* language : {L"en-US", L"zh-CN"}) {
+                const std::wstring sample = L"2026-12-30 23:59 XLSX 路径 final-report.xlsx";
+                (void)renderer.CellTextWidth(sample);
+                (void)renderer.CellTextWidth(sample, true);
+                (void)renderer.AutoColumnWidths();
+                check(!renderer.cell_text_widths_.empty(), "prewarm real independent list text cache");
+                typography::SetUiFontScale(font); typography::SetTextRenderMode(mode); l10n::SetLanguage(language);
+                renderer.SetScale(scale); compositor.RecreateTextFormats(scale);
+                renderer.InvalidateTypography();
+                check(renderer.cell_text_widths_.empty() && renderer.auto_widths_scale_ < 0,
+                      "production typography invalidation clears both independent list caches");
+                MainRenderer fresh; fresh.SetCompositor(&compositor); fresh.SetScale(scale);
+                const auto a = renderer.AutoColumnWidths(), b = fresh.AutoColumnWidths();
+                auto close = [](float left, float right) { return std::abs(left - right) < 0.1f; };
+                check(close(renderer.CellTextWidth(sample), fresh.CellTextWidth(sample)) &&
+                      close(renderer.CellTextWidth(sample, true), fresh.CellTextWidth(sample, true)) &&
+                      close(a.date, b.date) && close(a.type, b.type) && close(a.size, b.size) &&
+                      close(a.created, b.created) && close(a.accessed, b.accessed),
+                      "warmed renderer matches fresh baseline after same-DPI font backend language changes");
+                if (!((font == 125 && mode == typography::TextRenderMode::Auto && std::wstring_view(language) == L"en-US") ||
+                      (font == 90 && mode == typography::TextRenderMode::Smooth && std::wstring_view(language) == L"zh-CN"))) continue;
+                for (bool dark : {false, true}) {
+                    compositor.Resize(static_cast<UINT>(760 * scale), static_cast<UINT>(320 * scale));
+                    const auto theme = MakeTheme(dark, HexColor(0x0078D4));
+                    renderer.UpdateBrushes(theme); renderer.text_background_ = theme.bg;
+                    renderer.painter_.BeginFrame(theme, false);
+                    PaneViewModel pane; pane.view_mode = ViewMode::Details; pane.is_search = true;
+                    pane.path = L"C:\\private-typography-fixture";
+                    pane.header_text = L"Typography cache regression";
+                    ListEntryView entry; entry.name = L"final-report-季度数据.xlsx";
+                    entry.path = pane.path + L"\\a-long-parent-folder\\another-parent\\" + entry.name;
+                    entry.type_text = L"Excel document"; entry.date_text = L"2026-12-30 23:59"; entry.size_text = L"1023.9 KB";
+                    pane.entries.push_back(entry);
+                    WindowViewModel vm;
+                    auto* dc = compositor.Dc(); dc->BeginDraw(); dc->Clear(theme.bg);
+                    renderer.DrawSinglePane(vm, pane, {8 * scale, 8 * scale, 752 * scale, 312 * scale}, 0, true, false, theme);
+                    check(SUCCEEDED(dc->EndDraw()), "draw resized typography with real path metadata layout");
+                    const auto shot = root / (L"typography-" + std::to_wstring(font) + L"-" +
+                        std::to_wstring(static_cast<int>(scale * 100)) + (dark ? L"-dark.png" : L"-light.png"));
+                    check(compositor.SaveSnapshot(shot.c_str()), "save real typography layout screenshot");
+                }
+            }
+            typography::SetUiFontScale(old_font); typography::SetTextRenderMode(old_mode);
+            l10n::SetLanguage(l10n::LanguageId(old_language));
         }
         DestroyWindow(hwnd); return ok;
     }

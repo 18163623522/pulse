@@ -4,6 +4,7 @@
 #include "io_task_queue.h"
 #include "../fs/fs_recycle.h"
 #include "../fs/fs_snapshot.h"
+#include "../fs/fs_net_cache.h"
 #include "../ui/ui_renderer.h"
 #include "entry_sort.h"
 #include <memory>
@@ -12,7 +13,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <queue>
+#include <deque>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -33,6 +34,7 @@ struct WorkItem {
     std::vector<uint64_t> display_times;
     // Known folder totals for a Size sort (#58); null sorts folders as 0 bytes.
     std::shared_ptr<const FolderSizeLookup> folder_sizes;
+    fs::NetSnapshotWrite cache_write;
 };
 
 struct WorkResult {
@@ -57,12 +59,14 @@ public:
 
     void Start(ResultCallback cb);
     void Stop();
+    void CancelGeneration(uint64_t generation);
 
     // Enqueue a refresh for path. Returns the generation assigned.
     uint64_t Refresh(const std::wstring& path, ui::SortColumn col, ui::SortDirection dir,
                      int group_by = 0,
                      std::shared_ptr<const FolderSizeLookup> folder_sizes = nullptr);
 
+    // Independent consumer request; cancel an obsolete request by generation.
     uint64_t LoadPaths(const std::wstring& view_path, std::vector<std::wstring> paths,
                        ui::SortColumn col, ui::SortDirection dir,
                        bool preserve_order = false,
@@ -80,7 +84,9 @@ private:
     std::vector<std::thread> threads_;
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::queue<WorkItem> queue_;
+    std::deque<WorkItem> queue_;
+    size_t active_network_jobs_ = 0;
+    size_t max_network_jobs_ = 1;
     IoTaskQueue io_queue_;
     std::atomic<bool> running_{false};
     bool stopped_ = false;

@@ -1,4 +1,5 @@
 #include "preview_decoders.h"
+#include "gif_decoder.h"
 #include "../ipc/preview_protocol.h"
 #include "../common/preview_extensions.h"
 #include "archive_listing.h"
@@ -11,6 +12,7 @@
 #include "notebook_document.h"
 #include "font_raster.h"
 #include "image_frames.h"
+#include "gif_frames.h"
 #include "image_pack.h"
 #include "raw_pack.h"
 #include "archive_pack.h"
@@ -254,6 +256,7 @@ static bool DecodeImage(const std::wstring& path, DWORD attrs, UINT pixels,
     ComPtr<IWICBitmapDecoder> decoder;
     ComPtr<IWICBitmapFrameDecode> frame;
     ComPtr<IWICBitmapScaler> scaler;
+    ComPtr<IWICBitmapFlipRotator> rotation, reflection;
     ComPtr<IWICFormatConverter> converter;
     ComPtr<IWICStream> stream;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
@@ -275,17 +278,51 @@ static bool DecodeImage(const std::wstring& path, DWORD attrs, UINT pixels,
     UINT sourceWidth = 0, sourceHeight = 0;
     if (FAILED(frame->GetSize(&sourceWidth, &sourceHeight)) ||
         sourceWidth == 0 || sourceHeight == 0) return false;
+    IWICBitmapSource* source = frame.Get();
+    GUID container{};
+    if (SUCCEEDED(decoder->GetContainerFormat(&container)) &&
+        (IsEqualGUID(container, GUID_ContainerFormatJpeg) || IsEqualGUID(container, GUID_ContainerFormatTiff))) {
+        ComPtr<IWICMetadataQueryReader> metadata;
+        unsigned orientation = 1;
+        if (SUCCEEDED(frame->GetMetadataQueryReader(&metadata))) {
+            PROPVARIANT value{};
+            const auto key = IsEqualGUID(container, GUID_ContainerFormatJpeg)
+                ? L"/app1/ifd/{ushort=274}" : L"/ifd/{ushort=274}";
+            if (SUCCEEDED(metadata->GetMetadataByName(key, &value)) && value.vt == VT_UI2 &&
+                value.uiVal >= 1 && value.uiVal <= 8) orientation = value.uiVal;
+            PropVariantClear(&value);
+        }
+        WICBitmapTransformOptions transform = WICBitmapTransformRotate0;
+        switch (orientation) {
+        case 2: transform = WICBitmapTransformFlipHorizontal; break;
+        case 3: transform = WICBitmapTransformRotate180; break;
+        case 4: transform = WICBitmapTransformFlipVertical; break;
+        case 5: case 6: case 7: transform = WICBitmapTransformRotate90; break;
+        case 8: transform = WICBitmapTransformRotate270; break;
+        }
+        if (orientation != 1) {
+            if (FAILED(factory->CreateBitmapFlipRotator(&rotation)) ||
+                FAILED(rotation->Initialize(source, transform))) return false;
+            source = rotation.Get();
+            // Make transform order explicit for the two diagonal reflections.
+            if (orientation == 5 || orientation == 7) {
+                if (FAILED(factory->CreateBitmapFlipRotator(&reflection)) ||
+                    FAILED(reflection->Initialize(source, orientation == 5
+                        ? WICBitmapTransformFlipHorizontal : WICBitmapTransformFlipVertical))) return false;
+                source = reflection.Get();
+            }
+            if (FAILED(source->GetSize(&sourceWidth, &sourceHeight))) return false;
+        }
+    }
     source_width = sourceWidth;
     source_height = sourceHeight;
-
-    IWICBitmapSource* source = frame.Get();
     const UINT longest = (std::max)(sourceWidth, sourceHeight);
     if (longest > pixels) {
         const double ratio = static_cast<double>(pixels) / longest;
         const UINT scaledWidth = (std::max)(1u, static_cast<UINT>(sourceWidth * ratio + 0.5));
         const UINT scaledHeight = (std::max)(1u, static_cast<UINT>(sourceHeight * ratio + 0.5));
         if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
-            FAILED(scaler->Initialize(frame.Get(), scaledWidth, scaledHeight,
+            FAILED(scaler->Initialize(source, scaledWidth, scaledHeight,
                                       WICBitmapInterpolationModeFant))) return false;
         source = scaler.Get();
     }
@@ -321,25 +358,6 @@ static bool MetadataUInt(IWICMetadataQueryReader* reader, const wchar_t* name,
     return ok;
 }
 
-static void GifFrameMetadata(IWICBitmapFrameDecode* frame, uint32_t& left,
-                             uint32_t& top, uint32_t& width, uint32_t& height,
-                             uint32_t& disposal, uint32_t& delay_ms) {
-    left = top = 0; width = height = 0; disposal = 0; delay_ms = 100;
-    ComPtr<IWICMetadataQueryReader> reader;
-    if (FAILED(frame->GetMetadataQueryReader(&reader)) || !reader) {
-        frame->GetSize(&width, &height); return;
-    }
-    MetadataUInt(reader.Get(), L"/imgdesc/Left", left);
-    MetadataUInt(reader.Get(), L"/imgdesc/Top", top);
-    MetadataUInt(reader.Get(), L"/imgdesc/Width", width);
-    MetadataUInt(reader.Get(), L"/imgdesc/Height", height);
-    MetadataUInt(reader.Get(), L"/grctlext/Disposal", disposal);
-    uint32_t delay = 0;
-    if (MetadataUInt(reader.Get(), L"/grctlext/Delay", delay) && delay > 0)
-        delay_ms = std::clamp(delay * 10u, 20u, 2000u);
-    if (!width || !height) frame->GetSize(&width, &height);
-}
-
 static void AlphaBlendPbgra(uint8_t* dst, const uint8_t* src) {
     const uint32_t sa = src[3];
     if (sa == 255) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = 255; return; }
@@ -349,102 +367,6 @@ static void AlphaBlendPbgra(uint8_t* dst, const uint8_t* src) {
     dst[1] = static_cast<uint8_t>(src[1] + (dst[1] * inv + 127u) / 255u);
     dst[2] = static_cast<uint8_t>(src[2] + (dst[2] * inv + 127u) / 255u);
     dst[3] = static_cast<uint8_t>(sa + (dst[3] * inv + 127u) / 255u);
-}
-
-static bool DecodeGifFrame(const std::wstring& path, DWORD attrs, UINT pixels,
-                           uint32_t frame_index, std::vector<uint8_t>& out,
-                           UINT& width, UINT& height, UINT& stride,
-                           uint32_t& frame_count, uint32_t& delay_ms,
-                           uint32_t& loop_count, UINT& source_width, UINT& source_height) {
-    if (IsOfflinePlaceholder(attrs)) return false;
-    ComPtr<IWICImagingFactory> factory; ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&factory))) ||
-        FAILED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
-                                                   WICDecodeMetadataCacheOnLoad, &decoder))) return false;
-    UINT count = 0; if (FAILED(decoder->GetFrameCount(&count)) || !count) return false;
-    frame_count = count; frame_index = (std::min)(frame_index, count - 1);
-    loop_count = 0;
-    ComPtr<IWICMetadataQueryReader> decoder_reader;
-    if (SUCCEEDED(decoder->GetMetadataQueryReader(&decoder_reader)) && decoder_reader) {
-        PROPVARIANT pv{}; PropVariantInit(&pv);
-        if (SUCCEEDED(decoder_reader->GetMetadataByName(L"/appext/Data", &pv)) &&
-            ((pv.vt & VT_VECTOR) != 0) && ((pv.vt & VT_TYPEMASK) == VT_UI1) &&
-            pv.caub.cElems >= 16) {
-            const auto* b = pv.caub.pElems;
-            for (ULONG i = 0; i + 4 < pv.caub.cElems; ++i)
-                if (b[i] == 'N' && b[i + 1] == 'E' && b[i + 2] == 'T' &&
-                    b[i + 3] == 'S' && b[i + 4] == 'C') {
-                    for (ULONG j = i; j + 15 < pv.caub.cElems; ++j)
-                        if (b[j] == 0x03 && b[j + 1] == 0x01) {
-                            loop_count = b[j + 2] | (static_cast<uint32_t>(b[j + 3]) << 8); break;
-                        }
-                    break;
-                }
-        }
-        PropVariantClear(&pv);
-    }
-    ComPtr<IWICBitmapFrameDecode> first; if (FAILED(decoder->GetFrame(0, &first))) return false;
-    UINT canvas_w = 0, canvas_h = 0; first->GetSize(&canvas_w, &canvas_h);
-    ComPtr<IWICMetadataQueryReader> first_reader;
-    if (SUCCEEDED(decoder->GetMetadataQueryReader(&first_reader)) && first_reader) {
-        uint32_t v = 0;
-        if (MetadataUInt(first_reader.Get(), L"/logscrdesc/Width", v) && v) canvas_w = v;
-        if (MetadataUInt(first_reader.Get(), L"/logscrdesc/Height", v) && v) canvas_h = v;
-    }
-    if (!canvas_w || !canvas_h || canvas_w > 16384 || canvas_h > 16384) return false;
-    source_width = canvas_w;
-    source_height = canvas_h;
-    std::vector<uint8_t> canvas(static_cast<size_t>(canvas_w) * canvas_h * 4, 0);
-    std::vector<uint8_t> saved;
-    uint32_t prev_left = 0, prev_top = 0, prev_w = 0, prev_h = 0, prev_disposal = 0;
-    for (uint32_t i = 0; i <= frame_index; ++i) {
-        if (i > 0) {
-            if (prev_disposal == 2) {
-                const uint32_t x0 = (std::min)(prev_left, canvas_w);
-                const uint32_t x1 = (std::min)(canvas_w, prev_left + prev_w);
-                for (uint32_t y = (std::min)(prev_top, canvas_h);
-                     y < (std::min)(canvas_h, prev_top + prev_h); ++y)
-                    std::fill(canvas.begin() + (static_cast<size_t>(y) * canvas_w + x0) * 4,
-                              canvas.begin() + (static_cast<size_t>(y) * canvas_w + x1) * 4, uint8_t{0});
-            } else if (prev_disposal == 3 && saved.size() == canvas.size()) canvas = saved;
-        }
-        ComPtr<IWICBitmapFrameDecode> frame; if (FAILED(decoder->GetFrame(i, &frame))) return false;
-        uint32_t left, top, fw, fh, disposal, current_delay;
-        GifFrameMetadata(frame.Get(), left, top, fw, fh, disposal, current_delay);
-        if (i == frame_index) delay_ms = current_delay;
-        if (disposal == 3) saved = canvas;
-        ComPtr<IWICFormatConverter> converter;
-        if (FAILED(factory->CreateFormatConverter(&converter)) ||
-            FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA,
-                                         WICBitmapDitherTypeNone, nullptr, 0.0,
-                                         WICBitmapPaletteTypeCustom))) return false;
-        UINT rw = 0, rh = 0; converter->GetSize(&rw, &rh);
-        const UINT copy_w = (std::min)(fw, rw), copy_h = (std::min)(fh, rh);
-        std::vector<uint8_t> pixels_data(static_cast<size_t>(rw) * rh * 4);
-        if (FAILED(converter->CopyPixels(nullptr, rw * 4, static_cast<UINT>(pixels_data.size()), pixels_data.data()))) return false;
-        for (UINT y = 0; y < copy_h && top + y < canvas_h; ++y)
-            for (UINT x = 0; x < copy_w && left + x < canvas_w; ++x)
-                AlphaBlendPbgra(&canvas[(static_cast<size_t>(top + y) * canvas_w + left + x) * 4],
-                                &pixels_data[(static_cast<size_t>(y) * rw + x) * 4]);
-        prev_left = left; prev_top = top; prev_w = fw; prev_h = fh; prev_disposal = disposal;
-    }
-    width = canvas_w; height = canvas_h; stride = canvas_w * 4;
-    const UINT longest = (std::max)(canvas_w, canvas_h);
-    if (longest > pixels) {
-        const double ratio = static_cast<double>(pixels) / longest;
-        width = (std::max)(1u, static_cast<UINT>(canvas_w * ratio + 0.5));
-        height = (std::max)(1u, static_cast<UINT>(canvas_h * ratio + 0.5));
-        ComPtr<IWICBitmap> bitmap;
-        if (FAILED(factory->CreateBitmapFromMemory(canvas_w, canvas_h, GUID_WICPixelFormat32bppPBGRA,
-                                                   canvas_w * 4, static_cast<UINT>(canvas.size()), canvas.data(), &bitmap))) return false;
-        ComPtr<IWICBitmapScaler> scaler;
-        if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
-            FAILED(scaler->Initialize(bitmap.Get(), width, height, WICBitmapInterpolationModeFant))) return false;
-        out.resize(static_cast<size_t>(width) * height * 4); stride = width * 4;
-        return SUCCEEDED(scaler->CopyPixels(nullptr, stride, static_cast<UINT>(out.size()), out.data()));
-    }
-    out = std::move(canvas); return true;
 }
 
 static bool HbitmapToBgra(HBITMAP bitmap, bool own, std::vector<uint8_t>& out,
@@ -937,9 +859,13 @@ static DecodeStep RunImage(const DecodeRequest& q, DecodeResult& r) {
             return DecodeStep::Failed;
         }
     } else if (gif) {
-        made = DecodeGifFrame(q.path, q.request.attrs, cap, q.request.frame_index,
-            r.pixels, r.width, r.height, r.stride, frame_count, frame_delay, loop_count,
-            r.source_width, r.source_height);
+        if (q.offline) { r.error = L"gif-offline"; return DecodeStep::Failed; }
+        preview::GifFrame frame;
+        made = preview::DecodeGifCached(q.path, cap, q.request.frame_index, frame);
+        if (!made) { r.error = frame.error; return DecodeStep::Failed; }
+        r.pixels = std::move(frame.pixels); r.width = frame.width; r.height = frame.height; r.stride = frame.stride;
+        r.source_width = frame.source_width; r.source_height = frame.source_height;
+        frame_count = frame.count; frame_delay = frame.delay; loop_count = frame.loops;
     } else if (!q.offline && !q.grid && q.extension == L".webp" &&
                DecodeWebpFrame(q.path, ipc::ClampPreviewPixelSize(q.request.pixel_size, true),
                                q.request.frame_index, r, frame_count, frame_delay, loop_count)) {

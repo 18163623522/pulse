@@ -126,6 +126,7 @@ std::wstring EntryFullPath(const app::Tab& tab, int index);
 std::vector<std::wstring> SelectedFullPaths(const app::Tab& tab);
 std::wstring TagDiscoveryKey(std::wstring path);
 void QueueVisibleTagDiscovery(AppState& s);
+void ApplyTagAdsDiscoveries(AppState& s, const std::vector<TagAdsDiscovery>& discoveries);
 std::wstring SelectedFullPath(AppState& s);
 void SyncSavedSearchSidebar(AppState& s);
 } // namespace pulse

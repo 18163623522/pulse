@@ -28,6 +28,9 @@
 #pragma comment(lib, "imm32.lib")
 
 namespace pulse::ui {
+#if defined(PULSE_TEST_BATCH_RENAME_PRESENT)
+void ObserveEditUploadForTest(HWND hwnd, const void* bits, int width, int height);
+#endif
 namespace {
 
 bool EnvironmentEnabled() noexcept {
@@ -170,8 +173,11 @@ struct LumaTextRenderer::Impl {
     int present_h = 0;
     bool busy = false;
     HWND mouse_hwnd = nullptr;
+    bool setting_mouse_selection = false;
     int mouse_anchor = 0;
     int mouse_caret = 0;
+    bool applying_mouse_selection = false;
+    std::unordered_map<HWND, std::pair<int, int>> edit_selections;
     static constexpr float kEditPad = 2.0f;
     // Inputs use DirectWrite in every text mode, sharing the list rendering
     // parameters while EDIT continues to own text, undo and IME.
@@ -505,6 +511,11 @@ struct LumaTextRenderer::Impl {
             const bool child = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CHILD) != 0;
             const BOOL ok = UpdateLayeredWindow(hwnd, nullptr, child ? nullptr : &dst_pt, &sz, present_dc,
                                                 &src, 0, &blend, ULW_ALPHA);
+#if defined(PULSE_TEST_BATCH_RENAME_PRESENT)
+            if (ok) {
+                pulse::ui::ObserveEditUploadForTest(hwnd, present_bits, w, h);
+            }
+#endif
             return ok != FALSE;
         }
         if (!paint_dc) return false;
@@ -515,9 +526,13 @@ struct LumaTextRenderer::Impl {
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         info.bmiHeader.biCompression = BI_RGB;
-        return SetDIBitsToDevice(paint_dc, 0, 0, static_cast<DWORD>(w),
+        const bool ok = SetDIBitsToDevice(paint_dc, 0, 0, static_cast<DWORD>(w),
                                  static_cast<DWORD>(h), 0, 0, 0, static_cast<UINT>(h),
                                  bits, &info, DIB_RGB_COLORS) > 0;
+#if defined(PULSE_TEST_BATCH_RENAME_PRESENT)
+        if (ok) pulse::ui::ObserveEditUploadForTest(hwnd, bits, w, h);
+#endif
+        return ok;
     }
 
     void Shutdown() noexcept {
@@ -932,8 +947,19 @@ struct LumaTextRenderer::Impl {
         DWORD sel0 = 0, sel1 = 0;
         SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&sel0),
                      reinterpret_cast<LPARAM>(&sel1));
+        if (mouse_hwnd != hwnd) {
+            const auto saved = edit_selections.find(hwnd);
+            if (saved != edit_selections.end() &&
+                std::min(saved->second.first, saved->second.second) == static_cast<int>(sel0) &&
+                std::max(saved->second.first, saved->second.second) == static_cast<int>(sel1)) {
+                mouse_hwnd = hwnd;
+                mouse_anchor = saved->second.first;
+                mouse_caret = saved->second.second;
+            }
+        }
         int caret_for_scroll = static_cast<int>(sel1);
-        if (mouse_hwnd == hwnd) caret_for_scroll = mouse_caret;
+        if (mouse_hwnd == hwnd && (mouse_caret == static_cast<int>(sel0) || mouse_caret == static_cast<int>(sel1)))
+            caret_for_scroll = mouse_caret;
         caret_for_scroll = std::clamp(caret_for_scroll, 0, static_cast<int>(text.size()));
 
         const int length = static_cast<int>(text.size());
@@ -955,19 +981,20 @@ struct LumaTextRenderer::Impl {
             mouse_hwnd = hwnd;
             mouse_anchor = start;
             mouse_caret = end;
-            SendMessageW(hwnd, EM_SETSEL, static_cast<WPARAM>(start), static_cast<LPARAM>(end));
+            SetMouseSelection(hwnd);
             return;
         }
         if (msg == WM_LBUTTONDOWN) {
-            if ((wParam & MK_SHIFT) && mouse_hwnd == hwnd) {
+            if (wParam & MK_SHIFT) {
+                if (mouse_hwnd != hwnd) mouse_anchor = static_cast<int>(sel0);
+                mouse_hwnd = hwnd;
                 mouse_caret = index;
             } else {
                 mouse_hwnd = hwnd;
                 mouse_anchor = index;
                 mouse_caret = index;
             }
-            SendMessageW(hwnd, EM_SETSEL, static_cast<WPARAM>(mouse_anchor),
-                         static_cast<LPARAM>(mouse_caret));
+            SetMouseSelection(hwnd);
             return;
         }
         if (mouse_hwnd != hwnd) {
@@ -975,8 +1002,13 @@ struct LumaTextRenderer::Impl {
             mouse_anchor = static_cast<int>(sel0);
         }
         mouse_caret = index;
-        SendMessageW(hwnd, EM_SETSEL, static_cast<WPARAM>(mouse_anchor),
-                     static_cast<LPARAM>(mouse_caret));
+        SetMouseSelection(hwnd);
+    }
+
+    void SetMouseSelection(HWND hwnd) {
+        setting_mouse_selection = true;
+        SendMessageW(hwnd, EM_SETSEL, static_cast<WPARAM>(mouse_anchor), static_cast<LPARAM>(mouse_caret));
+        setting_mouse_selection = false;
     }
 
     bool EnsureBlit(int w, int h) {
@@ -1033,6 +1065,10 @@ struct LumaTextRenderer::Impl {
         int caret = static_cast<int>(sel1);
         if (mouse_hwnd == hwnd && (mouse_caret == sel_lo || mouse_caret == sel_hi))
             caret = mouse_caret;
+        else if (const auto saved = edit_selections.find(hwnd); saved != edit_selections.end() &&
+            std::min(saved->second.first, saved->second.second) == sel_lo &&
+            std::max(saved->second.first, saved->second.second) == sel_hi)
+            caret = saved->second.second;
         caret = std::clamp(caret, 0, static_cast<int>(text.size()));
 
         const auto dw_layout = DwEditLayout(text, format, static_cast<float>(h));
@@ -1156,12 +1192,101 @@ struct LumaTextRenderer::Impl {
 };
 
 LumaTextRenderer::LumaTextRenderer() : impl_(std::make_unique<Impl>()) {}
-LumaTextRenderer::~LumaTextRenderer() = default;
+LumaTextRenderer::~LumaTextRenderer() { Shutdown(); }
+
+void LumaTextRenderer::TrackEdit(HWND hwnd) {
+    if (!hwnd || std::find(tracked_edits_.begin(), tracked_edits_.end(), hwnd) != tracked_edits_.end()) return;
+    if (SetWindowSubclass(hwnd, EditSelectionProc, reinterpret_cast<UINT_PTR>(this),
+        reinterpret_cast<DWORD_PTR>(this))) tracked_edits_.push_back(hwnd);
+}
+LRESULT CALLBACK LumaTextRenderer::EditSelectionProc(HWND hwnd, UINT message, WPARAM wparam,
+                                                    LPARAM lparam, UINT_PTR id, DWORD_PTR data) {
+    auto* self = reinterpret_cast<LumaTextRenderer*>(data);
+    const LRESULT result = DefSubclassProc(hwnd, message, wparam, lparam);
+    self->SyncEditSelection(hwnd, message, wparam, lparam);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, EditSelectionProc, id);
+        std::erase(self->tracked_edits_, hwnd);
+    }
+    return result;
+}
+void LumaTextRenderer::SyncEditSelection(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+#if defined(PULSE_HAS_LUMATEXT)
+    if (!impl_) return;
+    if (message == WM_NCDESTROY || message == WM_KILLFOCUS) {
+        if (impl_->mouse_hwnd == hwnd) impl_->mouse_hwnd = nullptr;
+        if (message == WM_NCDESTROY) impl_->edit_selections.erase(hwnd);
+        return;
+    }
+    if (impl_->applying_mouse_selection) return;
+    if (message != EM_SETSEL && message != WM_KEYDOWN && message != WM_CHAR &&
+        message != WM_SETTEXT && message != EM_REPLACESEL && message != WM_CUT &&
+        message != WM_PASTE && message != WM_CLEAR && message != WM_UNDO && message != EM_UNDO &&
+        message != WM_IME_COMPOSITION && message != WM_IME_ENDCOMPOSITION) return;
+    DWORD lo = 0, hi = 0;
+    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&lo), reinterpret_cast<LPARAM>(&hi));
+    int anchor = static_cast<int>(lo), caret = static_cast<int>(hi);
+    if (message == EM_SETSEL && static_cast<int>(wparam) >= 0) {
+        const int length = GetWindowTextLengthW(hwnd);
+        anchor = std::clamp(static_cast<int>(wparam), 0, length);
+        caret = lparam < 0 ? length : std::clamp(static_cast<int>(lparam), 0, length);
+    } else if (lo != hi) {
+        if (message == WM_KEYDOWN && (wparam == VK_LEFT || wparam == VK_HOME || wparam == VK_UP)) {
+            anchor = static_cast<int>(hi); caret = static_cast<int>(lo);
+        } else if (impl_->mouse_hwnd == hwnd && impl_->mouse_anchor == static_cast<int>(hi)) {
+            anchor = static_cast<int>(hi); caret = static_cast<int>(lo);
+        }
+    }
+    impl_->mouse_hwnd = hwnd; impl_->mouse_anchor = anchor; impl_->mouse_caret = caret;
+    impl_->edit_selections[hwnd] = {anchor, caret};
+#else
+    (void)hwnd; (void)message; (void)wparam; (void)lparam;
+#endif
+}
+
+void LumaTextRenderer::SynchronizeEditSelection(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+#if defined(PULSE_HAS_LUMATEXT)
+    if (!impl_ || impl_->setting_mouse_selection) return;
+    if (msg == WM_NCDESTROY || msg == WM_KILLFOCUS) {
+        if (impl_->mouse_hwnd == hwnd) impl_->mouse_hwnd = nullptr;
+        return;
+    }
+    DWORD lo = 0, hi = 0;
+    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&lo), reinterpret_cast<LPARAM>(&hi));
+    int anchor = static_cast<int>(lo), caret = static_cast<int>(hi);
+    if (msg == EM_SETSEL && static_cast<int>(wParam) >= 0) {
+        const int length = GetWindowTextLengthW(hwnd);
+        anchor = std::min(static_cast<int>(wParam), length);
+        caret = static_cast<int>(lParam) < 0 ? length : std::min(static_cast<int>(lParam), length);
+    } else if (lo != hi && impl_->mouse_hwnd == hwnd && impl_->mouse_anchor == static_cast<int>(hi)) {
+        anchor = static_cast<int>(hi);
+        caret = static_cast<int>(lo);
+    }
+    impl_->mouse_hwnd = hwnd;
+    impl_->mouse_anchor = anchor;
+    impl_->mouse_caret = caret;
+#else
+    (void)hwnd; (void)msg; (void)wParam; (void)lParam;
+#endif
+}
 
 LRESULT LumaTextRenderer::CallEditDefaultMouse(HWND hwnd, UINT msg, WPARAM wParam,
                                                LPARAM lParam, IDWriteTextFormat* format) {
 #if defined(PULSE_HAS_LUMATEXT)
     if (format && impl_ && impl_->renderer) {
+        TrackEdit(hwnd);
+        struct MouseSelectionGuard {
+            Impl& state;
+            HWND window;
+            MouseSelectionGuard(Impl& value, HWND hwnd) : state(value), window(hwnd) {
+                state.applying_mouse_selection = true;
+            }
+            ~MouseSelectionGuard() {
+                state.applying_mouse_selection = false;
+                if (state.mouse_hwnd == window && IsWindow(window))
+                    state.edit_selections[window] = {state.mouse_anchor, state.mouse_caret};
+            }
+        } guard(*impl_, hwnd);
         HideCaret(hwnd);
         switch (msg) {
         case WM_LBUTTONDOWN:
@@ -1203,6 +1328,12 @@ bool LumaTextRenderer::Init(IDWriteFactory* dwrite, ID2D1RenderTarget* target) {
 }
 
 void LumaTextRenderer::Shutdown() noexcept {
+    for (HWND hwnd : tracked_edits_)
+        RemoveWindowSubclass(hwnd, EditSelectionProc, reinterpret_cast<UINT_PTR>(this));
+    tracked_edits_.clear();
+#if defined(PULSE_HAS_LUMATEXT)
+    if (impl_) { impl_->edit_selections.clear(); impl_->mouse_hwnd = nullptr; }
+#endif
     if (impl_) impl_->Shutdown();
 }
 
@@ -1249,6 +1380,7 @@ bool LumaTextRenderer::PaintEdit(HWND hwnd, HDC hdc, IDWriteTextFormat* format,
                                  const D2D1_COLOR_F& foreground,
                                  const D2D1_COLOR_F& background) {
 #if defined(PULSE_HAS_LUMATEXT)
+    TrackEdit(hwnd);
     return impl_ && impl_->PaintEdit(hwnd, hdc, format, foreground, background);
 #else
     (void)hwnd;

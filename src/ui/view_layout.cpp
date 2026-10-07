@@ -295,10 +295,13 @@ int ViewLayout::HitTest(float x, float y) const noexcept {
     }
     const int col = std::max(0, static_cast<int>(local_x / metrics_.cell_width));
     const int row = std::max(0, static_cast<int>(local_y / metrics_.cell_height));
+    if (col >= metrics_.columns || (metrics_.column_major && row >= metrics_.rows_per_column)) return -1;
     const int index = metrics_.column_major
         ? col * metrics_.rows_per_column + row
         : row * metrics_.columns + col;
-    return index >= 0 && static_cast<size_t>(index) < count_ ? index : -1;
+    if (index < 0 || static_cast<size_t>(index) >= count_) return -1;
+    const auto bounds = ItemRect(index);
+    return x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom ? index : -1;
 }
 
 std::pair<int, int> ViewLayout::VisibleRange() const noexcept {

@@ -1,7 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if /i not "%~1"=="/skipbuild" call build_win81.bat
+if /i not "%~1"=="/skipbuild" call build_win81.bat /release
+if errorlevel 1 exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\check_release_payload.ps1" -BuildDir "%~dp0build-win81"
 if errorlevel 1 exit /b 1
 python tools\audit_win81_imports.py build-win81
 if errorlevel 1 exit /b 1

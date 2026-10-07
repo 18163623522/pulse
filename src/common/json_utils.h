@@ -1,4 +1,5 @@
 #pragma once
+#include "config_json.h"
 
 #include <string>
 #include <vector>
@@ -12,6 +13,13 @@ inline void Escape(const std::wstring& input, std::wstring& output) {
         else if (c == L'\n') output += L"\\n";
         else if (c == L'\r') output += L"\\r";
         else if (c == L'\t') output += L"\\t";
+        else if (c == L'\b') output += L"\\b";
+        else if (c == L'\f') output += L"\\f";
+        else if (c < 0x20 || (c >= 0xD800 && c <= 0xDFFF)) {
+            constexpr wchar_t hex[] = L"0123456789abcdef";
+            output += L"\\u";
+            for (int shift = 12; shift >= 0; shift -= 4) output += hex[(c >> shift) & 15];
+        }
         else output += c;
     }
 }
@@ -24,32 +32,54 @@ inline void SkipWhitespace(const std::wstring& input, size_t& pos) {
     }
 }
 
-inline size_t ValuePosition(const std::wstring& input, const std::wstring& key) {
-    const std::wstring quoted = L"\"" + key + L"\"";
-    size_t pos = input.find(quoted);
-    if (pos == std::wstring::npos) return pos;
-    pos = input.find(L':', pos + quoted.size());
-    if (pos == std::wstring::npos) return pos;
-    ++pos;
-    SkipWhitespace(input, pos);
-    return pos;
+// Only direct object members are keys; strings and nested objects are skipped.
+inline size_t ValuePosition(const std::wstring& input, const std::wstring& key);
+
+// pos starts just after the opening quote and finishes after its closing quote.
+// Unicode escapes preserve UTF-16 code units, including surrogate pairs.
+inline bool DecodeString(const std::wstring& input, size_t& pos, std::wstring& output) {
+    output.clear();
+    while (pos < input.size()) {
+        wchar_t c = input[pos++];
+        if (c == L'"') return true;
+        if (c < 0x20) break;
+        if (c != L'\\') { output += c; continue; }
+        if (pos == input.size()) break;
+        c = input[pos++];
+        switch (c) {
+        case L'"': case L'\\': case L'/': output += c; break;
+        case L'b': output += L'\b'; break;
+        case L'f': output += L'\f'; break;
+        case L'n': output += L'\n'; break;
+        case L'r': output += L'\r'; break;
+        case L't': output += L'\t'; break;
+        case L'u': {
+            unsigned value = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (pos == input.size()) { output.clear(); return false; }
+                const wchar_t digit = input[pos++];
+                const int number = digit >= L'0' && digit <= L'9' ? digit - L'0' :
+                    digit >= L'a' && digit <= L'f' ? digit - L'a' + 10 :
+                    digit >= L'A' && digit <= L'F' ? digit - L'A' + 10 : -1;
+                if (number < 0) { output.clear(); return false; }
+                value = value * 16 + static_cast<unsigned>(number);
+            }
+            output += static_cast<wchar_t>(value);
+            break;
+        }
+        default: output.clear(); return false;
+        }
+    }
+    output.clear();
+    return false;
 }
 
 inline std::wstring UnescapeString(const std::wstring& input, size_t& pos) {
     std::wstring output;
-    while (pos < input.size() && input[pos] != L'"') {
-        if (input[pos] == L'\\' && pos + 1 < input.size()) {
-            ++pos;
-            if (input[pos] == L'n') output += L'\n';
-            else if (input[pos] == L'r') output += L'\r';
-            else if (input[pos] == L't') output += L'\t';
-            else output += input[pos];
-        } else {
-            output += input[pos];
-        }
-        ++pos;
-    }
-    if (pos < input.size()) ++pos;
+    // Historical callers pass the position immediately after the opening quote.
+    size_t start = pos ? pos - 1 : input.size();
+    if (!ConfigSyntax(input, true).DecodeString(start, output)) { pos = input.size(); return {}; }
+    pos = start;
     return output;
 }
 
@@ -59,7 +89,8 @@ inline std::wstring ExtractString(const std::wstring& input, const std::wstring&
     if (pos == std::wstring::npos || pos >= input.size() || input[pos] != L'"')
         return fallback;
     ++pos;
-    return UnescapeString(input, pos);
+    std::wstring output;
+    return DecodeString(input, pos, output) ? output : fallback;
 }
 
 inline int ExtractInt(const std::wstring& input, const std::wstring& key, int fallback = 0) {
@@ -150,9 +181,8 @@ inline std::wstring ExtractObject(const std::wstring& input, const std::wstring&
     return ExtractContainer(input, key, L'{');
 }
 
-// Reads the value at pos (a string with its quotes, an array / object, or a
-// scalar) into raw and moves pos past it.
-inline bool NextValue(const std::wstring& input, size_t& pos, std::wstring& raw) {
+// Skip a value without copying potentially large nested configuration arrays.
+inline bool SkipValue(const std::wstring& input, size_t& pos) {
     SkipWhitespace(input, pos);
     if (pos >= input.size()) return false;
     const size_t start = pos;
@@ -172,8 +202,19 @@ inline bool NextValue(const std::wstring& input, size_t& pos, std::wstring& raw)
             ++pos;
         if (pos == start) return false;
     }
+    return true;
+}
+
+inline bool NextValue(const std::wstring& input, size_t& pos, std::wstring& raw) {
+    SkipWhitespace(input, pos);
+    const size_t start = pos;
+    if (!SkipValue(input, pos)) return false;
     raw = input.substr(start, pos - start);
     return true;
+}
+
+inline size_t ValuePosition(const std::wstring& input, const std::wstring& key) {
+    return ConfigSyntax(input, true).MemberPosition(key);
 }
 
 // Calls fn(raw_element) for each element of an array ("[...]" text).
