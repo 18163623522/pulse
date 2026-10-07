@@ -69,6 +69,8 @@ foreach ($testName in $testNames) {
 }
 & (Join-Path $build 'pulse_ops_test.exe') --update-shutdown
 if ($LASTEXITCODE -ne 0) { throw 'Update shutdown and automatic wait regression failed' }
+& (Join-Path $build 'pulse_ops_test.exe') --delete-progress-only
+if ($LASTEXITCODE -ne 0) { throw 'Delete progress rate and remaining-time regression failed' }
 & (Join-Path $build 'pulse_playback_controls_test.exe') --timeline-only
 if ($LASTEXITCODE -ne 0) { throw 'Playback timeline regression failed' }
 & (Join-Path $build 'pulse_preview_test.exe') --vector-only
