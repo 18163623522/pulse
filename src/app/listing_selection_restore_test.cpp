@@ -38,7 +38,7 @@ bool RunListingSelectionRestoreTest() {
     auto publish = [&](app::Tab& tab, std::initializer_list<const wchar_t*> entries) {
         auto restore = app::TakeListingSelection(tab, tab.current_path);
         tab.SetSnapshot(snapshot(entries));
-        app::RestoreListingSelection(tab, restore.names, restore.focus, restore.user_changed);
+        app::RestoreListingSelection(tab, restore);
         return restore.user_changed;
     };
     check(log != nullptr, "regression log opened");
@@ -102,7 +102,7 @@ bool RunListingSelectionRestoreTest() {
         auto fresh = snapshot({L"a", L"renamed"});
         app::FollowHeldRenames({{L"c", L"renamed"}}, *fresh, restore.names, restore.focus);
         tab.SetSnapshot(fresh);
-        app::RestoreListingSelection(tab, restore.names, restore.focus, restore.user_changed);
+        app::RestoreListingSelection(tab, restore);
         check(names(tab) == std::set<std::wstring>{L"renamed"},
             "latest selection follows production held-rename mapping");
     }
@@ -112,6 +112,60 @@ bool RunListingSelectionRestoreTest() {
         tab.pending_selected_names = {L"b"}; tab.pending_selected_name = L"b"; tab.ClearSelection();
         check(!publish(tab, {L"a", L"b"}) && names(tab) == std::set<std::wstring>{L"b"},
             "uncaptured legacy explicit selection keeps existing behavior");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectOnly(2);
+        app::CapturePendingListingSelection(tab);
+        publish(tab, {L"a", L"b", L"d"});
+        check(names(tab) == std::set<std::wstring>{L"d"}, "deleted middle item selects its surviving successor");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectOnly(3);
+        app::CapturePendingListingSelection(tab);
+        publish(tab, {L"a", L"b", L"c"});
+        check(names(tab) == std::set<std::wstring>{L"c"}, "deleted last item selects its surviving predecessor");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectIndices({0, 2}); tab.selected_index = 2;
+        app::CapturePendingListingSelection(tab);
+        publish(tab, {L"b", L"d"});
+        check(names(tab) == std::set<std::wstring>{L"d"}, "noncontiguous deletion follows identity rather than shifted index");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectIndices({1, 2}); tab.selected_index = 2;
+        app::CapturePendingListingSelection(tab);
+        publish(tab, {L"a", L"b", L"d"});
+        check(names(tab) == std::set<std::wstring>{L"b"}, "partial deletion preserves surviving selected items");
+    }
+    {
+        app::Tab tab; initialize(tab);
+        tab.SetSnapshot(snapshot({L"d", L"c", L"b", L"a"})); tab.SelectOnly(1);
+        app::CapturePendingListingSelection(tab);
+        publish(tab, {L"d", L"b", L"a"});
+        check(names(tab) == std::set<std::wstring>{L"b"}, "descending deletion follows displayed successor");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectAll();
+        app::CapturePendingListingSelection(tab); publish(tab, {});
+        check(tab.SelectedCount() == 0 && tab.selected_index == -1, "deleting all entries leaves no phantom selection");
+    }
+    {
+        app::Pane pane;
+        auto& tab = pane.view; initialize(tab);
+        tab.SetSnapshot(snapshot({L"a.keep", L"b.keep", L"c.skip", L"d.keep"}));
+        tab.filter_text = L"*.keep"; tab.SelectOnly(1);
+        app::CapturePendingListingSelection(tab);
+        auto restore = app::TakeListingSelection(tab, tab.current_path);
+        tab.SetSnapshot(snapshot({L"a.keep", L"c.skip", L"d.keep"}));
+        app::RestoreListingSelection(tab, restore, &pane);
+        check(names(tab) == std::set<std::wstring>{L"d.keep"}, "deleted filtered item skips invisible successor");
+    }
+    {
+        app::Tab tab; initialize(tab); tab.SelectOnly(2);
+        app::CapturePendingListingSelection(tab);
+        tab.current_path = L"C:\\other-directory";
+        publish(tab, {L"x", L"y"});
+        check(names(tab) == std::set<std::wstring>{L"x"}, "navigation does not inherit the previous folder position");
     }
     if (log) { fprintf(log, "failures=%d\n", failures); fclose(log); }
     return failures == 0;
