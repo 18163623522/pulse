@@ -468,12 +468,6 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     const bool update_shutdown_only = argc > 1 && std::wstring_view(argv[1]) == L"--update-shutdown";
-    if (argc > 1 && std::wstring_view(argv[1]) == L"--delete-progress-only") {
-        CheckDeleteProgress(srcDir);
-        g_ops.Stop();
-        wprintf(L"\n== delete progress tests: %d passed, %d failed ==\n", g_pass, g_fail);
-        return g_fail == 0 ? 0 : 1;
-    }
     if (update_shutdown_only) {
         {
             struct WindowFixture { ops::OpsManager operations; bool migration_pending = true; } fixture;

@@ -1,6 +1,7 @@
 #include "ops_manager.h"
 #include "elevated_delete.h"
 #include "elevated_transfer_client.h"
+#include "transfer_rate_estimator.h"
 #include "../common/localization.h"
 #include "../common/runtime_log.h"
 
@@ -39,6 +40,18 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
     bool defer_authorization = false;
     std::wstring authorization_error;
     const auto started = GetTickCount64();
+    TransferRateEstimator rate;
+    rate.SetEtaFloor(0.0);
+    rate.Reset(started, 0);
+    const auto update_rate = [&](OpStatus& status) {
+        // Only confirmed source deletions count, including on the elevated path.
+        // Skipped sources reduce remaining work without inflating the delete rate.
+        rate.Observe(GetTickCount64(), completed.size(), req.sources.size() - skipped);
+        status.items_per_second = rate.speed();
+        status.peak_items_per_second = (std::max)(status.peak_items_per_second,
+                                                status.items_per_second);
+        status.eta_seconds = rate.eta_seconds();
+    };
     for (const auto& source : req.sources) {
         if (transfer_cancel_.load()) break;
         SetStatus([&](OpStatus& status) {
@@ -62,6 +75,7 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
                 status.percent = req.sources.empty() ? 0.0f :
                     static_cast<float>((completed.size() + skipped + (percent < 0 ? 0 : percent / 100.0)) *
                                        100.0 / req.sources.size());
+                update_rate(status);
             });
         };
         callbacks.progress = [&](const OpStatus& status) { progress(status.current_item, status.percent); };
@@ -93,6 +107,10 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
             break;
         }
         completed.insert(completed.end(), result.sources.begin(), result.sources.end());
+        SetStatus([&](OpStatus& status) {
+            status.completed_items = completed.size();
+            update_rate(status);
+        });
         if (result.mutated && (FAILED(result.hr) || result.cancelled)) {
         CompletedOperation refresh;
         refresh.task_id = task_id;
@@ -123,6 +141,7 @@ void OpsManager::RunAuthorizedDelete(const OpRequest& req, uint64_t task_id) {
         ++status.completed_ops;
         status.completed_items = completed.size();
         status.bytes_per_second = 0;
+        status.items_per_second = 0;
         status.eta_seconds = 0;
         status.locked_path = lock_report.path;
         status.lock_owners = lock_report.owners;
