@@ -286,11 +286,7 @@ WorkResult WorkerPool::Process(const WorkItem& item) {
             if (item.folder_sizes && item.sort_column == ui::SortColumn::Size) {
                 SortEntriesBySize(*entries, item.sort_direction, *item.folder_sizes, tick);
             } else {
-                std::sort(entries->begin(), entries->end(),
-                    [&](const fs::DirEntry& a, const fs::DirEntry& b) {
-                        tick();
-                        return EntryLess(a, b, item.sort_column, item.sort_direction);
-                    });
+                SortEntries(*entries, item.sort_column, item.sort_direction, tick);
             }
         } catch (const SortCancelled&) {
             res.cancelled = true;

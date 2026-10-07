@@ -1432,6 +1432,10 @@ void RefreshPath(AppState& s, const std::wstring& path, RefreshReason reason) {
             }
         }
         if (tab->pending_generation == 0) {
+            // The new pass covers what was marked dirty so far. Without this the
+            // mark that queued it survived, and its result queued one more full
+            // enumeration (three per folder open with the watch's first report).
+            s.store.BeginRefresh(normalized);
             tab->pending_generation = s.worker.Refresh(
                 normalized, tab->sort_column, tab->sort_direction, tab->EffectiveGroup(),
                 SortFolderSizes(s, *tab, normalized));
@@ -1624,7 +1628,10 @@ void DrainDirNotifies(AppState& s) {
         if (item.overflow) {
             DropSizePatches(s, path);
             s.store.MarkDirty(path);
-            RefreshPath(s, path);
+            // A scan already in flight (a newly armed watch reports one overflow
+            // while the folder is still loading) finishes and is shown first; the
+            // dirty mark then runs one more pass instead of discarding its work.
+            if (!PathHasPendingRefresh(s, path)) RefreshPath(s, path);
             // The refresh re-enumerates; this drain's earlier events are moot.
             GroupFor(structural_by_path, path).clear();
             GroupFor(modified_by_path, path).clear();
