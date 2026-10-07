@@ -20,6 +20,7 @@
 #include "app_hosted_edit.h"
 #include "app_navigation.h"
 #include "app_runtime.h"
+#include "app_sidebar_refresh.h"
 #include "../ui/address_search_layout.h"
 #include "search_query.h"
 #include "../common/localization.h"
@@ -4783,8 +4784,17 @@ void TestQuickAccess() {
         // must bring the drives and the quick-access links back.
         state.sidebar.drives.clear();
         state.sidebar.quick_access.clear();
+        state.worker.Start([](WorkResult) {});
         RefreshSidebarModel(state);
-        Check(!state.sidebar.drives.empty() && !state.sidebar.quick_access.empty(),
+        bool sidebar_applied = false;
+        const auto sidebar_deadline = GetTickCount64() + 10000;
+        while (!sidebar_applied && GetTickCount64() < sidebar_deadline) {
+            sidebar_applied = TickSidebarRefresh(state, GetTickCount64());
+            if (!sidebar_applied) Sleep(10);
+        }
+        CancelSidebarRefresh(state);
+        state.worker.Stop();
+        Check(sidebar_applied && !state.sidebar.drives.empty() && !state.sidebar.quick_access.empty(),
               L"sidebar refresh: a volume change rebuilds the drive and quick-access rows");
         Pane pane; pane.NewTab(L"C:\\");
         const auto sidebar = BuildSidebarModel();
