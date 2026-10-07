@@ -407,12 +407,12 @@ void ShellIconCache::Prefetch(const std::wstring& path, const std::wstring& name
 
 bool ShellIconCache::Draw(ID2D1DeviceContext* dc, const D2D1_RECT_F& dest,
                           const std::wstring& path, const std::wstring& name,
-                          bool is_dir, DWORD attrs) {
+                          bool is_dir, DWORD attrs, float opacity) {
     if (!dc) return false;
     const float desired = std::max(dest.right - dest.left, dest.bottom - dest.top);
     ID2D1Bitmap* bitmap = BitmapFor(path, name, is_dir, attrs, desired);
     if (!bitmap) return false;
-    dc->DrawBitmap(bitmap, &dest, 1.0f, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    dc->DrawBitmap(bitmap, &dest, opacity, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
                    nullptr, nullptr);
     return true;
 }

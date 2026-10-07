@@ -393,17 +393,18 @@ void MainRenderer::DrawDetailsPanel(const WindowViewModel& vm, const D2D1_RECT_F
                     ((contentRc.bottom - contentRc.top) - groupHeight) * 0.5f;
                 const D2D1_RECT_F iconRc = D2D1::RectF(contentCenterX - icon * 0.5f,
                     iconTop, contentCenterX + icon * 0.5f, iconTop + icon);
+                const float hidden_alpha = HiddenEntryAlpha(d.attrs);
                 if (ID2D1Bitmap* bmp = icon_cache_.BitmapFor(d.path, d.name, d.is_dir, d.attrs,
                                                              icon)) {
-                    dc->DrawBitmap(bmp, &iconRc, 1.0f,
+                    dc->DrawBitmap(bmp, &iconRc, hidden_alpha,
                                    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC);
                 } else if (d.is_dir) {
-                    DrawFolderIcon(iconRc.left, iconRc.top, icon, theme);
+                    DrawFolderIcon(iconRc.left, iconRc.top, icon, theme, hidden_alpha);
                 } else {
-                    DrawFileIcon(iconRc.left, iconRc.top, icon, theme);
+                    DrawFileIcon(iconRc.left, iconRc.top, icon, theme, hidden_alpha);
                 }
                 if (d.is_link)
-                    DrawLinkOverlay(iconRc.left, iconRc.top, icon, theme);
+                    DrawLinkOverlay(iconRc.left, iconRc.top, icon, theme, hidden_alpha);
                 if (showState && !state.empty())
                     centeredText(state,
                         D2D1::RectF(contentRc.left, iconRc.bottom + stateGap,

@@ -241,6 +241,12 @@ void ClearTextWidthCache() {
         }
     }
 
+    // Hidden entries render faded (icon, and the column strip's name), at the
+    // same 0.55 strength as cut items, so they read as background content.
+    inline float HiddenEntryAlpha(DWORD attrs) noexcept {
+        return (attrs & FILE_ATTRIBUTE_HIDDEN) ? 0.55f : 1.0f;
+    }
+
     const ListEntryView& MakeVisibleEntry(const PaneViewModel& vm, size_t index) {
         if (!vm.snapshot) return vm.entries[index];
 
